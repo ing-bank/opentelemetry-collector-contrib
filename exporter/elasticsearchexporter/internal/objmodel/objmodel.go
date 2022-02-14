@@ -152,6 +152,16 @@ func (doc *Document) AddInt(key string, value int64) {
 	doc.Add(key, IntValue(value))
 }
 
+// AddUInt adds an unsigned integer value to the document.
+func (doc *Document) AddUInt(key string, value uint64) {
+	doc.Add(key, UIntValue(value))
+}
+
+// AddDouble adds a double value to the document.
+func (doc *Document) AddDouble(key string, value float64) {
+	doc.Add(key, DoubleValue(value))
+}
+
 // AddAttributes expands and flattens all key-value pairs from the input attribute map into
 // the document.
 func (doc *Document) AddAttributes(key string, attributes pcommon.Map) {
@@ -343,6 +353,9 @@ func StringValue(str string) Value { return Value{kind: KindString, str: str} }
 
 // IntValue creates a new value from an integer.
 func IntValue(i int64) Value { return Value{kind: KindInt, primitive: uint64(i)} }
+
+// UIntValue creates a new value from an integer.
+func UIntValue(i uint64) Value { return Value{kind: KindInt, primitive: i} }
 
 // DoubleValue creates a new value from a double value..
 func DoubleValue(d float64) Value { return Value{kind: KindDouble, dbl: d} }

@@ -35,6 +35,7 @@ func NewFactory() component.ExporterFactory {
 		typeStr,
 		createDefaultConfig,
 		component.WithLogsExporter(createLogsExporter),
+		component.WithMetricsExporter(createMetricsExporter),
 	)
 }
 
@@ -67,7 +68,7 @@ func createLogsExporter(
 	set component.ExporterCreateSettings,
 	cfg config.Exporter,
 ) (component.LogsExporter, error) {
-	exporter, err := newExporter(set.Logger, cfg.(*Config))
+	exporter, err := newLogExporter(set.Logger, cfg.(*Config))
 	if err != nil {
 		return nil, fmt.Errorf("cannot configure Elasticsearch logs exporter: %w", err)
 	}
@@ -76,6 +77,24 @@ func createLogsExporter(
 		cfg,
 		set,
 		exporter.pushLogsData,
+		exporterhelper.WithShutdown(exporter.Shutdown),
+	)
+}
+
+func createMetricsExporter(
+	ctx context.Context,
+	set component.ExporterCreateSettings,
+	cfg config.Exporter,
+) (component.MetricsExporter, error) {
+	exporter, err := newMetricsExporter(set.Logger, cfg.(*Config))
+	if err != nil {
+		return nil, fmt.Errorf("cannot configure Elasticsearch metrics exporter: %w", err)
+	}
+
+	return exporterhelper.NewMetricsExporter(
+		cfg,
+		set,
+		exporter.pushMetricsData,
 		exporterhelper.WithShutdown(exporter.Shutdown),
 	)
 }

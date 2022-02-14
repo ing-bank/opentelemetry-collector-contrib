@@ -16,15 +16,19 @@ package elasticsearchexporter // import "github.com/open-telemetry/opentelemetry
 
 import (
 	"bytes"
+	"fmt"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/pdata/pmetric"
 
+	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/elasticsearchexporter/encode"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/elasticsearchexporter/internal/objmodel"
 )
 
 type mappingModel interface {
 	encodeLog(pcommon.Resource, plog.LogRecord) ([]byte, error)
+	encodeMetric(pcommon.Resource, pcommon.InstrumentationScope, pmetric.Metric) ([][]byte, []error)
 }
 
 // encodeModel tries to keep the event as close to the original open telemetry semantics as is.
@@ -59,4 +63,19 @@ func (m *encodeModel) encodeLog(resource pcommon.Resource, record plog.LogRecord
 	var buf bytes.Buffer
 	err := document.Serialize(&buf, m.dedot)
 	return buf.Bytes(), err
+}
+
+func (m *encodeModel) encodeMetric(resource pcommon.Resource, scope pcommon.InstrumentationScope, metric pmetric.Metric) ([][]byte, []error) {
+	switch metric.DataType() {
+	case pmetric.MetricDataTypeGauge:
+		return encode.Gauge(&resource, &scope, &metric)
+	case pmetric.MetricDataTypeSum:
+		return encode.Sum(&resource, &scope, &metric)
+	case pmetric.MetricDataTypeHistogram:
+		return encode.Histogram(&resource, &scope, &metric)
+	case pmetric.MetricDataTypeSummary:
+		return encode.Summary(&resource, &scope, &metric)
+	default:
+		return nil, []error{fmt.Errorf("data type %s is not implemented", metric.DataType().String())}
+	}
 }

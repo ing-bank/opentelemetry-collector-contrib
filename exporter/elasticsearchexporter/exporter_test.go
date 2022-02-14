@@ -119,7 +119,7 @@ func TestExporter_New(t *testing.T) {
 				os.Setenv(k, v)
 			}
 
-			exporter, err := newExporter(zap.NewNop(), test.config)
+			exporter, err := newLogExporter(zap.NewNop(), test.config)
 			if exporter != nil {
 				defer func() {
 					require.NoError(t, exporter.Shutdown(context.TODO()))
@@ -309,7 +309,7 @@ func TestExporter_PushEvent(t *testing.T) {
 }
 
 func newTestExporter(t *testing.T, url string, fns ...func(*Config)) *elasticsearchExporter {
-	exporter, err := newExporter(zaptest.NewLogger(t), withTestExporterConfig(fns...)(url))
+	exporter, err := newLogExporter(zaptest.NewLogger(t), withTestExporterConfig(fns...)(url))
 	require.NoError(t, err)
 
 	t.Cleanup(func() { exporter.Shutdown(context.TODO()) })

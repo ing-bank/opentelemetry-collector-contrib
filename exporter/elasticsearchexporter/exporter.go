@@ -30,6 +30,7 @@ import (
 	esutil7 "github.com/elastic/go-elasticsearch/v7/esutil"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
 
@@ -57,7 +58,7 @@ var retryOnStatus = []int{500, 502, 503, 504, 429}
 
 const createAction = "create"
 
-func newExporter(logger *zap.Logger, cfg *Config) (*elasticsearchExporter, error) {
+func newLogExporter(logger *zap.Logger, cfg *Config) (*elasticsearchExporter, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -79,6 +80,40 @@ func newExporter(logger *zap.Logger, cfg *Config) (*elasticsearchExporter, error
 
 	// TODO: Apply encoding and field mapping settings.
 	model := &encodeModel{dedup: true, dedot: false}
+
+	return &elasticsearchExporter{
+		logger:      logger,
+		client:      client,
+		bulkIndexer: bulkIndexer,
+
+		index:       cfg.Index,
+		maxAttempts: maxAttempts,
+		model:       model,
+	}, nil
+}
+
+func newMetricsExporter(logger *zap.Logger, cfg *Config) (*elasticsearchExporter, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
+	client, err := newElasticsearchClient(logger, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	bulkIndexer, err := newBulkIndexer(logger, client, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	maxAttempts := 1
+	if cfg.Retry.Enabled {
+		maxAttempts = cfg.Retry.MaxRequests
+	}
+
+	// TODO: Apply encoding and field mapping settings.
+	model := &encodeModel{dedup: true, dedot: true}
 
 	return &elasticsearchExporter{
 		logger:      logger,
@@ -120,12 +155,50 @@ func (e *elasticsearchExporter) pushLogsData(ctx context.Context, ld plog.Logs) 
 	return multierr.Combine(errs...)
 }
 
+func (e *elasticsearchExporter) pushMetricsData(ctx context.Context, md pmetric.Metrics) error {
+	var errs []error
+
+	rms := md.ResourceMetrics()
+	for i := 0; i < rms.Len(); i++ {
+		rm := rms.At(i)
+		resource := rm.Resource()
+		sm := rm.ScopeMetrics()
+		for j := 0; j < sm.Len(); j++ {
+			metrics := sm.At(j).Metrics()
+			for k := 0; k < metrics.Len(); k++ {
+				if err := e.pushMetricRecord(ctx, resource, sm.At(j).Scope(), metrics.At(k)); err != nil {
+					if cerr := ctx.Err(); cerr != nil {
+						return cerr
+					}
+
+					errs = append(errs, err)
+				}
+			}
+		}
+	}
+
+	return multierr.Combine(errs...)
+}
+
 func (e *elasticsearchExporter) pushLogRecord(ctx context.Context, resource pcommon.Resource, record plog.LogRecord) error {
 	document, err := e.model.encodeLog(resource, record)
 	if err != nil {
 		return fmt.Errorf("Failed to encode log event: %w", err)
 	}
 	return e.pushEvent(ctx, document)
+}
+
+func (e *elasticsearchExporter) pushMetricRecord(ctx context.Context, resource pcommon.Resource, scope pcommon.InstrumentationScope, record pmetric.Metric) error {
+	documents, errs := e.model.encodeMetric(resource, scope, record)
+
+	for _, document := range documents {
+		err := e.pushEvent(ctx, document)
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return multierr.Combine(errs...)
 }
 
 func (e *elasticsearchExporter) pushEvent(ctx context.Context, document []byte) error {
