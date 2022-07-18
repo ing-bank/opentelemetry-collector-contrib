@@ -40,7 +40,6 @@ func NewFactory() component.ExporterFactory {
 		createDefaultConfig,
 		component.WithLogsExporterAndStabilityLevel(createLogsExporter, logStability),
 		component.WithMetricsExporterAndStabilityLevel(createMetricsExporter, metricStability),
-		component.WithMetricsExporter(createMetricsExporter),
 	)
 }
 
