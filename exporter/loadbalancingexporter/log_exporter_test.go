@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// nolint:errcheck
 package loadbalancingexporter
 
 import (
@@ -19,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,6 +32,7 @@ import (
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
+	"go.uber.org/atomic"
 	"go.uber.org/zap"
 )
 
@@ -387,17 +388,18 @@ func TestRollingUpdatesWhenConsumeLogs(t *testing.T) {
 	lb.res = res
 	p.loadBalancer = lb
 
-	var counter1, counter2 int64
+	counter1 := atomic.NewInt64(0)
+	counter2 := atomic.NewInt64(0)
 	defaultExporters := map[string]component.Exporter{
 		"127.0.0.1": newMockLogsExporter(func(ctx context.Context, ld plog.Logs) error {
-			atomic.AddInt64(&counter1, 1)
+			counter1.Inc()
 			// simulate an unreachable backend
 			time.Sleep(10 * time.Second)
 			return nil
 		},
 		),
 		"127.0.0.2": newMockLogsExporter(func(ctx context.Context, ld plog.Logs) error {
-			atomic.AddInt64(&counter2, 1)
+			counter2.Inc()
 			return nil
 		},
 		),
@@ -447,8 +449,8 @@ func TestRollingUpdatesWhenConsumeLogs(t *testing.T) {
 
 	// verify
 	require.Equal(t, []string{"127.0.0.2"}, lastResolved)
-	require.Greater(t, atomic.LoadInt64(&counter1), int64(0))
-	require.Greater(t, atomic.LoadInt64(&counter2), int64(0))
+	require.Greater(t, counter1.Load(), int64(0))
+	require.Greater(t, counter2.Load(), int64(0))
 }
 
 func randomLogs() plog.Logs {
@@ -479,7 +481,7 @@ func simpleLogWithoutID() plog.Logs {
 
 type mockLogsExporter struct {
 	component.Component
-	ConsumeLogsFn func(ctx context.Context, ld plog.Logs) error
+	consumelogsfn func(ctx context.Context, ld plog.Logs) error
 }
 
 func (e *mockLogsExporter) Capabilities() consumer.Capabilities {
@@ -487,10 +489,10 @@ func (e *mockLogsExporter) Capabilities() consumer.Capabilities {
 }
 
 func (e *mockLogsExporter) ConsumeLogs(ctx context.Context, ld plog.Logs) error {
-	if e.ConsumeLogsFn == nil {
+	if e.consumelogsfn == nil {
 		return nil
 	}
-	return e.ConsumeLogsFn(ctx, ld)
+	return e.consumelogsfn(ctx, ld)
 }
 
 type mockComponent struct {
@@ -498,17 +500,17 @@ type mockComponent struct {
 	component.ShutdownFunc
 }
 
-func newMockLogsExporter(ConsumeLogsFn func(ctx context.Context, ld plog.Logs) error) component.LogsExporter {
+func newMockLogsExporter(consumelogsfn func(ctx context.Context, ld plog.Logs) error) component.LogsExporter {
 	return &mockLogsExporter{
 		Component:     mockComponent{},
-		ConsumeLogsFn: ConsumeLogsFn,
+		consumelogsfn: consumelogsfn,
 	}
 }
 
 func newNopMockLogsExporter() component.LogsExporter {
 	return &mockLogsExporter{
 		Component: mockComponent{},
-		ConsumeLogsFn: func(ctx context.Context, ld plog.Logs) error {
+		consumelogsfn: func(ctx context.Context, ld plog.Logs) error {
 			return nil
 		},
 	}

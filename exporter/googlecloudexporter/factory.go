@@ -27,7 +27,9 @@ import (
 
 const (
 	// The value of "type" key in configuration.
-	typeStr                  = "googlecloud"
+	typeStr = "googlecloud"
+	// The stability level of the exporter.
+	stability                = component.StabilityLevelBeta
 	defaultTimeout           = 12 * time.Second // Consistent with Cloud Monitoring's timeout
 	pdataExporterFeatureGate = "exporter.googlecloud.OTLPDirect"
 )
@@ -45,8 +47,9 @@ func NewFactory() component.ExporterFactory {
 	return component.NewExporterFactory(
 		typeStr,
 		createDefaultConfig,
-		component.WithTracesExporter(createTracesExporter),
-		component.WithMetricsExporter(createMetricsExporter),
+		component.WithTracesExporterAndStabilityLevel(createTracesExporter, stability),
+		component.WithMetricsExporterAndStabilityLevel(createMetricsExporter, stability),
+		component.WithLogsExporterAndStabilityLevel(createLogsExporter, stability),
 	)
 }
 
@@ -68,6 +71,32 @@ func createDefaultConfig() config.Exporter {
 		QueueSettings:    exporterhelper.NewDefaultQueueSettings(),
 		Config:           collector.DefaultConfig(),
 	}
+}
+
+func createLogsExporter(
+	ctx context.Context,
+	params component.ExporterCreateSettings,
+	cfg config.Exporter) (component.LogsExporter, error) {
+	var eCfg *Config
+	if !featuregate.GetRegistry().IsEnabled(pdataExporterFeatureGate) {
+		eCfg = toNewConfig(cfg.(*LegacyConfig))
+	} else {
+		eCfg = cfg.(*Config)
+	}
+	logsExporter, err := collector.NewGoogleCloudLogsExporter(ctx, eCfg.Config, params.TelemetrySettings.Logger)
+	if err != nil {
+		return nil, err
+	}
+	return exporterhelper.NewLogsExporter(
+		cfg,
+		params,
+		logsExporter.PushLogs,
+		exporterhelper.WithShutdown(logsExporter.Shutdown),
+		// Disable exporterhelper Timeout, since we are using a custom mechanism
+		// within exporter itself
+		exporterhelper.WithTimeout(exporterhelper.TimeoutSettings{Timeout: 0}),
+		exporterhelper.WithQueue(eCfg.QueueSettings),
+		exporterhelper.WithRetry(eCfg.RetrySettings))
 }
 
 // createTracesExporter creates a trace exporter based on this config.

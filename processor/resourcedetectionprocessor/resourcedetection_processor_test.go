@@ -37,7 +37,7 @@ import (
 	internaldata "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/opencensus"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourcedetectionprocessor/internal"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourcedetectionprocessor/internal/env"
-	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourcedetectionprocessor/internal/gcp/gce"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourcedetectionprocessor/internal/gcp"
 )
 
 type MockDetector struct {
@@ -300,7 +300,7 @@ func benchmarkConsumeTraces(b *testing.B, cfg *Config) {
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
 		// TODO use testbed.PerfTestDataProvider here once that includes resources
-		processor.ConsumeTraces(context.Background(), ptrace.NewTraces())
+		assert.NoError(b, processor.ConsumeTraces(context.Background(), ptrace.NewTraces()))
 	}
 }
 
@@ -310,7 +310,7 @@ func BenchmarkConsumeTracesDefault(b *testing.B) {
 }
 
 func BenchmarkConsumeTracesAll(b *testing.B) {
-	cfg := &Config{Override: true, Detectors: []string{env.TypeStr, gce.TypeStr}}
+	cfg := &Config{Override: true, Detectors: []string{env.TypeStr, gcp.TypeStr}}
 	benchmarkConsumeTraces(b, cfg)
 }
 
@@ -322,7 +322,7 @@ func benchmarkConsumeMetrics(b *testing.B, cfg *Config) {
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
 		// TODO use testbed.PerfTestDataProvider here once that includes resources
-		processor.ConsumeMetrics(context.Background(), pmetric.NewMetrics())
+		assert.NoError(b, processor.ConsumeMetrics(context.Background(), pmetric.NewMetrics()))
 	}
 }
 
@@ -332,7 +332,7 @@ func BenchmarkConsumeMetricsDefault(b *testing.B) {
 }
 
 func BenchmarkConsumeMetricsAll(b *testing.B) {
-	cfg := &Config{Override: true, Detectors: []string{env.TypeStr, gce.TypeStr}}
+	cfg := &Config{Override: true, Detectors: []string{env.TypeStr, gcp.TypeStr}}
 	benchmarkConsumeMetrics(b, cfg)
 }
 
@@ -344,7 +344,7 @@ func benchmarkConsumeLogs(b *testing.B, cfg *Config) {
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
 		// TODO use testbed.PerfTestDataProvider here once that includes resources
-		processor.ConsumeLogs(context.Background(), plog.NewLogs())
+		assert.NoError(b, processor.ConsumeLogs(context.Background(), plog.NewLogs()))
 	}
 }
 
@@ -354,6 +354,6 @@ func BenchmarkConsumeLogsDefault(b *testing.B) {
 }
 
 func BenchmarkConsumeLogsAll(b *testing.B) {
-	cfg := &Config{Override: true, Detectors: []string{env.TypeStr, gce.TypeStr}}
+	cfg := &Config{Override: true, Detectors: []string{env.TypeStr, gcp.TypeStr}}
 	benchmarkConsumeLogs(b, cfg)
 }

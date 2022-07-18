@@ -65,8 +65,6 @@ func newCwLogsPusher(expConfig *Config, params component.ExporterCreateSettings)
 		return nil, err
 	}
 
-	expConfig.Validate()
-
 	pusher := cwlogs.NewPusher(aws.String(expConfig.LogGroupName), aws.String(expConfig.LogStreamName), *awsConfig.MaxRetries, *svcStructuredLog, params.Logger)
 
 	logsExporter := &exporter{

@@ -59,7 +59,7 @@ func (c *Collector) processEvents(ctx context.Context) {
 			buffered = fillBufferUntilChanEmpty(c.eventCh, buffered)
 
 			logs := collectLogRecords(buffered)
-			c.nextConsumer.ConsumeLogs(ctx, logs)
+			_ = c.nextConsumer.ConsumeLogs(ctx, logs)
 		}
 	}
 }

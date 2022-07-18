@@ -203,7 +203,7 @@ func TestPrepareSharedInformerFactory(t *testing.T) {
 				dataCollector: collection.NewDataCollector(zap.NewNop(), []string{}, []string{}),
 			}
 
-			rw.prepareSharedInformerFactory()
+			assert.NoError(t, rw.prepareSharedInformerFactory())
 
 			// Make sure no warning or error logs are raised
 			assert.Equal(t, 0, logs.Len())

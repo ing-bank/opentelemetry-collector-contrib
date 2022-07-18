@@ -312,11 +312,11 @@ func BenchmarkConsumeMetrics(b *testing.B) {
 
 	// Load initial value
 	reset()
-	p.ConsumeMetrics(context.Background(), metrics)
+	assert.NoError(b, p.ConsumeMetrics(context.Background(), metrics))
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		reset()
-		p.ConsumeMetrics(context.Background(), metrics)
+		assert.NoError(b, p.ConsumeMetrics(context.Background(), metrics))
 	}
 }

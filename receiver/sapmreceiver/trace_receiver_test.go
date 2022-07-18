@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// nolint:errcheck
 package sapmreceiver
 
 import (
@@ -134,7 +135,7 @@ func sendSapm(endpoint string, sapm *splunksapm.PostSpansRequest, zipped bool, t
 	// marshal the sapm
 	reqBytes, err := sapm.Marshal()
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal sapm %v", err.Error())
+		return nil, fmt.Errorf("failed to marshal sapm %w", err)
 	}
 
 	if zipped {
@@ -145,13 +146,13 @@ func sendSapm(endpoint string, sapm *splunksapm.PostSpansRequest, zipped bool, t
 		// run the request bytes through the gzip writer
 		_, err = writer.Write(reqBytes)
 		if err != nil {
-			return nil, fmt.Errorf("failed to write gzip sapm %v", err.Error())
+			return nil, fmt.Errorf("failed to write gzip sapm %w", err)
 		}
 
 		// close the writer
 		err = writer.Close()
 		if err != nil {
-			return nil, fmt.Errorf("failed to close the gzip writer %v", err.Error())
+			return nil, fmt.Errorf("failed to close the gzip writer %w", err)
 		}
 
 		// save the gzipped bytes as the request bytes
@@ -199,7 +200,7 @@ func sendSapm(endpoint string, sapm *splunksapm.PostSpansRequest, zipped bool, t
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return resp, fmt.Errorf("failed to send request to receiver %v", err)
+		return resp, fmt.Errorf("failed to send request to receiver %w", err)
 	}
 
 	return resp, nil
@@ -213,6 +214,7 @@ func setupReceiver(t *testing.T, config *Config, sink *consumertest.TracesSink) 
 
 	mh := newAssertNoErrorHost(t)
 	require.NoError(t, sr.Start(context.Background(), mh), "should not have failed to start trace reception")
+	require.NoError(t, sr.Start(context.Background(), mh), "should not fail to start log on second Start call")
 
 	// If there are errors reported through host.ReportFatalError() this will retrieve it.
 	<-time.After(500 * time.Millisecond)

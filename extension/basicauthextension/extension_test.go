@@ -164,7 +164,8 @@ func TestBasicAuth_HtpasswdInlinePrecedence(t *testing.T) {
 	require.NoError(t, err)
 	defer os.Remove(f.Name())
 
-	f.WriteString("username:fromfile")
+	_, err = f.WriteString("username:fromfile")
+	require.NoError(t, err)
 
 	ext, err := newServerAuthExtension(&Config{
 		Htpasswd: &HtpasswdSettings{
