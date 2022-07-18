@@ -28,7 +28,9 @@ const (
 	// The value of "type" key in configuration.
 	typeStr = "elasticsearch"
 	// The stability level of the exporter.
-	stability = component.StabilityLevelBeta
+	logStability = component.StabilityLevelBeta
+	// The stability level of the metric exporter.
+	metricStability = component.StabilityLevelAlpha
 )
 
 // NewFactory creates a factory for Elastic exporter.
@@ -36,8 +38,9 @@ func NewFactory() component.ExporterFactory {
 	return component.NewExporterFactory(
 		typeStr,
 		createDefaultConfig,
-		component.WithLogsExporterAndStabilityLevel(createLogsExporter, stability),
- 		component.WithMetricsExporter(createMetricsExporter),
+		component.WithLogsExporterAndStabilityLevel(createLogsExporter, logStability),
+		component.WithMetricsExporterAndStabilityLevel(createMetricsExporter, metricStability),
+		component.WithMetricsExporter(createMetricsExporter),
 	)
 }
 
