@@ -195,6 +195,7 @@ receiver/k8seventsreceiver/                              @open-telemetry/collect
 receiver/k8sobjectsreceiver/                             @open-telemetry/collector-contrib-approvers @dmitryax @hvaghani221
 receiver/kafkametricsreceiver/                           @open-telemetry/collector-contrib-approvers @dmitryax
 receiver/kafkareceiver/                                  @open-telemetry/collector-contrib-approvers @pavolloffay @MovieStoreGuy
+receiver/kafkareceiver/avro_unmarshaler.go               @open-telemetry/collector-contrib-approvers @thmshmm @vincentfree
 receiver/kubeletstatsreceiver/                           @open-telemetry/collector-contrib-approvers @dmitryax
 receiver/lokireceiver/                                   @open-telemetry/collector-contrib-approvers @mar4uk @kovrus @jpkrohling
 receiver/memcachedreceiver/                              @open-telemetry/collector-contrib-approvers @djaglowski
