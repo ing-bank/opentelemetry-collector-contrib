@@ -266,6 +266,12 @@ func newLogsReceiver(config Config, set receiver.CreateSettings, unmarshalers ma
 		return nil, errUnrecognizedEncoding
 	}
 
+	if unmarshaler.Encoding() == avroEncoding {
+		if err := configureAvroLogsUnmarshaler(unmarshaler.(*avroLogsUnmarshaler), config); err != nil {
+			return nil, err
+		}
+	}
+
 	c := sarama.NewConfig()
 	c.ClientID = config.ClientID
 	c.Metadata.Full = config.Metadata.Full
@@ -296,6 +302,19 @@ func newLogsReceiver(config Config, set receiver.CreateSettings, unmarshalers ma
 		autocommitEnabled: config.AutoCommit.Enable,
 		messageMarking:    config.MessageMarking,
 	}, nil
+}
+
+func configureAvroLogsUnmarshaler(unmarshaler *avroLogsUnmarshaler, config Config) error {
+	if config.Avro.SchemaURL == "" {
+		return errNoAvroSchemaURL
+	}
+	if len(config.Avro.Mapping) == 0 {
+		return errNoAvroMapping
+	}
+	if err := unmarshaler.Init(config.Avro.SchemaURL, config.Avro.Mapping); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *kafkaLogsConsumer) Start(_ context.Context, host component.Host) error {
