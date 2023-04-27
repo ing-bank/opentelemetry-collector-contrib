@@ -74,6 +74,14 @@ type Config struct {
 
 	// Extract headers from kafka records
 	HeaderExtraction HeaderExtraction `mapstructure:"header_extraction"`
+
+	// AVRO encoder config when "encoding: avro"
+	Avro struct {
+		// Local file path 'file:' or schema registry url to load schema from
+		SchemaURL string `mapstructure:"schema_url"`
+		// Mapping definition from AVRO fields to otel logs fields and attributes
+		Mapping map[string]string `mapstructure:"mapping"`
+	} `mapstructure:"avro"`
 }
 
 const (

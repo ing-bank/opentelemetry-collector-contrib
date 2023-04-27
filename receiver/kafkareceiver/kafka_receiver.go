@@ -288,6 +288,17 @@ func (c *kafkaMetricsConsumer) Shutdown(context.Context) error {
 }
 
 func newLogsReceiver(config Config, set receiver.CreateSettings, unmarshalers map[string]LogsUnmarshaler, nextConsumer consumer.Logs) (*kafkaLogsConsumer, error) {
+	unmarshaler := unmarshalers[config.Encoding]
+	if unmarshaler == nil {
+		return nil, errUnrecognizedEncoding
+	}
+
+	if unmarshaler.Encoding() == avroEncoding {
+		if err := configureAvroLogsUnmarshaler(unmarshaler.(*avroLogsUnmarshaler), config); err != nil {
+			return nil, err
+		}
+	}
+
 	c := sarama.NewConfig()
 	c.ClientID = config.ClientID
 	c.Metadata.Full = config.Metadata.Full
@@ -357,6 +368,19 @@ func getLogsUnmarshaler(encoding string, unmarshalers map[string]LogsUnmarshaler
 	}
 
 	return unmarshaler, nil
+}
+
+func configureAvroLogsUnmarshaler(unmarshaler *avroLogsUnmarshaler, config Config) error {
+	if config.Avro.SchemaURL == "" {
+		return errNoAvroSchemaURL
+	}
+	if len(config.Avro.Mapping) == 0 {
+		return errNoAvroMapping
+	}
+	if err := unmarshaler.Init(config.Avro.SchemaURL, config.Avro.Mapping); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *kafkaLogsConsumer) Start(_ context.Context, host component.Host) error {
