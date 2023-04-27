@@ -70,7 +70,6 @@ func TestLoadConfig(t *testing.T) {
 			},
 		},
 		{
-
 			id: component.NewIDWithName(typeStr, "logs"),
 			expected: &Config{
 				Topic:    "logs",
@@ -97,6 +96,44 @@ func TestLoadConfig(t *testing.T) {
 				AutoCommit: AutoCommit{
 					Enable:   true,
 					Interval: 1 * time.Second,
+				},
+			},
+		},
+		{
+			id: component.NewIDWithName(typeStr, "avroLogs"),
+			expected: &Config{
+				Topic:    "avroLogs",
+				Encoding: "avro",
+				Brokers:  []string{"coffee:123", "foobar:456"},
+				ClientID: "otel-collector",
+				GroupID:  "otel-collector",
+				Authentication: kafkaexporter.Authentication{
+					TLS: &configtls.TLSClientSetting{
+						TLSSetting: configtls.TLSSetting{
+							CAFile:   "ca.pem",
+							CertFile: "cert.pem",
+							KeyFile:  "key.pem",
+						},
+					},
+				},
+				Metadata: kafkaexporter.Metadata{
+					Full: true,
+					Retry: kafkaexporter.MetadataRetry{
+						Max:     10,
+						Backoff: time.Second * 5,
+					},
+				},
+				AutoCommit: AutoCommit{
+					Enable:   true,
+					Interval: 1 * time.Second,
+				},
+				Avro: Avro{
+					SchemaURL: "file:testdata/avro/schema.avro",
+					Mapping: map[string]string{
+						"hostname":   "resource.attributes.hostname",
+						"properties": "resource.attributes.properties",
+						"message":    "body",
+					},
 				},
 			},
 		},
