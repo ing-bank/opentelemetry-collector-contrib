@@ -37,6 +37,13 @@ type HeaderExtraction struct {
 	Headers        []string `mapstructure:"headers"`
 }
 
+type Avro struct {
+	// Local file path 'file:' or schema registry url to load schema from
+	SchemaURL string `mapstructure:"schema_url"`
+	// Mapping definition from AVRO fields to otel logs fields and attributes
+	Mapping map[string]string `mapstructure:"mapping"`
+}
+
 // Config defines configuration for Kafka receiver.
 type Config struct {
 	// The list of kafka brokers (default localhost:9092)
@@ -76,12 +83,7 @@ type Config struct {
 	HeaderExtraction HeaderExtraction `mapstructure:"header_extraction"`
 
 	// AVRO encoder config when "encoding: avro"
-	Avro struct {
-		// Local file path 'file:' or schema registry url to load schema from
-		SchemaURL string `mapstructure:"schema_url"`
-		// Mapping definition from AVRO fields to otel logs fields and attributes
-		Mapping map[string]string `mapstructure:"mapping"`
-	} `mapstructure:"avro"`
+	Avro Avro `mapstructure:"avro"`
 }
 
 const (

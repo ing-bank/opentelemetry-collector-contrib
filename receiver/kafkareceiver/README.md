@@ -40,14 +40,10 @@ The following settings can be optionally configured:
   - `zipkin_json`: the payload is deserialized into a list of Zipkin V2 JSON spans.
   - `zipkin_thrift`: the payload is deserialized into a list of Zipkin Thrift spans.
   - `raw`: (logs only) the payload's bytes are inserted as the body of a log record.
-<<<<<<< HEAD
   - `text`: (logs only) the payload are decoded as text and inserted as the body of a log record. By default, it uses UTF-8 to decode. You can use `text_<ENCODING>`, like `text_utf-8`, `text_shift_jis`, etc., to customize this behavior.
   - `json`: (logs only) the payload is decoded as JSON and inserted as the body of a log record.
 - `group_id` (default = otel-collector): The consumer group that receiver will be consuming messages from
-=======
   - `avro`: (logs only) the payload is deserialized into a AVRO record and mapped to a log record.
-- `group_id` (default = otel-collector):  The consumer group that receiver will be consuming messages from
->>>>>>> 75dfcbbb57 ([receiver/kafkareceiver] Add AVRO encoding support)
 - `client_id` (default = otel-collector): The consumer client ID that receiver will use
 - `initial_offset` (default = latest): The initial offset to use if no offset was previously committed. Must be `latest` or `earliest`.
 - `auth`
@@ -92,14 +88,11 @@ The following settings can be optionally configured:
 - `message_marking`:
   - `after`: (default = false) If true, the messages are marked after the pipeline execution
   - `on_error`: (default = false) If false, only the successfully processed messages are marked
-<<<<<<< HEAD
     **Note: this can block the entire partition in case a message processing returns a permanent error**
 - `header_extraction`:
   - `extract_headers` (default = false): Allows user to attach header fields to resource attributes in otel piepline
   - `headers` (default = []): List of headers they'd like to extract from kafka record. 
   **Note: Matching pattern will be `exact`. Regexes are not supported as of now.** 
-=======
-     **Note: this can block the entire partition in case a message processing returns a permanent error**
 - `avro`
   - `schema_url`: Required if encoding set to `avro`, file path to a AVRO schema, prefixed with `file:`
   - `mapping`: Required if encoding set to `avro`, mapping from AVRO fields to log record
@@ -107,12 +100,13 @@ The following settings can be optionally configured:
     Other fields can be mapped to either resource attributes or log record attributes
 
     Example:
-    `mapping:`
-      `message: body`
-      `hostname: resource.attributes.hostname`
-      `class: attributes.class`
+    ```yaml
+    mapping:
+      message: body
+      hostname: resource.attributes.hostname
+      class: attributes.class
+    ```
 
->>>>>>> 75dfcbbb57 ([receiver/kafkareceiver] Add AVRO encoding support)
 Example:
 
 ```yaml
@@ -126,6 +120,7 @@ Example of header extraction:
 ```yaml
 receivers:
   kafka:
+<<<<<<< HEAD
     topic: test
     header_extraction: 
       extract_headers: true
@@ -157,3 +152,21 @@ we will get a log record in collector similar to:
 
 - Here you can see the kafka record header `header1` and `header2` being added to resource attribute.
 - Every **matching** kafka header key is prefixed with `kafka.header` string and attached to resource attributes.
+=======
+    encoding: avro
+    avro:
+      schema_url: "file:folder/example.avro"
+      mapping:
+        timestamp: timestamp
+        properties: resource.attributes.properties
+        hostname: resource.attributes.hostname
+        count: attributes.count
+        message: body
+        nestedRecord: attributes.nestedRecord
+        levelEnum: severityText
+        severity: severityNumber
+```
+
+[beta]: https://github.com/open-telemetry/opentelemetry-collector#beta
+[contrib]: https://github.com/open-telemetry/opentelemetry-collector-releases/tree/main/distributions/otelcol-contrib
+>>>>>>> 5168382138 ([receiver/kafkareceiver] update config and chloggen)
