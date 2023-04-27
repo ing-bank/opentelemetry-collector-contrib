@@ -75,9 +75,11 @@ func defaultLogsUnmarshalers() map[string]LogsUnmarshaler {
 	otlpPb := newPdataLogsUnmarshaler(&plog.ProtoUnmarshaler{}, defaultEncoding)
 	raw := newRawLogsUnmarshaler()
 	text := newTextLogsUnmarshaler()
+	avro := newAVROLogsUnmarshaler()
 	return map[string]LogsUnmarshaler{
 		otlpPb.Encoding(): otlpPb,
 		raw.Encoding():    raw,
 		text.Encoding():   text,
+		avro.Encoding():   avro,
 	}
 }

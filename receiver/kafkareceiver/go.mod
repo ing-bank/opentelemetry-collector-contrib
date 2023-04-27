@@ -7,6 +7,7 @@ require (
 	github.com/apache/thrift v0.18.1
 	github.com/gogo/protobuf v1.3.2
 	github.com/jaegertracing/jaeger v1.41.0
+	github.com/linkedin/goavro/v2 v2.9.8
 	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/kafkaexporter v0.80.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal v0.80.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger v0.80.0
