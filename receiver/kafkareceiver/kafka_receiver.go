@@ -42,6 +42,7 @@ type kafkaTracesConsumer struct {
 	messageMarking    MessageMarking
 	headerExtraction  bool
 	headers           []string
+	limiter           Limiter
 }
 
 // kafkaMetricsConsumer uses sarama to consume and handle messages from kafka.
@@ -122,6 +123,7 @@ func newTracesReceiver(config Config, set receiver.CreateSettings, unmarshalers 
 		messageMarking:    config.MessageMarking,
 		headerExtraction:  config.HeaderExtraction.ExtractHeaders,
 		headers:           config.HeaderExtraction.Headers,
+		limiter:           config.Limiter,
 	}, nil
 }
 
@@ -145,6 +147,7 @@ func (c *kafkaTracesConsumer) Start(_ context.Context, host component.Host) erro
 		autocommitEnabled: c.autocommitEnabled,
 		messageMarking:    c.messageMarking,
 		headerExtractor:   &nopHeaderExtractor{},
+		limiter:           c.limiter,
 	}
 	if c.headerExtraction {
 		consumerGroup.headerExtractor = &headerExtractor{
@@ -162,12 +165,18 @@ func (c *kafkaTracesConsumer) Start(_ context.Context, host component.Host) erro
 }
 
 func (c *kafkaTracesConsumer) consumeLoop(ctx context.Context, handler sarama.ConsumerGroupHandler) error {
+
+	c.limiter.logger = c.settings.Logger
+	go c.limiter.run(c.consumerGroup)
+
 	for {
-		// `Consume` should be called inside an infinite loop, when a
-		// server-side rebalance happens, the consumer session will need to be
-		// recreated to get the new claims
-		if err := c.consumerGroup.Consume(ctx, c.topics, handler); err != nil {
-			c.settings.Logger.Error("Error from consumer", zap.Error(err))
+		if !c.limiter.rateLimited {
+			// `Consume` should be called inside an infinite loop, when a
+			// server-side rebalance happens, the consumer session will need to be
+			// recreated to get the new claims
+			if err := c.consumerGroup.Consume(ctx, c.topics, handler); err != nil {
+				c.settings.Logger.Error("Error from consumer", zap.Error(err))
+			}
 		}
 		// check if context was cancelled, signaling that the consumer should stop
 		if ctx.Err() != nil {
@@ -428,6 +437,7 @@ type tracesConsumerGroupHandler struct {
 	autocommitEnabled bool
 	messageMarking    MessageMarking
 	headerExtractor   HeaderExtractor
+	limiter           Limiter
 }
 
 type metricsConsumerGroupHandler struct {

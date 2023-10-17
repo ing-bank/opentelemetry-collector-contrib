@@ -114,6 +114,16 @@ func createDefaultConfig() component.Config {
 		HeaderExtraction: HeaderExtraction{
 			ExtractHeaders: false,
 		},
+		Limiter: Limiter{
+			Interval:                   5,
+			ReceiverAcceptedSpansRate:  100,
+			ProcessorAcceptedSpansRate: 100,
+			ExporterSentSpansRate:      100,
+			ExporterQueueSizeDiff:      1000,
+			KafkaReceiverMessagesRate:  100,
+			KafkaReceiverLagDiff:       1000,
+			Enabled:                    false,
+		},
 	}
 }
 

@@ -14,6 +14,15 @@ kafka:
     retry:
       max: 10
       backoff: 5s
+  limiter:
+    interval: 5s
+    receiver_accepted_spans_rate: 20
+    processor_accepted_spans_rate: 20
+    exporter_sent_spans_rate: 20
+    exporter_queue_size_diff: 2000
+    kafka_receiver_messages_rate: 20
+    kafka_receiver_lag_diff: 2000
+    enabled: true
 kafka/logs:
   topic: logs
   encoding: direct

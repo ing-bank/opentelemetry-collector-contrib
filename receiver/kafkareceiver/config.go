@@ -69,6 +69,8 @@ type Config struct {
 
 	// Extract headers from kafka records
 	HeaderExtraction HeaderExtraction `mapstructure:"header_extraction"`
+
+	Limiter Limiter `mapstructure:"limiter"`
 }
 
 const (

@@ -1,0 +1,4 @@
+inmemorymetric:
+inmemorymetric/customname:
+  enabled: true
+  metric_expiration: 30s

@@ -59,6 +59,16 @@ func TestLoadConfig(t *testing.T) {
 					Enable:   true,
 					Interval: 1 * time.Second,
 				},
+				Limiter: Limiter{
+					Interval:                   5000000000,
+					ReceiverAcceptedSpansRate:  20,
+					ProcessorAcceptedSpansRate: 20,
+					ExporterSentSpansRate:      20,
+					ExporterQueueSizeDiff:      2000,
+					KafkaReceiverMessagesRate:  20,
+					KafkaReceiverLagDiff:       2000,
+					Enabled:                    true,
+				},
 			},
 		},
 		{
@@ -90,6 +100,16 @@ func TestLoadConfig(t *testing.T) {
 				AutoCommit: AutoCommit{
 					Enable:   true,
 					Interval: 1 * time.Second,
+				},
+				Limiter: Limiter{
+					Interval:                   5,
+					ReceiverAcceptedSpansRate:  100,
+					ProcessorAcceptedSpansRate: 100,
+					ExporterSentSpansRate:      100,
+					ExporterQueueSizeDiff:      1000,
+					KafkaReceiverMessagesRate:  100,
+					KafkaReceiverLagDiff:       1000,
+					Enabled:                    false,
 				},
 			},
 		},
