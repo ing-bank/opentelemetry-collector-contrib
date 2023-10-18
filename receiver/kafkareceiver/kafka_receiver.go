@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/IBM/sarama"
 	"go.opencensus.io/stats"
@@ -148,6 +149,7 @@ func (c *kafkaTracesConsumer) Start(_ context.Context, host component.Host) erro
 		messageMarking:    c.messageMarking,
 		headerExtractor:   &nopHeaderExtractor{},
 		limiter:           c.limiter,
+		//counter:           &limiterMetrics{},
 	}
 	if c.headerExtraction {
 		consumerGroup.headerExtractor = &headerExtractor{
@@ -167,7 +169,7 @@ func (c *kafkaTracesConsumer) Start(_ context.Context, host component.Host) erro
 func (c *kafkaTracesConsumer) consumeLoop(ctx context.Context, handler sarama.ConsumerGroupHandler) error {
 
 	c.limiter.logger = c.settings.Logger
-	go c.limiter.run(c.consumerGroup)
+	go c.limiter.run(ctx, c.consumerGroup)
 
 	for {
 		if !c.limiter.rateLimited {
@@ -438,7 +440,22 @@ type tracesConsumerGroupHandler struct {
 	messageMarking    MessageMarking
 	headerExtractor   HeaderExtractor
 	limiter           Limiter
+	//counter           *limiterMetrics
 }
+
+type limiterMetrics struct {
+	msgCounter int64
+}
+
+func (l *limiterMetrics) increaseMsgCounter() {
+	atomic.AddInt64(&l.msgCounter, 1)
+}
+
+func (l *limiterMetrics) getMsgCounter() float64 {
+	return float64(atomic.LoadInt64(&l.msgCounter))
+}
+
+var metricsCounter = &limiterMetrics{}
 
 type metricsConsumerGroupHandler struct {
 	id           component.ID
@@ -493,6 +510,7 @@ func (c *tracesConsumerGroupHandler) Cleanup(session sarama.ConsumerGroupSession
 
 func (c *tracesConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	c.logger.Info("Starting consumer group", zap.Int32("partition", claim.Partition()))
+
 	if !c.autocommitEnabled {
 		defer session.Commit()
 	}
@@ -516,6 +534,8 @@ func (c *tracesConsumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSe
 				statMessageCount.M(1),
 				statMessageOffset.M(message.Offset),
 				statMessageOffsetLag.M(claim.HighWaterMarkOffset()-message.Offset-1))
+
+			metricsCounter.increaseMsgCounter()
 
 			traces, err := c.unmarshaler.Unmarshal(message.Value)
 			if err != nil {
