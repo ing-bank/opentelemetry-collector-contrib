@@ -19,7 +19,6 @@ type Limiter struct {
 	ExporterSentSpansRate      float64       `mapstructure:"exporter_sent_spans_rate"`
 	ExporterQueueSizeDiff      float64       `mapstructure:"exporter_queue_size_diff"`
 	KafkaReceiverMessagesRate  float64       `mapstructure:"kafka_receiver_messages_rate"`
-	KafkaReceiverLagDiff       float64       `mapstructure:"kafka_receiver_lag_diff"`
 	Enabled                    bool          `mapstructure:"enabled"`
 	logger                     *zap.Logger
 	rateLimited                bool
@@ -43,7 +42,6 @@ func (c Limiter) run(handler sarama.ConsumerGroup) {
 	metricMap["otelcol_exporter_sent_spans"] = limiterValues{currTs: currTs(), limit: c.ExporterSentSpansRate, metricType: pmetric.MetricTypeSum}
 	metricMap["otelcol_exporter_queue_size"] = limiterValues{currTs: currTs(), limit: c.ExporterQueueSizeDiff, metricType: pmetric.MetricTypeGauge}
 	metricMap["otelcol_kafka_receiver_messages"] = limiterValues{currTs: currTs(), limit: c.KafkaReceiverMessagesRate, metricType: pmetric.MetricTypeSum}
-	metricMap["otelcol_kafka_receiver_offset_lag"] = limiterValues{currTs: currTs(), limit: c.KafkaReceiverLagDiff, metricType: pmetric.MetricTypeGauge}
 
 	for {
 		c.logger.Debug("running limiter")
@@ -74,6 +72,7 @@ func (c Limiter) run(handler sarama.ConsumerGroup) {
 
 		if pauseRequired {
 			if c.Enabled {
+				statLimiterPause.M(1)
 				handler.PauseAll()
 				c.rateLimited = true
 			} else {
@@ -85,6 +84,7 @@ func (c Limiter) run(handler sarama.ConsumerGroup) {
 				c.logger.Warn("lifting rate limit, resuming operations")
 			}
 			if c.Enabled {
+				statLimiterPause.M(0)
 				handler.ResumeAll()
 			}
 		}

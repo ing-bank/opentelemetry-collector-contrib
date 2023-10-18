@@ -18,6 +18,8 @@ var (
 
 	statPartitionStart = stats.Int64("kafka_receiver_partition_start", "Number of started partitions", stats.UnitDimensionless)
 	statPartitionClose = stats.Int64("kafka_receiver_partition_close", "Number of finished partitions", stats.UnitDimensionless)
+
+	statLimiterPause = stats.Int64("kafka_receiver_limiter_pause", "Current limiter pause status", stats.UnitDimensionless)
 )
 
 // MetricViews return metric views for Kafka receiver.
@@ -64,11 +66,20 @@ func MetricViews() []*view.View {
 		Aggregation: view.Sum(),
 	}
 
+	lastValueLimiterPause := &view.View{
+		Name:        statLimiterPause.Name(),
+		Measure:     statLimiterPause,
+		Description: statLimiterPause.Description(),
+		TagKeys:     tagKeys,
+		Aggregation: view.LastValue(),
+	}
+
 	return []*view.View{
 		countMessages,
 		lastValueOffset,
 		lastValueOffsetLag,
 		countPartitionStart,
 		countPartitionClose,
+		lastValueLimiterPause,
 	}
 }

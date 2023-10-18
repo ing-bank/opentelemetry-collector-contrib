@@ -17,6 +17,7 @@ func TestMetrics(t *testing.T) {
 		"kafka_receiver_offset_lag",
 		"kafka_receiver_partition_start",
 		"kafka_receiver_partition_close",
+		"kafka_receiver_limiter_pause",
 	}
 	for i, viewName := range viewNames {
 		assert.Equal(t, viewName, metricViews[i].Name)

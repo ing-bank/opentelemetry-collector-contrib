@@ -121,7 +121,6 @@ func createDefaultConfig() component.Config {
 			ExporterSentSpansRate:      100,
 			ExporterQueueSizeDiff:      1000,
 			KafkaReceiverMessagesRate:  100,
-			KafkaReceiverLagDiff:       1000,
 			Enabled:                    false,
 		},
 	}
