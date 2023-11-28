@@ -37,7 +37,7 @@ func TestNewAvroLogsUnmarshaler(t *testing.T) {
 
 	unmarshaler := newAVROLogsUnmarshaler()
 	if err = unmarshaler.Init(
-		"file:testdata/avro/schema1.avro",
+		schema,
 		map[string]string{
 			"timestamp":    "timestamp",
 			"properties":   "resource.attributes.properties",

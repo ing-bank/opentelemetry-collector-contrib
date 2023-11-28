@@ -288,17 +288,6 @@ func (c *kafkaMetricsConsumer) Shutdown(context.Context) error {
 }
 
 func newLogsReceiver(config Config, set receiver.CreateSettings, unmarshalers map[string]LogsUnmarshaler, nextConsumer consumer.Logs) (*kafkaLogsConsumer, error) {
-	unmarshaler := unmarshalers[config.Encoding]
-	if unmarshaler == nil {
-		return nil, errUnrecognizedEncoding
-	}
-
-	if unmarshaler.Encoding() == avroEncoding {
-		if err := configureAvroLogsUnmarshaler(unmarshaler.(*avroLogsUnmarshaler), config); err != nil {
-			return nil, err
-		}
-	}
-
 	c := sarama.NewConfig()
 	c.ClientID = config.ClientID
 	c.Metadata.Full = config.Metadata.Full
@@ -311,7 +300,7 @@ func newLogsReceiver(config Config, set receiver.CreateSettings, unmarshalers ma
 	} else {
 		return nil, err
 	}
-	unmarshaler, err := getLogsUnmarshaler(config.Encoding, unmarshalers)
+	unmarshaler, err := getLogsUnmarshaler(&config, unmarshalers)
 	if err != nil {
 		return nil, err
 	}
@@ -343,11 +332,11 @@ func newLogsReceiver(config Config, set receiver.CreateSettings, unmarshalers ma
 	}, nil
 }
 
-func getLogsUnmarshaler(encoding string, unmarshalers map[string]LogsUnmarshaler) (LogsUnmarshaler, error) {
+func getLogsUnmarshaler(config *Config, unmarshalers map[string]LogsUnmarshaler) (LogsUnmarshaler, error) {
 	var enc string
-	unmarshaler, ok := unmarshalers[encoding]
+	unmarshaler, ok := unmarshalers[config.Encoding]
 	if !ok {
-		split := strings.SplitN(encoding, "_", 2)
+		split := strings.SplitN(config.Encoding, "_", 2)
 		prefix := split[0]
 		if len(split) > 1 {
 			enc = split[1]
@@ -367,17 +356,23 @@ func getLogsUnmarshaler(encoding string, unmarshalers map[string]LogsUnmarshaler
 		return unmarshaler, nil
 	}
 
+	if unmarshaler.Encoding() == avroEncoding {
+		if err := configureAvroLogsUnmarshaler(unmarshaler.(*avroLogsUnmarshaler), config); err != nil {
+			return nil, err
+		}
+	}
+
 	return unmarshaler, nil
 }
 
-func configureAvroLogsUnmarshaler(unmarshaler *avroLogsUnmarshaler, config Config) error {
-	if config.Avro.SchemaURL == "" {
+func configureAvroLogsUnmarshaler(unmarshaler *avroLogsUnmarshaler, config *Config) error {
+	if config.Avro.Schema == "" {
 		return errNoAvroSchemaURL
 	}
 	if len(config.Avro.Mapping) == 0 {
 		return errNoAvroMapping
 	}
-	if err := unmarshaler.Init(config.Avro.SchemaURL, config.Avro.Mapping); err != nil {
+	if err := unmarshaler.Init(config.Avro.Schema, config.Avro.Mapping); err != nil {
 		return err
 	}
 	return nil

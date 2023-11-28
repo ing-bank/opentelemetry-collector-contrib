@@ -120,19 +120,15 @@ func setAttribute(attributes *pcommon.Map, key string, value interface{}) {
 	_ = attribute.FromRaw(value)
 }
 
-func (a *avroLogsUnmarshaler) Init(schemaURL string, mapping map[string]string) error {
+func (a *avroLogsUnmarshaler) Init(schema string, mapping map[string]string) error {
 	a.mapping = mapping
 
 	var schemaDeserializer avroDeserializer
 	var err error
 
-	if strings.HasPrefix(schemaURL, avroSchemaPrefixFile) {
-		schemaFilePath := strings.TrimPrefix(schemaURL, avroSchemaPrefixFile)
-		schemaFilePath = filepath.Clean(schemaFilePath)
-		schemaDeserializer, err = newAVROFileSchemaDeserializer(schemaFilePath)
-	} else {
-		// TODO: schema registry deserializer
-		err = fmt.Errorf("unimplemented schema url prefix")
+	schemaDeserializer, err = newAVROFileSchemaDeserializer(schema)
+	if err != nil {
+		return err
 	}
 
 	a.deserializer = schemaDeserializer
@@ -148,12 +144,7 @@ type avroFileSchemaDeserializer struct {
 	codec *goavro.Codec
 }
 
-func newAVROFileSchemaDeserializer(path string) (avroDeserializer, error) {
-	schema, err := loadAVROSchemaFromFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read avro schema from file: %w", err)
-	}
-
+func newAVROFileSchemaDeserializer(schema string) (avroDeserializer, error) {
 	codec, err := goavro.NewCodec(schema)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create avro codec: %w", err)

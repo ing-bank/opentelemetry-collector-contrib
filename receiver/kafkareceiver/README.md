@@ -115,12 +115,30 @@ receivers:
     protocol_version: 2.0.0
 ```
 
+Example of using Avro as a log format:
+
+```yaml
+receivers:
+  kafka:
+    encoding: avro
+    avro:
+      schema_url: "file:folder/example.avro"
+      mapping:
+        timestamp: timestamp
+        properties: resource.attributes.properties
+        hostname: resource.attributes.hostname
+        count: attributes.count
+        message: body
+        nestedRecord: attributes.nestedRecord
+        levelEnum: severityText
+        severity: severityNumber
+```
+
 Example of header extraction:
 
 ```yaml
 receivers:
   kafka:
-<<<<<<< HEAD
     topic: test
     header_extraction: 
       extract_headers: true
@@ -152,21 +170,3 @@ we will get a log record in collector similar to:
 
 - Here you can see the kafka record header `header1` and `header2` being added to resource attribute.
 - Every **matching** kafka header key is prefixed with `kafka.header` string and attached to resource attributes.
-=======
-    encoding: avro
-    avro:
-      schema_url: "file:folder/example.avro"
-      mapping:
-        timestamp: timestamp
-        properties: resource.attributes.properties
-        hostname: resource.attributes.hostname
-        count: attributes.count
-        message: body
-        nestedRecord: attributes.nestedRecord
-        levelEnum: severityText
-        severity: severityNumber
-```
-
-[beta]: https://github.com/open-telemetry/opentelemetry-collector#beta
-[contrib]: https://github.com/open-telemetry/opentelemetry-collector-releases/tree/main/distributions/otelcol-contrib
->>>>>>> 5168382138 ([receiver/kafkareceiver] update config and chloggen)
