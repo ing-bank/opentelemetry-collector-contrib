@@ -572,4 +572,42 @@ If you disable invert decisions, you can make use of drop policy to explicitly n
 sampling_policy_evaluation_error
 ```
 
+### Not sampled traces forwarding with added context
+
+Sometimes you want to sample traces, but instead of throwing away not sampled traces, you want to store them with an
+updated time to live.
+For this scenario the nok(Not ok) config has been added.
+Using nok, you can set the following items:
+
+```yaml
+nok:
+  enabled: true
+  context_key: tenant
+  context_value: -ok
+  action: postfix
+```
+
+```yaml
+nok:
+  enabled: true
+  context_key: tenant
+  context_value: prd-ok
+  action: replace
+```
+
+#### Actions
+
+The supported actions are:
+
+| type    | description                                                                                                |
+|---------|------------------------------------------------------------------------------------------------------------|
+| replace | Replaces the value in the context, if another value was stored beforehand, this value will be overwritten. |
+| prefix  | Appends a value in front of a value extracted from the context                                             |
+| postfix | Appends a value at the tail end of a value extracted from the context                                      |
+
+
+#### example
+
+// TODO
+
 [documentation_md]: ./documentation.md
