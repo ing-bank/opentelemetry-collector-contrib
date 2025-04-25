@@ -614,16 +614,16 @@ Using nok, you can set the following items:
 ```yaml
 nok:
   enabled: true
-  context_key: tenant
-  context_value: -ok
+  context_key: nok_tenant
+  context_value: -nok
   action: postfix
 ```
 
 ```yaml
 nok:
   enabled: true
-  context_key: tenant
-  context_value: prd-ok
+  context_key: nok_tenant
+  context_value: prd-nok
   action: replace
 ```
 
@@ -640,6 +640,40 @@ The supported actions are:
 
 #### example
 
-// TODO
+```yaml
+receivers:
+  otlp:
+exporters:
+  otlp:
+extentions:
+  headers_setter:
+    headers:
+      - action: insert
+        key: X-Scope-OrgID
+        from_context: nok_tenant
+        default_value: prd
+processors:
+  tail_sampling:
+    decision_wait: 10s
+    num_traces: 100
+    expected_new_traces_per_sec: 10
+    decision_cache:
+      sampled_cache_size: 100_000
+      non_sampled_cache_size: 100_000
+    nok:
+      enabled: true
+      context_key: nok_tenant
+      context_value: prd-nok
+      action: replace
+    policies:
+      [...]
+  service:
+    extensions: [headers_setter]
+    pipelines:
+      traces:
+        receivers: [otlp]
+        processors: [tail_sampling]
+        exporters: [otlp]
+```
 
 [documentation_md]: ./documentation.md
