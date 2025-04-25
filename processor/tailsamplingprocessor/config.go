@@ -237,6 +237,33 @@ type DecisionCacheConfig struct {
 	NonSampledCacheSize int `mapstructure:"non_sampled_cache_size"`
 }
 
+type ActionValue string
+
+const (
+	PREFIX  ActionValue = "prefix"
+	POSTFIX ActionValue = "postfix"
+	REPLACE ActionValue = "replace"
+)
+
+type NokConfig struct {
+	// enabled sends the not sampled spans to the exporter as well;
+	// nok events are marked,
+	// which can be picked up downstream(middleware extension) to alter the flow for these events.
+	enabled bool `mapstructure:"enabled"`
+	// ContextKey lets the user define the key used in the context object.
+	ContextKey string `mapstructure:"context_key"`
+	// ContextValue lets the user define a value used in the context object.
+	// This value acts as the base value which can be updated with an Action.
+	ContextValue string `mapstructure:"context_value"`
+	// DefaultValue is a backup value when no value can be found using the pre and postfix action types.
+	DefaultValue string `mapstructure:"default_value"`
+	// Action describes how the context value will be updated.
+	// When this action is defined,
+	// it is expected that a value is already passed through the context.
+	// This value will be updated based on the selected action.
+	Action ActionValue `mapstructure:"action"`
+}
+
 // Config holds the configuration for tail-based sampling.
 type Config struct {
 	// DecisionWait is the desired wait time from the arrival of the first span of
@@ -253,6 +280,9 @@ type Config struct {
 	PolicyCfgs []PolicyCfg `mapstructure:"policies"`
 	// DecisionCache holds configuration for the decision cache(s)
 	DecisionCache DecisionCacheConfig `mapstructure:"decision_cache"`
+	// Nok allows for sampling the not sampled spans with different configuration.
+	// This lets you control what to do with these spans instead of throwing them away.
+	Nok NokConfig `mapstructure:"nok"`
 	// Options allows for additional configuration of the tail-based sampling processor in code.
 	Options []Option `mapstructure:"-"`
 }

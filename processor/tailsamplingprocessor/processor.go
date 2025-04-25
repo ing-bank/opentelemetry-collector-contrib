@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go.opentelemetry.io/collector/client"
 	"math"
 	"runtime"
 	"sync"
@@ -51,6 +52,7 @@ type tailSamplingSpanProcessor struct {
 	logger    *zap.Logger
 
 	nextConsumer      consumer.Traces
+	nok               NokConfig
 	maxNumTraces      uint64
 	policies          []*policy
 	idToTrace         sync.Map
@@ -110,6 +112,9 @@ func newTracesProcessor(ctx context.Context, set processor.Settings, nextConsume
 			return nil, err
 		}
 	}
+	if cfg.Nok.enabled && cfg.Nok.ContextKey == "" {
+		cfg.Nok.ContextKey = "nok"
+	}
 
 	tsp := &tailSamplingSpanProcessor{
 		ctx:               ctx,
@@ -122,6 +127,7 @@ func newTracesProcessor(ctx context.Context, set processor.Settings, nextConsume
 		logger:            telemetrySettings.Logger,
 		numTracesOnMap:    &atomic.Uint64{},
 		deleteChan:        make(chan pcommon.TraceID, cfg.NumTraces),
+		nok:               cfg.Nok,
 	}
 	tsp.policyTicker = &timeutils.PolicyTicker{OnTickFunc: tsp.samplingPolicyOnTick}
 
@@ -366,7 +372,7 @@ func (tsp *tailSamplingSpanProcessor) samplingPolicyOnTick() {
 		case sampling.Sampled:
 			tsp.releaseSampledTrace(ctx, id, allSpans)
 		case sampling.NotSampled:
-			tsp.releaseNotSampledTrace(id)
+			tsp.releaseNotSampledTrace(ctx, id, allSpans)
 		}
 	}
 
@@ -559,7 +565,9 @@ func (tsp *tailSamplingSpanProcessor) processTraces(resourceSpans ptrace.Resourc
 			appendToTraces(traceTd, resourceSpans, spans)
 			tsp.releaseSampledTrace(tsp.ctx, id, traceTd)
 		case sampling.NotSampled:
-			tsp.releaseNotSampledTrace(id)
+			traceTd := ptrace.NewTraces()
+			appendToTraces(traceTd, resourceSpans, spans)
+			tsp.releaseNotSampledTrace(tsp.ctx, id, traceTd)
 		default:
 			tsp.logger.Warn("Unexpected sampling decision", zap.Int("decision", int(finalDecision)))
 		}
@@ -623,11 +631,56 @@ func (tsp *tailSamplingSpanProcessor) releaseSampledTrace(ctx context.Context, i
 
 // releaseNotSampledTrace adds the trace ID to the cache of not sampled trace
 // IDs. If the trace ID is cached, it deletes the spans from the internal map.
-func (tsp *tailSamplingSpanProcessor) releaseNotSampledTrace(id pcommon.TraceID) {
+func (tsp *tailSamplingSpanProcessor) releaseNotSampledTrace(ctx context.Context, id pcommon.TraceID, td ptrace.Traces) {
 	tsp.nonSampledIDCache.Put(id, true)
+
+	// not sampled results get forwarded to a separate consumer if tsp.forwardNok is set to true
+	if tsp.nok.enabled {
+		nCtx := tsp.setContextValue(ctx)
+		if err := tsp.nextConsumer.ConsumeTraces(nCtx, td); err != nil {
+			tsp.logger.Warn(
+				"Error sending spans to destination",
+				zap.Error(err))
+		}
+	}
 	_, ok := tsp.nonSampledIDCache.Get(id)
 	if ok {
 		tsp.dropTrace(id, time.Now())
+	}
+}
+
+func (tsp *tailSamplingSpanProcessor) setContextValue(ctx context.Context) context.Context {
+	nc := tsp.nok
+	m := make(map[string][]string, 1)
+	switch nc.Action {
+	case PREFIX:
+		val := client.FromContext(ctx).Metadata.Get(nc.ContextKey)
+		value := tsp.getMetadata(val)
+		m[nc.ContextKey] = append(m[nc.ContextKey], nc.ContextValue+value)
+	case POSTFIX:
+		val := client.FromContext(ctx).Metadata.Get(nc.ContextKey)
+		value := tsp.getMetadata(val)
+		m[nc.ContextKey] = append(m[nc.ContextKey], value+nc.ContextValue)
+	case REPLACE:
+		fallthrough
+	default:
+		m[nc.ContextKey] = append(m[nc.ContextKey], nc.ContextValue)
+	}
+	return client.NewContext(ctx, client.Info{Metadata: client.NewMetadata(m)})
+}
+
+func (tsp *tailSamplingSpanProcessor) getMetadata(val []string) string {
+	switch {
+	case len(val) == 0:
+		tsp.logger.Warn("nok: can not extract value based on nok.context_key from the context. metadata is empty")
+		return tsp.nok.DefaultValue
+	case len(val) > 1:
+		tsp.logger.Warn(
+			"nok: can not extract value based on nok.context_key from the context. metadata has more than one value",
+			zap.Strings("metadata", val))
+		return tsp.nok.DefaultValue
+	default:
+		return val[0]
 	}
 }
 
