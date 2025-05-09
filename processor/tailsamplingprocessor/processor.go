@@ -113,16 +113,9 @@ func newTracesProcessor(ctx context.Context, set processor.Settings, nextConsume
 			return nil, err
 		}
 	}
-	if cfg.Nok.enabled && cfg.Nok.ContextKey == "" {
+	if cfg.Nok.Enabled && cfg.Nok.ContextKey == "" {
 		cfg.Nok.ContextKey = "nok"
 	}
-	//TODO remove debug line
-	telemetrySettings.Logger.Debug("nok config settings",
-		zap.Bool("nok_enabled", cfg.Nok.enabled),
-		zap.String("nok_context_key", cfg.Nok.ContextKey),
-		zap.String("nok_context_value", cfg.Nok.ContextValue),
-		zap.String("nok_default_value", cfg.Nok.DefaultValue),
-	)
 
 	tsp := &tailSamplingSpanProcessor{
 		ctx:               ctx,
@@ -652,7 +645,7 @@ func (tsp *tailSamplingSpanProcessor) releaseNotSampledTrace(ctx context.Context
 	tsp.nonSampledIDCache.Put(id, true)
 
 	// not sampled results get forwarded to a separate consumer if tsp.forwardNok is set to true
-	if tsp.nok.enabled {
+	if tsp.nok.Enabled {
 		nCtx := tsp.setContextValue(ctx)
 		if err := tsp.nextConsumer.ConsumeTraces(nCtx, td); err != nil {
 			tsp.logger.Warn(

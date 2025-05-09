@@ -255,10 +255,10 @@ const (
 )
 
 type NokConfig struct {
-	// enabled sends the not sampled spans to the exporter as well;
+	// Enabled sends the not sampled spans to the exporter as well;
 	// nok events are marked,
 	// which can be picked up downstream(middleware extension) to alter the flow for these events.
-	enabled bool `mapstructure:"enabled"`
+	Enabled bool `mapstructure:"enabled"`
 	// ContextKey lets the user define the key used in the context object.
 	ContextKey string `mapstructure:"context_key"`
 	// ContextValue lets the user define a value used in the context object.
