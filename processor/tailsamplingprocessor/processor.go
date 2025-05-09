@@ -94,7 +94,7 @@ type Option func(*tailSamplingSpanProcessor)
 // configuration.
 func newTracesProcessor(ctx context.Context, set processor.Settings, nextConsumer consumer.Traces, cfg Config) (processor.Traces, error) {
 	telemetrySettings := set.TelemetrySettings
-	telemetry, err := metadata.NewTelemetryBuilder(telemetrySettings)
+	telemetryBuilder, err := metadata.NewTelemetryBuilder(telemetrySettings)
 	if err != nil {
 		return nil, err
 	}
@@ -116,11 +116,18 @@ func newTracesProcessor(ctx context.Context, set processor.Settings, nextConsume
 	if cfg.Nok.enabled && cfg.Nok.ContextKey == "" {
 		cfg.Nok.ContextKey = "nok"
 	}
+	//TODO remove debug line
+	telemetrySettings.Logger.Debug("nok config settings",
+		zap.Bool("nok_enabled", cfg.Nok.enabled),
+		zap.String("nok_context_key", cfg.Nok.ContextKey),
+		zap.String("nok_context_value", cfg.Nok.ContextValue),
+		zap.String("nok_default_value", cfg.Nok.DefaultValue),
+	)
 
 	tsp := &tailSamplingSpanProcessor{
 		ctx:               ctx,
 		set:               set,
-		telemetry:         telemetry,
+		telemetry:         telemetryBuilder,
 		nextConsumer:      nextConsumer,
 		maxNumTraces:      cfg.NumTraces,
 		sampledIDCache:    sampledDecisions,
