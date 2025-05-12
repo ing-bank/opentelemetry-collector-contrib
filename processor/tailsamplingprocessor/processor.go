@@ -666,15 +666,23 @@ func (tsp *tailSamplingSpanProcessor) setContextValue(ctx context.Context) conte
 	case PREFIX:
 		val := client.FromContext(ctx).Metadata.Get(nc.ContextKey)
 		value := tsp.getMetadata(val)
+		if _, exists := m[nc.ContextKey]; !exists || value == "" {
+			m[nc.ContextKey] = []string{nc.ContextValue}
+			break
+		}
 		m[nc.ContextKey] = append(m[nc.ContextKey], nc.ContextValue+value)
 	case POSTFIX:
 		val := client.FromContext(ctx).Metadata.Get(nc.ContextKey)
 		value := tsp.getMetadata(val)
+		if _, exists := m[nc.ContextKey]; !exists || value == "" {
+			m[nc.ContextKey] = []string{nc.ContextValue}
+			break
+		}
 		m[nc.ContextKey] = append(m[nc.ContextKey], value+nc.ContextValue)
 	case REPLACE:
 		fallthrough
 	default:
-		m[nc.ContextKey] = append(m[nc.ContextKey], nc.ContextValue)
+		m[nc.ContextKey] = []string{nc.ContextValue}
 	}
 	return client.NewContext(ctx, client.Info{Metadata: client.NewMetadata(m)})
 }
