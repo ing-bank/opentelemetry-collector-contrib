@@ -26,6 +26,7 @@ require (
 )
 
 require (
+	go.opentelemetry.io/collector/client v1.31.1-0.20250505152726-56c7da210783
 	go.opentelemetry.io/collector/component/componenttest v0.125.1-0.20250505155216-829157cef7bb
 	go.opentelemetry.io/collector/consumer/consumertest v0.125.1-0.20250505155216-829157cef7bb
 	go.opentelemetry.io/collector/processor/processortest v0.125.1-0.20250505155216-829157cef7bb
