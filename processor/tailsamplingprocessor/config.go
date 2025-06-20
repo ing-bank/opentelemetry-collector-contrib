@@ -294,4 +294,6 @@ type Config struct {
 	Nok NokConfig `mapstructure:"nok"`
 	// Options allows for additional configuration of the tail-based sampling processor in code.
 	Options []Option `mapstructure:"-"`
+	// Make decision as soon as a policy matches
+	SampleOnFirstMatch bool `mapstructure:"sample_on_first_match"`
 }
