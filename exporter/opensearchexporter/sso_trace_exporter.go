@@ -6,8 +6,10 @@ package opensearchexporter // import "github.com/open-telemetry/opentelemetry-co
 import (
 	"context"
 	"net/http"
+	"time"
 
-	"github.com/opensearch-project/opensearch-go/v2"
+	"github.com/opensearch-project/opensearch-go/v4"
+	"github.com/opensearch-project/opensearch-go/v4/opensearchapi"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/exporter"
@@ -16,33 +18,47 @@ import (
 )
 
 type ssoTracesExporter struct {
-	client       *opensearch.Client
-	Namespace    string
-	Dataset      string
-	bulkAction   string
-	model        mappingModel
-	httpSettings confighttp.ClientConfig
-	telemetry    component.TelemetrySettings
+	client        *opensearchapi.Client
+	Namespace     string
+	Dataset       string
+	bulkAction    string
+	model         mappingModel
+	httpSettings  confighttp.ClientConfig
+	telemetry     component.TelemetrySettings
+	config        *Config
+	indexResolver *indexResolver
 }
 
 func newSSOTracesExporter(cfg *Config, set exporter.Settings) *ssoTracesExporter {
 	model := &encodeModel{
 		dataset:   cfg.Dataset,
 		namespace: cfg.Namespace,
+		otelV1:    cfg.MappingsSettings.Mode == MappingOTelV1.String(),
+	}
+
+	defaultPrefix := "ss4o_traces"
+	dataset := cfg.Dataset
+	namespace := cfg.Namespace
+	if cfg.MappingsSettings.Mode == MappingOTelV1.String() {
+		defaultPrefix = "otel-v1-apm-span"
+		dataset = ""
+		namespace = ""
 	}
 
 	return &ssoTracesExporter{
-		telemetry:    set.TelemetrySettings,
-		Namespace:    cfg.Namespace,
-		Dataset:      cfg.Dataset,
-		bulkAction:   cfg.BulkAction,
-		model:        model,
-		httpSettings: cfg.ClientConfig,
+		telemetry:     set.TelemetrySettings,
+		Namespace:     cfg.Namespace,
+		Dataset:       cfg.Dataset,
+		bulkAction:    cfg.BulkAction,
+		model:         model,
+		httpSettings:  cfg.ClientConfig,
+		config:        cfg,
+		indexResolver: newIndexResolver(defaultPrefix, dataset, namespace),
 	}
 }
 
 func (s *ssoTracesExporter) Start(ctx context.Context, host component.Host) error {
-	httpClient, err := s.httpSettings.ToClient(ctx, host, s.telemetry)
+	httpClient, err := s.httpSettings.ToClient(ctx, host.GetExtensions(), s.telemetry)
 	if err != nil {
 		return err
 	}
@@ -53,32 +69,41 @@ func (s *ssoTracesExporter) Start(ctx context.Context, host component.Host) erro
 	}
 
 	s.client = client
+
+	if s.config.MappingsSettings.ManageIndexTemplate {
+		tm := newTemplateManager(client, s.telemetry.Logger)
+		tm.ensureTemplates(ctx)
+	}
+
 	return nil
 }
 
 func (s *ssoTracesExporter) pushTraceData(ctx context.Context, td ptrace.Traces) error {
-	indexer := newTraceBulkIndexer(s.Dataset, s.Namespace, s.bulkAction, s.model)
+	indexer := newTraceBulkIndexer(s.bulkAction, s.model, s.config.Pipeline)
 	startErr := indexer.start(s.client)
 	if startErr != nil {
 		return startErr
 	}
-	indexer.submit(ctx, td)
+	// Use timestamp for index resolution
+	traceTimestamp := time.Now()
+	indexer.submit(ctx, td, s.indexResolver, s.config, traceTimestamp)
 	indexer.close(ctx)
 	return indexer.joinedError()
 }
 
-func newOpenSearchClient(endpoint string, httpClient *http.Client, logger *zap.Logger) (*opensearch.Client, error) {
-	transport := httpClient.Transport
-	return opensearch.NewClient(opensearch.Config{
-		Transport: transport,
+func newOpenSearchClient(endpoint string, httpClient *http.Client, logger *zap.Logger) (*opensearchapi.Client, error) {
+	return opensearchapi.NewClient(opensearchapi.Config{
+		Client: opensearch.Config{
+			Transport: httpClient.Transport,
 
-		// configure connection setup
-		Addresses:    []string{endpoint},
-		DisableRetry: true,
+			// configure connection setup
+			Addresses:    []string{endpoint},
+			DisableRetry: true,
 
-		// configure internal metrics reporting and logging
-		EnableMetrics:     false, // TODO
-		EnableDebugLogger: false, // TODO
-		Logger:            newClientLogger(logger),
+			// configure internal metrics reporting and logging
+			EnableMetrics:     false, // TODO
+			EnableDebugLogger: false, // TODO
+			Logger:            newClientLogger(logger),
+		},
 	})
 }

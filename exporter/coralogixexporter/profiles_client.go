@@ -36,7 +36,8 @@ type profilesExporter struct {
 }
 
 func (e *profilesExporter) start(ctx context.Context, host component.Host) (err error) {
-	wrapper := &signalConfigWrapper{config: &e.config.Profiles}
+	transportConfig := TransportConfig{ClientConfig: e.config.Profiles}
+	wrapper := &signalConfigWrapper{config: &transportConfig}
 	if err := e.startSignalExporter(ctx, host, wrapper); err != nil {
 		return err
 	}
@@ -69,6 +70,7 @@ func (e *profilesExporter) pushProfiles(ctx context.Context, md pprofile.Profile
 			zap.Int64("rejected_profiles", partialSuccess.RejectedProfiles()),
 		)
 	}
+	e.rateError.errorCount.Store(0)
 	return nil
 }
 

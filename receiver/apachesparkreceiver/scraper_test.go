@@ -4,7 +4,6 @@
 package apachesparkreceiver
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -73,7 +72,7 @@ func TestScraper(t *testing.T) {
 				},
 				ApplicationNames:     []string{"local-123", "local-987"},
 				ClientConfig:         clientConfig,
-				MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig(),
+				MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig(),
 			},
 			expectedErr: errNoMatchingAllowedApps,
 		},
@@ -219,7 +218,7 @@ func TestScraper(t *testing.T) {
 				},
 				ApplicationNames:     []string{"streaming-example"},
 				ClientConfig:         clientConfig,
-				MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig(),
+				MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig(),
 			},
 			expectedErr: nil,
 		},
@@ -230,7 +229,7 @@ func TestScraper(t *testing.T) {
 			scraper := newSparkScraper(zap.NewNop(), tc.config, receivertest.NewNopSettings(metadata.Type))
 			scraper.client = tc.setupMockClient(t)
 
-			actualMetrics, err := scraper.scrape(context.Background())
+			actualMetrics, err := scraper.scrape(t.Context())
 
 			if tc.expectedErr == nil {
 				require.NoError(t, err)

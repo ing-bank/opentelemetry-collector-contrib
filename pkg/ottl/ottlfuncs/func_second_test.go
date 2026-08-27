@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 )
@@ -22,7 +23,7 @@ func Test_Second(t *testing.T) {
 		{
 			name: "some time",
 			time: &ottl.StandardTimeGetter[any]{
-				Getter: func(_ context.Context, _ any) (any, error) {
+				Getter: func(context.Context, any) (any, error) {
 					return time.Date(2006, time.January, 2, 15, 4, 5, 0, time.UTC), nil
 				},
 			},
@@ -32,9 +33,9 @@ func Test_Second(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			exprFunc, err := Second(tt.time)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			result, err := exprFunc(nil, nil)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -42,13 +43,49 @@ func Test_Second(t *testing.T) {
 
 func Test_Second_Error(t *testing.T) {
 	var getter ottl.TimeGetter[any] = &ottl.StandardTimeGetter[any]{
-		Getter: func(_ context.Context, _ any) (any, error) {
+		Getter: func(context.Context, any) (any, error) {
 			return "not a time", nil
 		},
 	}
 	exprFunc, err := Second(getter)
-	assert.NoError(t, err)
-	result, err := exprFunc(context.Background(), nil)
+	require.NoError(t, err)
+	result, err := exprFunc(t.Context(), nil)
 	assert.Nil(t, result)
 	assert.Error(t, err)
+}
+
+func Test_SecondFactory(t *testing.T) {
+	t.Run("factory creation", func(t *testing.T) {
+		factory := NewSecondFactory[any]()
+		assert.Equal(t, "Second", factory.Name())
+	})
+
+	t.Run("default arguments", func(t *testing.T) {
+		factory := NewSecondFactory[any]()
+		args := factory.CreateDefaultArguments()
+
+		assert.IsType(t, &SecondArguments[any]{}, args)
+		assertArgumentFieldNames(t, args, []string{"Time"})
+	})
+
+	t.Run("function creation", func(t *testing.T) {
+		factory := NewSecondFactory[any]()
+		args := factory.CreateDefaultArguments()
+		secondArgs, ok := args.(*SecondArguments[any])
+		require.True(t, ok)
+		secondArgs.Time = &ottl.StandardTimeGetter[any]{
+			Getter: func(context.Context, any) (any, error) {
+				return time.Now(), nil
+			},
+		}
+
+		fn, err := factory.CreateFunction(ottl.FunctionContext{}, args)
+		require.NoError(t, err)
+		assert.NotNil(t, fn)
+	})
+
+	t.Run("invalid arguments type", func(t *testing.T) {
+		_, err := createSecondFunction[any](ottl.FunctionContext{}, "invalid args")
+		assert.ErrorContains(t, err, "SecondFactory args must be of type *SecondArguments[K]")
+	})
 }

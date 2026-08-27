@@ -6,7 +6,6 @@
 package huaweicloudcesreceiver // import "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/huaweicloudcesreceiver"
 
 import (
-	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -66,40 +65,40 @@ func TestHuaweiCloudCESReceiverIntegration(t *testing.T) {
 	}, nil)
 
 	mc.On("ShowMetricData", mock.Anything).Return(&model.ShowMetricDataResponse{
-		MetricName: stringPtr("cpu_util"),
+		MetricName: new("cpu_util"),
 		Datapoints: &[]model.Datapoint{
 			{
-				Average:   float64Ptr(10),
+				Average:   new(float64(10)),
 				Timestamp: 1556625610000,
 			},
 			{
-				Average:   float64Ptr(20),
+				Average:   new(float64(20)),
 				Timestamp: 1556625715000,
 			},
 		},
 	}, nil).Times(1)
 	mc.On("ShowMetricData", mock.Anything).Return(&model.ShowMetricDataResponse{
-		MetricName: stringPtr("mem_util"),
+		MetricName: new("mem_util"),
 		Datapoints: &[]model.Datapoint{
 			{
-				Average:   float64Ptr(30),
+				Average:   new(float64(30)),
 				Timestamp: 1556625610000,
 			},
 			{
-				Average:   float64Ptr(40),
+				Average:   new(float64(40)),
 				Timestamp: 1556625715000,
 			},
 		},
 	}, nil).Times(1)
 	mc.On("ShowMetricData", mock.Anything).Return(&model.ShowMetricDataResponse{
-		MetricName: stringPtr("upstream_bandwidth_usage"),
+		MetricName: new("upstream_bandwidth_usage"),
 		Datapoints: &[]model.Datapoint{
 			{
-				Average:   float64Ptr(50),
+				Average:   new(float64(50)),
 				Timestamp: 1556625610000,
 			},
 			{
-				Average:   float64Ptr(60),
+				Average:   new(float64(60)),
 				Timestamp: 1556625715000,
 			},
 		},
@@ -108,12 +107,12 @@ func TestHuaweiCloudCESReceiverIntegration(t *testing.T) {
 	sink := &consumertest.MetricsSink{}
 	cfg := createDefaultConfig().(*Config)
 	cfg.RegionID = "us-east-2"
-	cfg.CollectionInterval = time.Second
+	cfg.ControllerConfig.CollectionInterval = time.Second
 	cfg.ProjectID = "my-project"
 	cfg.Filter = "average"
 
 	recv, err := NewFactory().CreateMetrics(
-		context.Background(),
+		t.Context(),
 		receivertest.NewNopSettings(metadata.Type),
 		cfg,
 		sink,
@@ -124,14 +123,14 @@ func TestHuaweiCloudCESReceiverIntegration(t *testing.T) {
 	require.True(t, ok)
 	rcvr.client = mc
 
-	err = recv.Start(context.Background(), componenttest.NewNopHost())
+	err = recv.Start(t.Context(), componenttest.NewNopHost())
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
 		return sink.DataPointCount() > 0
 	}, 5*time.Second, 10*time.Millisecond)
 
-	err = recv.Shutdown(context.Background())
+	err = recv.Shutdown(t.Context())
 	require.NoError(t, err)
 
 	metrics := sink.AllMetrics()[0]

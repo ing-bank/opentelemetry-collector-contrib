@@ -39,8 +39,8 @@ type haproxyScraper struct {
 
 func (s *haproxyScraper) scrape(ctx context.Context) (pmetric.Metrics, error) {
 	var records []map[string]string
-	if u, notURLerr := url.Parse(s.cfg.Endpoint); notURLerr == nil && strings.HasPrefix(u.Scheme, "http") {
-		resp, err := s.httpClient.Get(s.cfg.Endpoint + ";csv")
+	if u, notURLerr := url.Parse(s.cfg.ClientConfig.Endpoint); notURLerr == nil && strings.HasPrefix(u.Scheme, "http") {
+		resp, err := s.httpClient.Get(s.cfg.ClientConfig.Endpoint + ";csv")
 		if err != nil {
 			return pmetric.NewMetrics(), err
 		}
@@ -55,7 +55,7 @@ func (s *haproxyScraper) scrape(ctx context.Context) (pmetric.Metrics, error) {
 		}
 	} else {
 		var d net.Dialer
-		c, err := d.DialContext(ctx, "unix", s.cfg.Endpoint)
+		c, err := d.DialContext(ctx, "unix", s.cfg.ClientConfig.Endpoint)
 		if err != nil {
 			return pmetric.NewMetrics(), err
 		}
@@ -80,6 +80,16 @@ func (s *haproxyScraper) scrape(ctx context.Context) (pmetric.Metrics, error) {
 
 	now := pcommon.NewTimestampFromTime(time.Now())
 	for _, record := range records {
+		if record["act"] != "" {
+			if err := s.mb.RecordHaproxyActiveDataPoint(now, record["act"]); err != nil {
+				scrapeErrors = append(scrapeErrors, err)
+			}
+		}
+		if record["bck"] != "" {
+			if err := s.mb.RecordHaproxyBackupDataPoint(now, record["bck"]); err != nil {
+				scrapeErrors = append(scrapeErrors, err)
+			}
+		}
 		if record["scur"] != "" {
 			if err := s.mb.RecordHaproxySessionsCountDataPoint(now, record["scur"]); err != nil {
 				scrapeErrors = append(scrapeErrors, err)
@@ -243,10 +253,36 @@ func (s *haproxyScraper) scrape(ctx context.Context) (pmetric.Metrics, error) {
 				scrapeErrors = append(scrapeErrors, err)
 			}
 		}
+		if record["weight"] != "" {
+			if err := s.mb.RecordHaproxyWeightDataPoint(now, record["weight"]); err != nil {
+				scrapeErrors = append(scrapeErrors, err)
+			}
+		}
+		if record["ctime"] != "" {
+			if err := s.mb.RecordHaproxyConnectionsAverageTimeDataPoint(now, record["ctime"]); err != nil {
+				scrapeErrors = append(scrapeErrors, err)
+			}
+		}
+		if record["qtime"] != "" {
+			if err := s.mb.RecordHaproxyRequestsAverageTimeDataPoint(now, record["qtime"]); err != nil {
+				scrapeErrors = append(scrapeErrors, err)
+			}
+		}
+		if record["rtime"] != "" {
+			if err := s.mb.RecordHaproxyResponsesAverageTimeDataPoint(now, record["rtime"]); err != nil {
+				scrapeErrors = append(scrapeErrors, err)
+			}
+		}
+		if record["slim"] != "" {
+			if err := s.mb.RecordHaproxySessionsLimitDataPoint(now, record["slim"]); err != nil {
+				scrapeErrors = append(scrapeErrors, err)
+			}
+		}
 		rb := s.mb.NewResourceBuilder()
 		rb.SetHaproxyProxyName(record["pxname"])
 		rb.SetHaproxyServiceName(record["svname"])
-		rb.SetHaproxyAddr(s.cfg.Endpoint)
+		rb.SetHaproxyServerState(record["status"])
+		rb.SetHaproxyAddr(s.cfg.ClientConfig.Endpoint)
 		s.mb.EmitForResource(metadata.WithResource(rb.Emit()))
 	}
 
@@ -256,7 +292,7 @@ func (s *haproxyScraper) scrape(ctx context.Context) (pmetric.Metrics, error) {
 	return s.mb.Emit(), nil
 }
 
-func (s *haproxyScraper) readStats(buf []byte) ([]map[string]string, error) {
+func (*haproxyScraper) readStats(buf []byte) ([]map[string]string, error) {
 	reader := csv.NewReader(bytes.NewReader(bytes.TrimSpace(buf)))
 	headers, err := reader.Read()
 	if err != nil {
@@ -282,7 +318,7 @@ func (s *haproxyScraper) readStats(buf []byte) ([]map[string]string, error) {
 
 func (s *haproxyScraper) start(ctx context.Context, host component.Host) error {
 	var err error
-	s.httpClient, err = s.cfg.ToClient(ctx, host, s.telemetrySettings)
+	s.httpClient, err = s.cfg.ClientConfig.ToClient(ctx, host.GetExtensions(), s.telemetrySettings)
 	return err
 }
 

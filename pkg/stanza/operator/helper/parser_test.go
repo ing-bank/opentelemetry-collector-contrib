@@ -4,7 +4,6 @@
 package helper
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -117,7 +116,7 @@ func TestParserMissingField(t *testing.T) {
 	parse := func(i any) (any, error) {
 		return i, nil
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	testEntry := entry.New()
 	err := parser.ProcessWith(ctx, testEntry, parse)
 	require.ErrorContains(t, err, "Entry is missing the expected parse_from field.")
@@ -135,7 +134,7 @@ func TestParserInvalidParseDrop(t *testing.T) {
 	parse := func(i any) (any, error) {
 		return i, errors.New("parse failure")
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	testEntry := entry.New()
 	err := parser.ProcessWith(ctx, testEntry, parse)
 	require.ErrorContains(t, err, "parse failure")
@@ -154,7 +153,7 @@ func TestParserInvalidParseDropQuiet(t *testing.T) {
 	parse := func(i any) (any, error) {
 		return i, errors.New("parse failure")
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	testEntry := entry.New()
 	err := parser.ProcessWith(ctx, testEntry, parse)
 	require.NoError(t, err, "error should be silent")
@@ -173,7 +172,7 @@ func TestParserInvalidParseSend(t *testing.T) {
 	parse := func(i any) (any, error) {
 		return i, errors.New("parse failure")
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	testEntry := entry.New()
 	err := parser.ProcessWith(ctx, testEntry, parse)
 	require.ErrorContains(t, err, "parse failure")
@@ -193,7 +192,7 @@ func TestParserInvalidParseSendQuiet(t *testing.T) {
 	parse := func(i any) (any, error) {
 		return i, errors.New("parse failure")
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	testEntry := entry.New()
 	err := parser.ProcessWith(ctx, testEntry, parse)
 	require.NoError(t, err, "error should be silent")
@@ -220,7 +219,7 @@ func TestParserInvalidTimeParseDrop(t *testing.T) {
 	parse := func(i any) (any, error) {
 		return i, nil
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	testEntry := entry.New()
 	err := parser.ProcessWith(ctx, testEntry, parse)
 	require.ErrorContains(t, err, "time parser: log entry does not have the expected parse_from field")
@@ -246,7 +245,7 @@ func TestParserInvalidTimeParseSend(t *testing.T) {
 	parse := func(i any) (any, error) {
 		return i, nil
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	testEntry := entry.New()
 	err := parser.ProcessWith(ctx, testEntry, parse)
 	require.ErrorContains(t, err, "time parser: log entry does not have the expected parse_from field")
@@ -270,7 +269,7 @@ func TestParserInvalidSeverityParseDrop(t *testing.T) {
 	parse := func(i any) (any, error) {
 		return i, nil
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	testEntry := entry.New()
 	err := parser.ProcessWith(ctx, testEntry, parse)
 	require.ErrorContains(t, err, "severity parser: log entry does not have the expected parse_from field")
@@ -309,7 +308,7 @@ func TestParserInvalidTimeValidSeverityParse(t *testing.T) {
 	parse := func(i any) (any, error) {
 		return i, nil
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	testEntry := entry.New()
 	err := testEntry.Set(entry.NewBodyField("severity"), "info")
 	require.NoError(t, err)
@@ -363,7 +362,7 @@ func TestParserValidTimeInvalidSeverityParse(t *testing.T) {
 	parse := func(i any) (any, error) {
 		return i, nil
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	testEntry := entry.New()
 	err = testEntry.Set(entry.NewBodyField("timestamp"), sample)
 	require.NoError(t, err)
@@ -400,7 +399,7 @@ func TestParserOutput(t *testing.T) {
 	parse := func(i any) (any, error) {
 		return i, nil
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	testEntry := entry.New()
 	err := parser.ProcessWith(ctx, testEntry, parse)
 	require.NoError(t, err)
@@ -676,7 +675,7 @@ func TestParserFields(t *testing.T) {
 			require.NoError(t, err)
 
 			e := tc.input()
-			err = parser.ProcessWith(context.Background(), e, parse)
+			err = parser.ProcessWith(t.Context(), e, parse)
 
 			require.NoError(t, err)
 			require.Equal(t, tc.output(), e)
@@ -702,6 +701,147 @@ func NewTestParserConfig() ParserConfig {
 	lnp.ParseFrom = entry.NewBodyField("logger")
 	expect.ScopeNameParser = &lnp
 	return expect
+}
+
+func TestProcessWithCallback_QuietMode(t *testing.T) {
+	// Quiet mode swallows processing errors, but send_quiet still surfaces
+	// downstream write failures so the pipeline can react to delivery errors.
+	// drop_quiet never calls write so its parse failure is fully suppressed.
+	testCases := []struct {
+		name            string
+		onError         string
+		expectWriteWrap bool
+	}{
+		{
+			name:            "SendOnErrorQuiet_WriteFailure_PropagatesWriteError",
+			onError:         SendOnErrorQuiet,
+			expectWriteWrap: true,
+		},
+		{
+			name:    "DropOnErrorQuiet_ParseFailure_Suppressed",
+			onError: DropOnErrorQuiet,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeOut := testutil.NewFakeOutputWithProcessError(t)
+			set := componenttest.NewNopTelemetrySettings()
+			set.Logger = zaptest.NewLogger(t)
+			writer := &WriterOperator{
+				BasicOperator: BasicOperator{
+					OperatorID:   "test-id",
+					OperatorType: "test-type",
+					set:          set,
+				},
+				OutputIDs: []string{fakeOut.ID()},
+			}
+			require.NoError(t, writer.SetOutputs([]operator.Operator{fakeOut}))
+
+			parser := ParserOperator{
+				TransformerOperator: TransformerOperator{
+					WriterOperator: *writer,
+					OnError:        tc.onError,
+				},
+				ParseFrom: entry.NewBodyField(),
+				ParseTo:   entry.NewAttributeField(),
+			}
+
+			parse := func(_ any) (any, error) {
+				return nil, errors.New("parse failure")
+			}
+
+			ctx := t.Context()
+			testEntry := entry.New()
+			err := parser.ProcessWithCallback(ctx, testEntry, parse, nil)
+			if tc.expectWriteWrap {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "failed to send entry after error")
+			} else {
+				require.NoError(t, err, "quiet mode must not propagate the processing error")
+			}
+		})
+	}
+}
+
+// TestProcessWithCallback_QuietMode_SkipAndCallbackPaths exercises the four
+// code paths in helper/parser.go that previously did not honor quiet mode:
+//   - ProcessWithCallback Skip error
+//   - ProcessWithCallback callback error
+//   - ProcessBatchWithCallback Skip error
+//   - ProcessBatchWithCallback callback error
+//
+// All four must be suppressed when the operator is configured in quiet mode.
+func TestProcessWithCallback_QuietMode_SkipAndCallbackPaths(t *testing.T) {
+	parse := func(v any) (any, error) { return v, nil }
+	okCb := func(_ *entry.Entry) error { return nil }
+	failingCb := func(_ *entry.Entry) error { return errors.New("callback failure") }
+
+	// An "if" expression that always errors during evaluation (because the
+	// attribute is missing and types do not match), driving the Skip error
+	// path.
+	badIfExpr, err := ExprCompileBool(`attributes["missing"] + 1 == 2`)
+	require.NoError(t, err)
+
+	for _, onError := range []string{DropOnErrorQuiet, SendOnErrorQuiet} {
+		t.Run("ProcessWithCallback_Skip_"+onError, func(t *testing.T) {
+			writer, _ := writerWithFakeOut(t)
+			parser := ParserOperator{
+				TransformerOperator: TransformerOperator{
+					WriterOperator: *writer,
+					OnError:        onError,
+					IfExpr:         badIfExpr,
+				},
+				ParseFrom: entry.NewBodyField(),
+				ParseTo:   entry.NewAttributeField(),
+			}
+			require.NoError(t, parser.ProcessWithCallback(t.Context(), entry.New(), parse, okCb),
+				"Skip error must be suppressed in quiet mode")
+		})
+
+		t.Run("ProcessWithCallback_Callback_"+onError, func(t *testing.T) {
+			writer, _ := writerWithFakeOut(t)
+			parser := ParserOperator{
+				TransformerOperator: TransformerOperator{
+					WriterOperator: *writer,
+					OnError:        onError,
+				},
+				ParseFrom: entry.NewBodyField(),
+				ParseTo:   entry.NewAttributeField(),
+			}
+			require.NoError(t, parser.ProcessWithCallback(t.Context(), entry.New(), parse, failingCb),
+				"callback error must be suppressed in quiet mode")
+		})
+
+		t.Run("ProcessBatchWithCallback_Skip_"+onError, func(t *testing.T) {
+			writer, _ := writerWithFakeOut(t)
+			parser := ParserOperator{
+				TransformerOperator: TransformerOperator{
+					WriterOperator: *writer,
+					OnError:        onError,
+					IfExpr:         badIfExpr,
+				},
+				ParseFrom: entry.NewBodyField(),
+				ParseTo:   entry.NewAttributeField(),
+			}
+			require.NoError(t, parser.ProcessBatchWithCallback(t.Context(), []*entry.Entry{entry.New()}, parse, okCb),
+				"batch Skip error must be suppressed in quiet mode")
+		})
+
+		t.Run("ProcessBatchWithCallback_Callback_"+onError, func(t *testing.T) {
+			writer, _ := writerWithFakeOut(t)
+			parser := ParserOperator{
+				TransformerOperator: TransformerOperator{
+					WriterOperator: *writer,
+					OnError:        onError,
+				},
+				ParseFrom: entry.NewBodyField(),
+				ParseTo:   entry.NewAttributeField(),
+			}
+			require.NoError(t, parser.ProcessBatchWithCallback(t.Context(), []*entry.Entry{entry.New()}, parse, failingCb),
+				"batch callback error must be suppressed in quiet mode")
+		})
+	}
 }
 
 func writerWithFakeOut(t *testing.T) (*WriterOperator, *testutil.FakeOutput) {

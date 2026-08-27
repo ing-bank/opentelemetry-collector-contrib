@@ -4,37 +4,107 @@
 package prometheusremotewrite // import "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/prometheusremotewrite"
 
 import (
+	"errors"
 	"fmt"
 	"math"
 
 	"github.com/prometheus/common/model"
+	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/value"
 	"github.com/prometheus/prometheus/prompb"
+	"github.com/prometheus/prometheus/util/convertnhcb"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.uber.org/multierr"
 )
 
 const defaultZeroThreshold = 1e-128
 
+// explicitToNHCB converts an OTLP explicit-bucket histogram data point to a
+// Prometheus histogram with custom buckets (schema -53) via Prometheus' own
+// convertnhcb helper. Exactly one of the returned histograms is non-nil.
+func explicitToNHCB(pt pmetric.HistogramDataPoint) (*histogram.Histogram, *histogram.FloatHistogram, error) {
+	th := convertnhcb.NewTempHistogram()
+	bounds := pt.ExplicitBounds()
+	counts := pt.BucketCounts()
+	// OTLP buckets are non-cumulative and omit the implicit +Inf bound;
+	// convertnhcb wants cumulative counts up to and including +Inf.
+	var cumulative uint64
+	for i := 0; i < bounds.Len()+1; i++ {
+		if i < counts.Len() { // Trailing empty buckets may be omitted.
+			cumulative += counts.At(i)
+		}
+		bound := math.Inf(1)
+		if i < bounds.Len() {
+			bound = bounds.At(i)
+		}
+		if bound == math.Inf(1) && pt.Count() > cumulative {
+			// Buckets under-report the total; the remainder lands in +Inf.
+			cumulative = pt.Count()
+		}
+		if err := th.SetBucketCount(bound, float64(cumulative)); err != nil {
+			return nil, nil, err
+		}
+		if bound == math.Inf(1) {
+			break // Reached +Inf, whether implicit or encoded in bounds.
+		}
+	}
+	if err := th.SetCount(float64(cumulative)); err != nil {
+		return nil, nil, err
+	}
+	if pt.HasSum() {
+		if err := th.SetSum(pt.Sum()); err != nil {
+			return nil, nil, err
+		}
+	}
+	return th.Convert()
+}
+
+// explicitToNHCBHistogram is the RW1 wrapper around explicitToNHCB.
+func explicitToNHCBHistogram(pt pmetric.HistogramDataPoint) (prompb.Histogram, error) {
+	timestamp := convertTimeStamp(pt.Timestamp())
+
+	if pt.Flags().NoRecordedValue() {
+		// Staleness is signaled by a stale-NaN Sum; Count is ignored.
+		// https://prometheus.io/docs/specs/native_histograms/#staleness-markers
+		return prompb.Histogram{
+			Schema:    histogram.CustomBucketsSchema,
+			Sum:       math.Float64frombits(value.StaleNaN),
+			Timestamp: timestamp,
+		}, nil
+	}
+
+	h, fh, err := explicitToNHCB(pt)
+	if err != nil {
+		return prompb.Histogram{}, err
+	}
+	switch {
+	case h != nil:
+		return prompb.FromIntHistogram(timestamp, h), nil
+	case fh != nil:
+		return prompb.FromFloatHistogram(timestamp, fh), nil
+	default:
+		return prompb.Histogram{}, errors.New("convertnhcb produced neither an integer nor a float histogram")
+	}
+}
+
 func (c *prometheusConverter) addExponentialHistogramDataPoints(dataPoints pmetric.ExponentialHistogramDataPointSlice,
-	resource pcommon.Resource, settings Settings, baseName string,
+	resource pcommon.Resource, scope pcommon.InstrumentationScope, settings Settings, baseName string,
 ) error {
+	var errs error
 	for x := 0; x < dataPoints.Len(); x++ {
 		pt := dataPoints.At(x)
-		lbls := createAttributes(
-			resource,
-			pt.Attributes(),
-			settings.ExternalLabels,
-			nil,
-			true,
-			model.MetricNameLabel,
-			baseName,
-		)
+		lbls, err := createAttributes(resource, pt.Attributes(), scope, settings.ExternalLabels, nil, true, c.labelNamer, settings.DisableScopeInfo, model.MetricNameLabel, baseName)
+		if err != nil {
+			errs = multierr.Append(errs, err)
+			continue
+		}
 		ts, _ := c.getOrCreateTimeSeries(lbls)
 
 		histogram, err := exponentialToNativeHistogram(pt)
 		if err != nil {
-			return err
+			errs = multierr.Append(errs, err)
+			continue
 		}
 		ts.Histograms = append(ts.Histograms, histogram)
 
@@ -42,7 +112,7 @@ func (c *prometheusConverter) addExponentialHistogramDataPoints(dataPoints pmetr
 		ts.Exemplars = append(ts.Exemplars, exemplars...)
 	}
 
-	return nil
+	return errs
 }
 
 // exponentialToNativeHistogram  translates OTel Exponential Histogram data point
@@ -78,9 +148,6 @@ func exponentialToNativeHistogram(p pmetric.ExponentialHistogramDataPoint) (prom
 		Schema:    scale,
 
 		ZeroCount: &prompb.Histogram_ZeroCountInt{ZeroCountInt: p.ZeroCount()},
-		// TODO use zero_threshold, if set, see
-		// https://github.com/open-telemetry/opentelemetry-proto/pull/441
-		ZeroThreshold: defaultZeroThreshold,
 
 		PositiveSpans:  pSpans,
 		PositiveDeltas: pDeltas,
@@ -88,6 +155,12 @@ func exponentialToNativeHistogram(p pmetric.ExponentialHistogramDataPoint) (prom
 		NegativeDeltas: nDeltas,
 
 		Timestamp: convertTimeStamp(p.Timestamp()),
+	}
+
+	if p.ZeroThreshold() != 0 {
+		h.ZeroThreshold = p.ZeroThreshold()
+	} else {
+		h.ZeroThreshold = defaultZeroThreshold
 	}
 
 	if p.Flags().NoRecordedValue() {
@@ -142,7 +215,7 @@ func convertBucketsLayout(buckets pmetric.ExponentialHistogramDataPointBuckets, 
 		Length: 0,
 	})
 
-	for i := 0; i < numBuckets; i++ {
+	for i := range numBuckets {
 		// The offset is scaled and adjusted by 1 as described above.
 		nextBucketIdx := (int32(i)+buckets.Offset())>>scaleDown + 1
 		if bucketIdx == nextBucketIdx { // We have not collected enough buckets to merge yet.
@@ -166,7 +239,7 @@ func convertBucketsLayout(buckets pmetric.ExponentialHistogramDataPointBuckets, 
 		} else {
 			// We have found a small gap (or no gap at all).
 			// Insert empty buckets as needed.
-			for j := int32(0); j < gap; j++ {
+			for range gap {
 				appendDelta(0)
 			}
 		}
@@ -187,7 +260,7 @@ func convertBucketsLayout(buckets pmetric.ExponentialHistogramDataPointBuckets, 
 	} else {
 		// We have found a small gap (or no gap at all).
 		// Insert empty buckets as needed.
-		for j := int32(0); j < gap; j++ {
+		for range gap {
 			appendDelta(0)
 		}
 	}

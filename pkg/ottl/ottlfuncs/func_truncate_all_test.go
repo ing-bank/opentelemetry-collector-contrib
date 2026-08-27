@@ -5,11 +5,13 @@ package ottlfuncs
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.uber.org/zap"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 )
@@ -20,22 +22,14 @@ func Test_truncateAll(t *testing.T) {
 	input.PutInt("test2", 3)
 	input.PutBool("test3", true)
 
-	target := &ottl.StandardPMapGetter[pcommon.Map]{
-		Getter: func(_ context.Context, tCtx pcommon.Map) (any, error) {
-			return tCtx, nil
-		},
-	}
-
 	tests := []struct {
-		name   string
-		target ottl.PMapGetter[pcommon.Map]
-		limit  int64
-		want   func(pcommon.Map)
+		name  string
+		limit int64
+		want  func(pcommon.Map)
 	}{
 		{
-			name:   "truncate map",
-			target: target,
-			limit:  1,
+			name:  "truncate map",
+			limit: 1,
 			want: func(expectedMap pcommon.Map) {
 				expectedMap.PutStr("test", "h")
 				expectedMap.PutInt("test2", 3)
@@ -43,9 +37,8 @@ func Test_truncateAll(t *testing.T) {
 			},
 		},
 		{
-			name:   "truncate map to zero",
-			target: target,
-			limit:  0,
+			name:  "truncate map to zero",
+			limit: 0,
 			want: func(expectedMap pcommon.Map) {
 				expectedMap.PutStr("test", "")
 				expectedMap.PutInt("test2", 3)
@@ -53,9 +46,8 @@ func Test_truncateAll(t *testing.T) {
 			},
 		},
 		{
-			name:   "truncate nothing",
-			target: target,
-			limit:  100,
+			name:  "truncate nothing",
+			limit: 100,
 			want: func(expectedMap pcommon.Map) {
 				expectedMap.PutStr("test", "hello world")
 				expectedMap.PutInt("test2", 3)
@@ -63,9 +55,8 @@ func Test_truncateAll(t *testing.T) {
 			},
 		},
 		{
-			name:   "truncate exact",
-			target: target,
-			limit:  11,
+			name:  "truncate exact",
+			limit: 11,
 			want: func(expectedMap pcommon.Map) {
 				expectedMap.PutStr("test", "hello world")
 				expectedMap.PutInt("test2", 3)
@@ -78,12 +69,27 @@ func Test_truncateAll(t *testing.T) {
 			scenarioMap := pcommon.NewMap()
 			input.CopyTo(scenarioMap)
 
-			exprFunc, err := TruncateAll(tt.target, tt.limit)
-			assert.NoError(t, err)
+			setterWasCalled := false
+			target := &ottl.StandardPMapGetSetter[pcommon.Map]{
+				Getter: func(_ context.Context, tCtx pcommon.Map) (pcommon.Map, error) {
+					return tCtx, nil
+				},
+				Setter: func(_ context.Context, tCtx pcommon.Map, m any) error {
+					setterWasCalled = true
+					if v, ok := m.(pcommon.Map); ok {
+						v.CopyTo(tCtx)
+						return nil
+					}
+					return errors.New("expected pcommon.Map")
+				},
+			}
 
-			result, err := exprFunc(nil, scenarioMap)
-			assert.NoError(t, err)
-			assert.Nil(t, result)
+			exprFunc, err := TruncateAll(target, tt.limit, ottl.Optional[bool]{}, ottl.Optional[string]{}, zap.NewNop())
+			require.NoError(t, err)
+
+			_, err = exprFunc(nil, scenarioMap)
+			require.NoError(t, err)
+			assert.True(t, setterWasCalled)
 
 			expected := pcommon.NewMap()
 			tt.want(expected)
@@ -93,37 +99,287 @@ func Test_truncateAll(t *testing.T) {
 	}
 }
 
+func Test_truncateAll_UTF8(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		limit  int64
+		expect string
+	}{
+		{
+			name:   "mid-rune truncation backs up to boundary",
+			input:  "ab😀c", // 'ab' (2) + emoji (4) + 'c' (1) = 7 bytes
+			limit:  4,      // cuts inside emoji, backs up to 'ab'
+			expect: "ab",
+		},
+		{
+			name:   "exact rune boundary preserved",
+			input:  "ab😀c",
+			limit:  6, // exactly after emoji
+			expect: "ab😀",
+		},
+		{
+			// Grapheme cluster: "👩🏾‍🦳" (woman with white hair) is 1 visible character
+			// but consists of 4 Unicode code points (runes):
+			//   👩 (woman)           = 4 bytes (f0 9f 91 a9)
+			//   🏾 (skin tone)       = 4 bytes (f0 9f 8f be)
+			//   ‍ (zero-width joiner) = 3 bytes (e2 80 8d)
+			//   🦳 (white hair)      = 4 bytes (f0 9f a6 b3)
+			// Total: 15 bytes, 4 runes, 1 visible character
+			// Truncating at limit=10 lands in the middle of the byte 9-11,
+			// so we back up to byte 8 (end of skin tone modifier).
+			// Result is valid UTF-8 but a split grapheme cluster.
+			name:   "grapheme cluster truncates at rune boundary not grapheme boundary",
+			input:  "👩🏾‍🦳",
+			limit:  10,
+			expect: "👩🏾",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scenarioMap := pcommon.NewMap()
+			scenarioMap.PutStr("test", tt.input)
+
+			setterWasCalled := false
+			target := &ottl.StandardPMapGetSetter[pcommon.Map]{
+				Getter: func(_ context.Context, tCtx pcommon.Map) (pcommon.Map, error) {
+					return tCtx, nil
+				},
+				Setter: func(_ context.Context, tCtx pcommon.Map, m any) error {
+					setterWasCalled = true
+					if v, ok := m.(pcommon.Map); ok {
+						v.CopyTo(tCtx)
+						return nil
+					}
+					return errors.New("expected pcommon.Map")
+				},
+			}
+
+			utf8SafeOpt := ottl.NewTestingOptional(true)
+			exprFunc, err := TruncateAll(target, tt.limit, utf8SafeOpt, ottl.Optional[string]{}, zap.NewNop())
+			require.NoError(t, err)
+
+			_, err = exprFunc(nil, scenarioMap)
+			require.NoError(t, err)
+			assert.True(t, setterWasCalled)
+
+			result, _ := scenarioMap.Get("test")
+			assert.Equal(t, tt.expect, result.Str())
+		})
+	}
+}
+
 func Test_truncateAll_validation(t *testing.T) {
-	_, err := TruncateAll[any](&ottl.StandardPMapGetter[any]{}, -1)
+	_, err := TruncateAll[any](&ottl.StandardPMapGetSetter[any]{}, -1, ottl.Optional[bool]{}, ottl.Optional[string]{}, zap.NewNop())
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "invalid limit for truncate_all function, -1 cannot be negative")
+
+	truncateMarkerOpt := ottl.NewTestingOptional("long_marker")
+	_, err = TruncateAll[any](&ottl.StandardPMapGetSetter[any]{}, 3, ottl.Optional[bool]{}, truncateMarkerOpt, zap.NewNop())
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "invalid truncation marker for truncate_all function, length of marker 11 cannot be greater than limit 3")
+
+	truncateUtf8MarkerOpt := ottl.NewTestingOptional("[✄]")
+	_, err = TruncateAll[any](&ottl.StandardPMapGetSetter[any]{}, 3, ottl.Optional[bool]{}, truncateUtf8MarkerOpt, zap.NewNop())
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "invalid truncation marker for truncate_all function, length of marker 5 cannot be greater than limit 3")
 }
 
 func Test_truncateAll_bad_input(t *testing.T) {
 	input := pcommon.NewValueStr("not a map")
-	target := &ottl.StandardPMapGetter[any]{
-		Getter: func(_ context.Context, tCtx any) (any, error) {
-			return tCtx, nil
+	target := &ottl.StandardPMapGetSetter[any]{
+		Getter: func(_ context.Context, tCtx any) (pcommon.Map, error) {
+			if v, ok := tCtx.(pcommon.Map); ok {
+				return v, nil
+			}
+			return pcommon.Map{}, errors.New("expected pcommon.Map")
 		},
 	}
 
-	exprFunc, err := TruncateAll[any](target, 1)
-	assert.NoError(t, err)
+	exprFunc, err := TruncateAll[any](target, 1, ottl.Optional[bool]{}, ottl.Optional[string]{}, zap.NewNop())
+	require.NoError(t, err)
 
 	_, err = exprFunc(nil, input)
 	assert.Error(t, err)
 }
 
 func Test_truncateAll_get_nil(t *testing.T) {
-	target := &ottl.StandardPMapGetter[any]{
-		Getter: func(_ context.Context, tCtx any) (any, error) {
-			return tCtx, nil
+	target := &ottl.StandardPMapGetSetter[any]{
+		Getter: func(_ context.Context, tCtx any) (pcommon.Map, error) {
+			if v, ok := tCtx.(pcommon.Map); ok {
+				return v, nil
+			}
+			return pcommon.Map{}, errors.New("expected pcommon.Map")
 		},
 	}
 
-	exprFunc, err := TruncateAll[any](target, 1)
-	assert.NoError(t, err)
+	exprFunc, err := TruncateAll[any](target, 1, ottl.Optional[bool]{}, ottl.Optional[string]{}, zap.NewNop())
+	require.NoError(t, err)
 
 	_, err = exprFunc(nil, nil)
 	assert.Error(t, err)
+}
+
+func Test_truncateAll_truncationMarker(t *testing.T) {
+	input := pcommon.NewMap()
+	input.PutInt("test2", 3)
+	input.PutBool("test3", true)
+
+	tests := []struct {
+		name       string
+		testString string
+		limit      int64
+		marker     string
+		utf8Safe   bool
+		want       func(pcommon.Map)
+	}{
+		{
+			name:       "truncate map with marker",
+			testString: "hello world",
+			limit:      7,
+			marker:     "(...)",
+			utf8Safe:   true,
+			want: func(expectedMap pcommon.Map) {
+				expectedMap.PutInt("test2", 3)
+				expectedMap.PutBool("test3", true)
+				expectedMap.PutStr("test", "he(...)")
+			},
+		},
+		{
+			name:       "truncate map unsafe with marker",
+			testString: "hello world",
+			limit:      7,
+			marker:     "(...)",
+			utf8Safe:   false,
+			want: func(expectedMap pcommon.Map) {
+				expectedMap.PutInt("test2", 3)
+				expectedMap.PutBool("test3", true)
+				expectedMap.PutStr("test", "he(...)")
+			},
+		},
+		{
+			name:       "truncate map to only marker",
+			testString: "hello world",
+			limit:      5,
+			marker:     "(...)",
+			utf8Safe:   true,
+			want: func(expectedMap pcommon.Map) {
+				expectedMap.PutInt("test2", 3)
+				expectedMap.PutBool("test3", true)
+				expectedMap.PutStr("test", "(...)")
+			},
+		},
+		{
+			name:       "truncate correct size with utf-8 marker",
+			testString: "hello world",
+			limit:      10,
+			marker:     "[✄]",
+			utf8Safe:   true,
+			want: func(expectedMap pcommon.Map) {
+				expectedMap.PutInt("test2", 3)
+				expectedMap.PutBool("test3", true)
+				expectedMap.PutStr("test", "hello[✄]")
+			},
+		},
+		{
+			name:       "truncate utf-8 safe with marker",
+			testString: "hell😀 w😀rld",
+			limit:      16, // Truncates in the middle of the second emoji. Backs up to the preceding char and adds the marker.
+			marker:     "(...)",
+			utf8Safe:   true,
+			want: func(expectedMap pcommon.Map) {
+				expectedMap.PutInt("test2", 3)
+				expectedMap.PutBool("test3", true)
+				expectedMap.PutStr("test", "hell😀 w(...)")
+			},
+		},
+		{
+			name:       "truncate utf-8 unsafe with marker",
+			testString: "hell😀 w😀rld",
+			limit:      16, // Truncates in the middle of the second emoji. Results in non-utf8 trailing bytes.
+			marker:     "(...)",
+			utf8Safe:   false,
+			want: func(expectedMap pcommon.Map) {
+				expectedMap.PutInt("test2", 3)
+				expectedMap.PutBool("test3", true)
+				expectedMap.PutStr("test", "hell😀 w\xf0(...)")
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scenarioMap := pcommon.NewMap()
+			input.CopyTo(scenarioMap)
+			scenarioMap.PutStr("test", tt.testString)
+
+			setterWasCalled := false
+			target := &ottl.StandardPMapGetSetter[pcommon.Map]{
+				Getter: func(_ context.Context, tCtx pcommon.Map) (pcommon.Map, error) {
+					return tCtx, nil
+				},
+				Setter: func(_ context.Context, tCtx pcommon.Map, m any) error {
+					setterWasCalled = true
+					if v, ok := m.(pcommon.Map); ok {
+						v.CopyTo(tCtx)
+						return nil
+					}
+					return errors.New("expected pcommon.Map")
+				},
+			}
+
+			truncateMarkerOpt := ottl.NewTestingOptional(tt.marker)
+			utf8SafeOpt := ottl.NewTestingOptional(tt.utf8Safe)
+			exprFunc, err := TruncateAll(target, tt.limit, utf8SafeOpt, truncateMarkerOpt, zap.NewNop())
+			require.NoError(t, err)
+
+			_, err = exprFunc(nil, scenarioMap)
+			require.NoError(t, err)
+			assert.True(t, setterWasCalled)
+
+			expected := pcommon.NewMap()
+			tt.want(expected)
+
+			assert.Equal(t, expected, scenarioMap)
+		})
+	}
+}
+
+func Test_TruncateAllFactory(t *testing.T) {
+	t.Run("factory creation", func(t *testing.T) {
+		factory := NewTruncateAllFactory[any]()
+		assert.Equal(t, "truncate_all", factory.Name())
+	})
+
+	t.Run("default arguments", func(t *testing.T) {
+		factory := NewTruncateAllFactory[any]()
+		args := factory.CreateDefaultArguments()
+
+		assert.IsType(t, &TruncateAllArguments[any]{}, args)
+		assertArgumentFieldNames(t, args, []string{"Target", "Limit", "Utf8Safe", "TruncationMarker"})
+	})
+
+	t.Run("function creation", func(t *testing.T) {
+		factory := NewTruncateAllFactory[any]()
+		args := factory.CreateDefaultArguments()
+		truncateAllArgs, ok := args.(*TruncateAllArguments[any])
+		require.True(t, ok)
+		truncateAllArgs.Target = &ottl.StandardPMapGetSetter[any]{
+			Getter: func(context.Context, any) (pcommon.Map, error) {
+				return pcommon.NewMap(), nil
+			},
+			Setter: func(context.Context, any, any) error {
+				return nil
+			},
+		}
+		truncateAllArgs.Limit = 10
+
+		fn, err := factory.CreateFunction(ottl.FunctionContext{}, args)
+		require.NoError(t, err)
+		assert.NotNil(t, fn)
+	})
+
+	t.Run("invalid arguments type", func(t *testing.T) {
+		_, err := createTruncateAllFunction[any](ottl.FunctionContext{}, "invalid args")
+		assert.ErrorContains(t, err, "TruncateAllFactory args must be of type *TruncateAllArguments[K]")
+	})
 }

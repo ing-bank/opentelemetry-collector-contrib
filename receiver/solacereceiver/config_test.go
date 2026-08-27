@@ -11,9 +11,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configtls"
+	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
-	"go.opentelemetry.io/collector/confmap/xconfmap"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/solacereceiver/internal/metadata"
 )
@@ -34,10 +35,10 @@ func TestLoadConfig(t *testing.T) {
 			expected: &Config{
 				Broker: []string{"myHost:5671"},
 				Auth: Authentication{
-					PlainText: &SaslPlainTextConfig{
+					PlainText: configoptional.Some(SaslPlainTextConfig{
 						Username: "otel",
 						Password: "otel01$",
-					},
+					}),
 				},
 				Queue:      "queue://#trace-profile123",
 				MaxUnacked: 1234,
@@ -46,9 +47,9 @@ func TestLoadConfig(t *testing.T) {
 					InsecureSkipVerify: false,
 				},
 				Flow: FlowControl{
-					DelayedRetry: &FlowControlDelayedRetry{
+					DelayedRetry: configoptional.Some(FlowControlDelayedRetry{
 						Delay: 1 * time.Second,
-					},
+					}),
 				},
 			},
 		},
@@ -72,10 +73,10 @@ func TestLoadConfig(t *testing.T) {
 			require.NoError(t, sub.Unmarshal(cfg))
 
 			if tt.expectedErr != nil {
-				assert.ErrorContains(t, xconfmap.Validate(cfg), tt.expectedErr.Error())
+				assert.ErrorContains(t, confmap.Validate(cfg), tt.expectedErr.Error())
 				return
 			}
-			assert.NoError(t, xconfmap.Validate(cfg))
+			assert.NoError(t, confmap.Validate(cfg))
 			assert.Equal(t, tt.expected, cfg)
 		})
 	}
@@ -84,32 +85,32 @@ func TestLoadConfig(t *testing.T) {
 func TestConfigValidateMissingAuth(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.Queue = "someQueue"
-	err := xconfmap.Validate(cfg)
+	err := confmap.Validate(cfg)
 	assert.ErrorContains(t, err, errMissingAuthDetails.Error())
 }
 
 func TestConfigValidateMultipleAuth(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.Queue = "someQueue"
-	cfg.Auth.PlainText = &SaslPlainTextConfig{Username: "Username", Password: "Password"}
-	cfg.Auth.XAuth2 = &SaslXAuth2Config{Username: "Username", Bearer: "Bearer"}
-	err := xconfmap.Validate(cfg)
+	cfg.Auth.PlainText = configoptional.Some(SaslPlainTextConfig{Username: "Username", Password: "Password"})
+	cfg.Auth.XAuth2 = configoptional.Some(SaslXAuth2Config{Username: "Username", Bearer: "Bearer"})
+	err := confmap.Validate(cfg)
 	assert.ErrorContains(t, err, errTooManyAuthDetails.Error())
 }
 
 func TestConfigValidateMissingQueue(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
-	cfg.Auth.PlainText = &SaslPlainTextConfig{Username: "Username", Password: "Password"}
-	err := xconfmap.Validate(cfg)
+	cfg.Auth.PlainText = configoptional.Some(SaslPlainTextConfig{Username: "Username", Password: "Password"})
+	err := confmap.Validate(cfg)
 	assert.ErrorContains(t, err, errMissingQueueName.Error())
 }
 
 func TestConfigValidateMissingFlowControl(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.Queue = "someQueue"
-	cfg.Auth.PlainText = &SaslPlainTextConfig{Username: "Username", Password: "Password"}
+	cfg.Auth.PlainText = configoptional.Some(SaslPlainTextConfig{Username: "Username", Password: "Password"})
 	// this should never happen in reality, test validation anyway
-	cfg.Flow.DelayedRetry = nil
+	cfg.Flow.DelayedRetry = configoptional.None[FlowControlDelayedRetry]()
 	err := cfg.Validate()
 	assert.ErrorContains(t, err, errMissingFlowControl.Error())
 }
@@ -117,10 +118,10 @@ func TestConfigValidateMissingFlowControl(t *testing.T) {
 func TestConfigValidateInvalidFlowControlDelayedRetryDelay(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.Queue = "someQueue"
-	cfg.Auth.PlainText = &SaslPlainTextConfig{Username: "Username", Password: "Password"}
-	cfg.Flow.DelayedRetry = &FlowControlDelayedRetry{
+	cfg.Auth.PlainText = configoptional.Some(SaslPlainTextConfig{Username: "Username", Password: "Password"})
+	cfg.Flow.DelayedRetry = configoptional.Some(FlowControlDelayedRetry{
 		Delay: -30 * time.Second,
-	}
+	})
 	err := cfg.Validate()
 	assert.ErrorContains(t, err, errInvalidDelayedRetryDelay.Error())
 }
@@ -128,16 +129,16 @@ func TestConfigValidateInvalidFlowControlDelayedRetryDelay(t *testing.T) {
 func TestConfigValidateSuccess(t *testing.T) {
 	successCases := map[string]func(*Config){
 		"With Plaintext Auth": func(c *Config) {
-			c.Auth.PlainText = &SaslPlainTextConfig{Username: "Username", Password: "Password"}
+			c.Auth.PlainText = configoptional.Some(SaslPlainTextConfig{Username: "Username", Password: "Password"})
 		},
 		"With XAuth2 Auth": func(c *Config) {
-			c.Auth.XAuth2 = &SaslXAuth2Config{
+			c.Auth.XAuth2 = configoptional.Some(SaslXAuth2Config{
 				Username: "Username",
 				Bearer:   "Bearer",
-			}
+			})
 		},
 		"With External Auth": func(c *Config) {
-			c.Auth.External = &SaslExternalConfig{}
+			c.Auth.External = configoptional.Some(SaslExternalConfig{})
 		},
 	}
 
@@ -146,7 +147,7 @@ func TestConfigValidateSuccess(t *testing.T) {
 			cfg := createDefaultConfig().(*Config)
 			cfg.Queue = "someQueue"
 			configure(cfg)
-			err := xconfmap.Validate(cfg)
+			err := confmap.Validate(cfg)
 			assert.NoError(t, err)
 		})
 	}

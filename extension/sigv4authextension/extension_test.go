@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -28,7 +29,7 @@ func TestNewSigv4Extension(t *testing.T) {
 func TestRoundTripper(t *testing.T) {
 	awsCredsProvider := mockCredentials()
 
-	base := (http.RoundTripper)(http.DefaultTransport.(*http.Transport).Clone())
+	base := http.RoundTripper(http.DefaultTransport.(*http.Transport).Clone())
 	awsSDKInfo := "awsSDKInfo"
 	cfg := &Config{Region: "region", Service: "service", AssumeRole: AssumeRole{ARN: "rolearn", STSRegion: "region"}, credsProvider: awsCredsProvider}
 
@@ -85,11 +86,39 @@ func TestGetCredsProviderFromConfig(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, credsProvider)
 
-			creds, err := (*credsProvider).Retrieve(context.Background())
+			creds, err := (*credsProvider).Retrieve(t.Context())
 			require.NoError(t, err)
 			require.NotNil(t, creds)
 		})
 	}
+}
+
+func TestAssumeRoleOptionsWithExternalID(t *testing.T) {
+	cfg := &Config{
+		AssumeRole: AssumeRole{
+			ARN:        "arn:aws:iam::123456789012:role/my_role",
+			ExternalID: "my-external-id",
+		},
+	}
+
+	opts := &stscreds.AssumeRoleOptions{}
+	assumeRoleOptions(cfg)(opts)
+
+	require.NotNil(t, opts.ExternalID)
+	assert.Equal(t, "my-external-id", *opts.ExternalID)
+}
+
+func TestAssumeRoleOptionsWithoutExternalID(t *testing.T) {
+	cfg := &Config{
+		AssumeRole: AssumeRole{
+			ARN: "arn:aws:iam::123456789012:role/my_role",
+		},
+	}
+
+	opts := &stscreds.AssumeRoleOptions{}
+	assumeRoleOptions(cfg)(opts)
+
+	assert.Nil(t, opts.ExternalID)
 }
 
 func TestGetCredsProviderFromWebIdentityConfig(t *testing.T) {
@@ -124,17 +153,17 @@ func TestGetCredsProviderFromWebIdentityConfig(t *testing.T) {
 			require.NotNil(t, credsProvider)
 
 			// Should always error out as we are not providing a real token.
-			_, err = (*credsProvider).Retrieve(context.Background())
+			_, err = (*credsProvider).Retrieve(t.Context())
 			assert.Error(t, err)
 		})
 	}
 }
 
 func TestCloneRequest(t *testing.T) {
-	req1, err := http.NewRequest(http.MethodGet, "https://example.com", nil)
+	req1, err := http.NewRequest(http.MethodGet, "https://example.com", http.NoBody)
 	assert.NoError(t, err)
 
-	req2, err := http.NewRequest(http.MethodGet, "https://example.com", nil)
+	req2, err := http.NewRequest(http.MethodGet, "https://example.com", http.NoBody)
 	assert.NoError(t, err)
 	req2.Header.Add("Header1", "val1")
 

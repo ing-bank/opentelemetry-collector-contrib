@@ -6,16 +6,23 @@ package azurelogs // import "github.com/open-telemetry/opentelemetry-collector-c
 import (
 	"strings"
 
-	conventions "go.opentelemetry.io/otel/semconv/v1.27.0"
+	conventions "go.opentelemetry.io/otel/semconv/v1.40.0"
+
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/azurelogs/internal/metadata"
 )
+
+// az.service_request_id was removed from semconv in v1.36.0 without a replacement
+// ("removed due to lack of applicability or use"). Keeping as a custom attribute
+// for backward compatibility. TODO: revisit if semconv adds an equivalent.
+const azServiceRequestIDKey = "az.service_request_id"
 
 // TODO @constanca-m remove this file once the logic for the remaining categories
 // is added to category_logs.go
 
-func handleFrontDoorAccessLog(field string, value any, attrs map[string]any, attrsProps map[string]any) {
+func handleFrontDoorAccessLog(field string, value any, attrs, attrsProps map[string]any) {
 	switch field {
 	case "trackingReference":
-		attrs[string(conventions.AzServiceRequestIDKey)] = value
+		attrs[azServiceRequestIDKey] = value
 	case "httpMethod":
 		attrs[string(conventions.HTTPRequestMethodKey)] = value
 	case "httpVersion":
@@ -31,10 +38,10 @@ func handleFrontDoorAccessLog(field string, value any, attrs map[string]any, att
 	case "userAgent":
 		attrs[string(conventions.UserAgentOriginalKey)] = value
 	case "ClientIp", "clientIp":
-		attrs["client.address"] = value
+		attrs[string(conventions.ClientAddressKey)] = value
 	case "ClientPort", "clientPort":
 		// TODO Should be a port
-		attrs["client.port"] = value
+		attrs[string(conventions.ClientPortKey)] = value
 	case "socketIp":
 		attrs[string(conventions.NetworkPeerAddressKey)] = value
 	case "timeTaken":
@@ -73,7 +80,7 @@ func handleFrontDoorAccessLog(field string, value any, attrs map[string]any, att
 	}
 }
 
-func handleFrontDoorHealthProbeLog(field string, value any, attrs map[string]any, attrsProps map[string]any) {
+func handleFrontDoorHealthProbeLog(field string, value any, attrs, attrsProps map[string]any) {
 	switch field {
 	case "httpVerb":
 		attrs[string(conventions.HTTPRequestMethodKey)] = value
@@ -102,7 +109,7 @@ func handleFrontDoorHealthProbeLog(field string, value any, attrs map[string]any
 	}
 }
 
-func handleAppServiceAppLogs(field string, value any, attrs map[string]any, attrsProps map[string]any) {
+func handleAppServiceAppLogs(field string, value any, attrs, attrsProps map[string]any) {
 	switch field {
 	case "ContainerId":
 		attrs[string(conventions.ContainerIDKey)] = value
@@ -111,9 +118,19 @@ func handleAppServiceAppLogs(field string, value any, attrs map[string]any, attr
 	case "Host":
 		attrs[string(conventions.HostIDKey)] = value
 	case "Method":
-		attrs[string(conventions.CodeFunctionKey)] = value
+		if !metadata.PkgTranslatorAzurelogsDontEmitV0LogConventionsFeatureGate.IsEnabled() {
+			attrs["code.function"] = value
+		}
+		if metadata.PkgTranslatorAzurelogsEmitV1LogConventionsFeatureGate.IsEnabled() {
+			attrs[string(conventions.CodeFunctionNameKey)] = value
+		}
 	case "Source":
-		attrs[string(conventions.CodeFilepathKey)] = value
+		if !metadata.PkgTranslatorAzurelogsDontEmitV0LogConventionsFeatureGate.IsEnabled() {
+			attrs["code.filepath"] = value
+		}
+		if metadata.PkgTranslatorAzurelogsEmitV1LogConventionsFeatureGate.IsEnabled() {
+			attrs[string(conventions.CodeFilePathKey)] = value
+		}
 	case "Stacktrace", "StackTrace":
 		attrs[string(conventions.ExceptionStacktraceKey)] = value
 	default:
@@ -121,20 +138,20 @@ func handleAppServiceAppLogs(field string, value any, attrs map[string]any, attr
 	}
 }
 
-func handleAppServiceAuditLogs(field string, value any, attrs map[string]any, attrsProps map[string]any) {
+func handleAppServiceAuditLogs(field string, value any, attrs, attrsProps map[string]any) {
 	switch field {
 	case "Protocol":
 		attrs[string(conventions.NetworkProtocolNameKey)] = toLower(value)
 	case "User":
-		attrs["enduser.id"] = value
+		attrs[string(conventions.EnduserIDKey)] = value
 	case "UserAddress":
-		attrs["client.address"] = value
+		attrs[string(conventions.ClientAddressKey)] = value
 	default:
 		attrsProps[field] = value
 	}
 }
 
-func handleAppServiceAuthenticationLogs(field string, value any, attrs map[string]any, attrsProps map[string]any) {
+func handleAppServiceAuthenticationLogs(field string, value any, attrs, attrsProps map[string]any) {
 	switch field {
 	case "StatusCode":
 		attrs[string(conventions.HTTPResponseStatusCodeKey)] = toInt(value)
@@ -143,7 +160,7 @@ func handleAppServiceAuthenticationLogs(field string, value any, attrs map[strin
 	}
 }
 
-func handleAppServiceConsoleLogs(field string, value any, attrs map[string]any, attrsProps map[string]any) {
+func handleAppServiceConsoleLogs(field string, value any, attrs, attrsProps map[string]any) {
 	switch field {
 	case "ContainerId":
 		attrs[string(conventions.ContainerIDKey)] = value
@@ -154,10 +171,10 @@ func handleAppServiceConsoleLogs(field string, value any, attrs map[string]any, 
 	}
 }
 
-func handleAppServiceHTTPLogs(field string, value any, attrs map[string]any, attrsProps map[string]any) {
+func handleAppServiceHTTPLogs(field string, value any, attrs, attrsProps map[string]any) {
 	switch field {
 	case "CIp":
-		attrs["client.address"] = value
+		attrs[string(conventions.ClientAddressKey)] = value
 	case "ComputerName":
 		attrs[string(conventions.HostNameKey)] = value
 	case "CsBytes":
@@ -207,12 +224,12 @@ func handleAppServiceHTTPLogs(field string, value any, attrs map[string]any, att
 	}
 }
 
-func handleAppServiceIPSecAuditLogs(field string, value any, attrs map[string]any, attrsProps map[string]any) {
+func handleAppServiceIPSecAuditLogs(field string, value any, attrs, attrsProps map[string]any) {
 	switch field {
 	case "CIp":
-		attrs["client.address"] = value
+		attrs[string(conventions.ClientAddressKey)] = value
 	case "CsHost":
-		attrs["url.domain"] = value
+		attrs[string(conventions.URLDomainKey)] = value
 	case "XAzureFDID":
 		attrs["http.request.header.x-azure-fdid"] = value
 	case "XFDHealthProbe":
@@ -226,7 +243,7 @@ func handleAppServiceIPSecAuditLogs(field string, value any, attrs map[string]an
 	}
 }
 
-func handleAppServicePlatformLogs(field string, value any, attrs map[string]any, attrsProps map[string]any) {
+func handleAppServicePlatformLogs(field string, value any, attrs, attrsProps map[string]any) {
 	switch field {
 	case "containerId":
 		attrs[string(conventions.ContainerIDKey)] = value

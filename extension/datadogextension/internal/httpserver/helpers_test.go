@@ -1,12 +1,15 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build !aix
+
 package httpserver // import "github.com/open-telemetry/opentelemetry-collector-contrib/extension/datadogextension/internal/httpserver"
 
 import (
+	"context"
 	"errors"
 
-	"github.com/DataDog/datadog-agent/comp/forwarder/defaultforwarder"
+	defaultforwarderimpl "github.com/DataDog/datadog-agent/comp/forwarder/defaultforwarder/impl"
 	"github.com/DataDog/datadog-agent/pkg/metrics"
 	"github.com/DataDog/datadog-agent/pkg/metrics/event"
 	"github.com/DataDog/datadog-agent/pkg/metrics/servicecheck"
@@ -30,52 +33,60 @@ func (m *mockSerializer) SendMetadata(jm marshaler.JSONMarshaler) error {
 	return nil
 }
 
-func (m *mockSerializer) SendEvents(event.Events) error {
+func (*mockSerializer) SendEvents(event.Events) error {
 	return nil
 }
 
-func (m *mockSerializer) SendServiceChecks(servicecheck.ServiceChecks) error {
+func (*mockSerializer) SendServiceChecks(servicecheck.ServiceChecks) error {
 	return nil
 }
 
-func (m *mockSerializer) SendIterableSeries(metrics.SerieSource) error {
+func (*mockSerializer) SendSeriesWithMetadata(metrics.Series) error {
 	return nil
 }
 
-func (m *mockSerializer) AreSeriesEnabled() bool {
+func (*mockSerializer) SendIterableSeries(metrics.SerieSource) error {
+	return nil
+}
+
+func (*mockSerializer) AreSeriesEnabled() bool {
 	return false
 }
 
-func (m *mockSerializer) SendSketch(metrics.SketchesSource) error {
+func (*mockSerializer) SendSketch(metrics.SketchesSource) error {
 	return nil
 }
 
-func (m *mockSerializer) AreSketchesEnabled() bool {
+func (*mockSerializer) AreSketchesEnabled() bool {
 	return false
 }
 
-func (m *mockSerializer) SendHostMetadata(marshaler.JSONMarshaler) error {
+func (*mockSerializer) SendHostMetadata(marshaler.JSONMarshaler) error {
 	return nil
 }
 
-func (m *mockSerializer) SendProcessesMetadata(any) error {
+func (*mockSerializer) SendProcessesMetadata(any) error {
 	return nil
 }
 
-func (m *mockSerializer) SendAgentchecksMetadata(marshaler.JSONMarshaler) error {
+func (*mockSerializer) SendAgentchecksMetadata(marshaler.JSONMarshaler) error {
 	return nil
 }
 
-func (m *mockSerializer) SendOrchestratorMetadata([]types.ProcessMessageBody, string, string, int) error {
+func (*mockSerializer) SendOrchestratorMetadata([]types.ProcessMessageBody, string, string, int) error {
 	return nil
 }
 
-func (m *mockSerializer) SendOrchestratorManifests([]types.ProcessMessageBody, string, string) error {
+func (*mockSerializer) SendOrchestratorManifests([]types.ProcessMessageBody, string, string) error {
+	return nil
+}
+
+func (*mockSerializer) SendAgentShutdownEvent(context.Context, *event.Event) error {
 	return nil
 }
 
 func (m *mockSerializer) Start() error {
-	m.state = defaultforwarder.Started
+	m.state = defaultforwarderimpl.Started
 	return nil
 }
 
@@ -84,16 +95,16 @@ func (m *mockSerializer) State() uint32 {
 }
 
 func (m *mockSerializer) Stop() {
-	m.state = defaultforwarder.Stopped
+	m.state = defaultforwarderimpl.Stopped
 }
 
 // mockJSONErrorPayload implements marshaler.JSONMarshaler but always fails to marshal
 type mockJSONErrorPayload struct{}
 
-func (m *mockJSONErrorPayload) MarshalJSON() ([]byte, error) {
+func (*mockJSONErrorPayload) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("mock marshal error")
 }
 
-func (m *mockJSONErrorPayload) SplitPayload(int) ([]marshaler.AbstractMarshaler, error) {
+func (*mockJSONErrorPayload) SplitPayload(int) ([]marshaler.AbstractMarshaler, error) {
 	return nil, errors.New("mock split error")
 }

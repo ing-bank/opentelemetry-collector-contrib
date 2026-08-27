@@ -6,9 +6,11 @@
 package supervisor
 
 import (
+	"context"
 	"flag"
 	"fmt"
 
+	"go.opentelemetry.io/collector/featuregate"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"golang.org/x/sys/windows"
@@ -67,6 +69,7 @@ func (ws *windowsService) Execute(args []string, requests <-chan svc.ChangeReque
 
 func (ws *windowsService) start(elog *eventlog.Log) error {
 	configFlag := flag.String("config", "", "Path to a supervisor configuration file")
+	featuregate.GlobalRegistry().RegisterFlags(flag.CommandLine)
 	flag.Parse()
 
 	logger, _ := zap.NewDevelopment(zap.WrapCore(withWindowsCore(elog)))
@@ -76,13 +79,13 @@ func (ws *windowsService) start(elog *eventlog.Log) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	sup, err := NewSupervisor(logger, cfg)
+	sup, err := NewSupervisor(context.Background(), logger, cfg)
 	if err != nil {
 		return fmt.Errorf("new supervisor: %w", err)
 	}
 	ws.sup = sup
 
-	return ws.sup.Start()
+	return ws.sup.Start(context.Background())
 }
 
 func (ws *windowsService) stop() {

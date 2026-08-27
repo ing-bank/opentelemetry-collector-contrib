@@ -4,6 +4,9 @@ resourceMetrics:
         - key: mysql.instance.endpoint
           value:
             stringValue: localhost:3306
+        - key: service.instance.id
+          value:
+            stringValue: placeholder
     scopeMetrics:
       - metrics:
           - description: The number of data pages in the InnoDB buffer pool.
@@ -109,6 +112,13 @@ resourceMetrics:
                     - key: kind
                       value:
                         stringValue: free
+                  startTimeUnixNano: "1000000"
+                  timeUnixNano: "2000000"
+                - asInt: "235"
+                  attributes:
+                    - key: kind
+                      value:
+                        stringValue: total
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
             unit: "1"
@@ -331,6 +341,13 @@ resourceMetrics:
                     - key: operation
                       value:
                         stringValue: writes
+                  startTimeUnixNano: "1000000"
+                  timeUnixNano: "2000000"
+                - asInt: "256"
+                  attributes:
+                    - key: operation
+                      value:
+                        stringValue: fsyncs
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
               isMonotonic: true

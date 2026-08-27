@@ -41,8 +41,11 @@ func newMongoDBAtlasReceiver(settings receiver.Settings, cfg *Config) (*mongodba
 		return nil, fmt.Errorf("failed to create MongoDB Atlas client receiver: %w", err)
 	}
 
-	for _, p := range cfg.Projects {
-		p.populateIncludesAndExcludes()
+	// Use index-based iteration: cfg.Projects is []ProjectConfig (value slice),
+	// so a range-copy would make populateIncludesAndExcludes a no-op on the
+	// original elements.
+	for i := range cfg.Projects {
+		cfg.Projects[i].populateIncludesAndExcludes()
 	}
 
 	return &mongodbatlasreceiver{
@@ -70,7 +73,7 @@ func (s *mongodbatlasreceiver) scrape(ctx context.Context) (pmetric.Metrics, err
 func (s *mongodbatlasreceiver) timeConstraints(now time.Time) timeconstraints {
 	var start time.Time
 	if s.lastRun.IsZero() {
-		start = now.Add(s.cfg.CollectionInterval * -1)
+		start = now.Add(s.cfg.ControllerConfig.CollectionInterval * -1)
 	} else {
 		start = s.lastRun
 	}
@@ -130,7 +133,7 @@ func (s *mongodbatlasreceiver) pollProjects(ctx context.Context, time timeconstr
 			continue
 		}
 
-		if err := s.processProject(ctx, time, org.Name, project, projectCfg); err != nil {
+		if err := s.processProject(ctx, time, org.Name, project, &projectCfg); err != nil {
 			s.log.Error("error processing project", zap.String("projectID", project.ID), zap.Error(err))
 		}
 	}
@@ -208,10 +211,10 @@ func (s *mongodbatlasreceiver) getNodeClusterNameMap(
 		return nil, nil, err
 	}
 
-	for _, cluster := range clusters {
+	for i := range clusters {
+		cluster := &clusters[i]
 		// URI in the form mongodb://host1.mongodb.net:27017,host2.mongodb.net:27017,host3.mongodb.net:27017
-		nodes := strings.Split(strings.TrimPrefix(cluster.MongoURI, "mongodb://"), ",")
-		for _, node := range nodes {
+		for node := range strings.SplitSeq(strings.TrimPrefix(cluster.MongoURI, "mongodb://"), ",") {
 			// Remove the port from the node
 			n, _, _ := strings.Cut(node, ":")
 			clusterMap[n] = cluster.Name

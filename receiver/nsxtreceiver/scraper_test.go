@@ -4,7 +4,6 @@
 package nsxtreceiver // import "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/nsxtreceiver"
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -48,13 +47,13 @@ func TestScrape(t *testing.T) {
 
 	scraper := newScraper(
 		&Config{
-			MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig(),
+			MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig(),
 		},
 		receivertest.NewNopSettings(metadata.Type),
 	)
 	scraper.client = mockClient
 
-	metrics, err := scraper.scrape(context.Background())
+	metrics, err := scraper.scrape(t.Context())
 	require.NoError(t, err)
 
 	expectedMetrics, err := golden.ReadMetrics(filepath.Join("testdata", "metrics", "expected_metrics.yaml"))
@@ -72,13 +71,13 @@ func TestScrapeTransportNodeErrors(t *testing.T) {
 	mockClient.On("TransportNodes", mock.Anything).Return(nil, errUnauthorized)
 	scraper := newScraper(
 		&Config{
-			MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig(),
+			MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig(),
 		},
 		receivertest.NewNopSettings(metadata.Type),
 	)
 	scraper.client = mockClient
 
-	_, err := scraper.scrape(context.Background())
+	_, err := scraper.scrape(t.Context())
 	require.Error(t, err)
 	require.ErrorContains(t, err, errUnauthorized.Error())
 }
@@ -90,13 +89,13 @@ func TestScrapeClusterNodeErrors(t *testing.T) {
 	mockClient.On("TransportNodes", mock.Anything).Return(loadTestTransportNodes())
 	scraper := newScraper(
 		&Config{
-			MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig(),
+			MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig(),
 		},
 		receivertest.NewNopSettings(metadata.Type),
 	)
 	scraper.client = mockClient
 
-	_, err := scraper.scrape(context.Background())
+	_, err := scraper.scrape(t.Context())
 	require.Error(t, err)
 	require.ErrorContains(t, err, errUnauthorized.Error())
 }
@@ -105,41 +104,53 @@ func TestStartClientAlreadySet(t *testing.T) {
 	mockClient := mockServer(t)
 	defer mockClient.Close()
 
+	clientConfig := confighttp.NewDefaultClientConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	clientConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+	clientConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+	clientConfig.ForceAttemptHTTP2 = false
+	clientConfig.Endpoint = mockClient.URL
 	scraper := newScraper(
 		&Config{
-			MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig(),
-			ClientConfig: confighttp.ClientConfig{
-				Endpoint: mockClient.URL,
-			},
+			MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig(),
+			ClientConfig:         clientConfig,
 		},
 		receivertest.NewNopSettings(metadata.Type),
 	)
-	_ = scraper.start(context.Background(), componenttest.NewNopHost())
+	_ = scraper.start(t.Context(), componenttest.NewNopHost())
 	require.NotNil(t, scraper.client)
 }
 
 func TestStartBadUrl(t *testing.T) {
+	clientConfig := confighttp.NewDefaultClientConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	clientConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+	clientConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+	clientConfig.ForceAttemptHTTP2 = false
+	clientConfig.Endpoint = "\x00"
 	scraper := newScraper(
 		&Config{
-			MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig(),
-			ClientConfig: confighttp.ClientConfig{
-				Endpoint: "\x00",
-			},
+			MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig(),
+			ClientConfig:         clientConfig,
 		},
 		receivertest.NewNopSettings(metadata.Type),
 	)
 
-	_ = scraper.start(context.Background(), componenttest.NewNopHost())
+	_ = scraper.start(t.Context(), componenttest.NewNopHost())
 	require.Nil(t, scraper.client)
 }
 
 func TestScraperRecordNoStat(_ *testing.T) {
+	clientConfig := confighttp.NewDefaultClientConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	clientConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+	clientConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+	clientConfig.ForceAttemptHTTP2 = false
+	clientConfig.Endpoint = "http://localhost"
 	scraper := newScraper(
 		&Config{
-			ClientConfig: confighttp.ClientConfig{
-				Endpoint: "http://localhost",
-			},
-			MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig(),
+			ClientConfig:         clientConfig,
+			MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig(),
 		},
 		receivertest.NewNopSettings(metadata.Type),
 	)

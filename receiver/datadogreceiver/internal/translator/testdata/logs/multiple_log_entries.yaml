@@ -1,0 +1,76 @@
+resourceLogs:
+  - resource:
+      attributes:
+        - key: host.name
+          value:
+            stringValue: host1
+        - key: service.name
+          value:
+            stringValue: service1
+    scopeLogs:
+      - logRecords:
+          - attributes:
+              - key: datadog.ddsource
+                value:
+                  stringValue: source1
+              - key: tag1
+                value:
+                  stringValue: value1
+            body:
+              stringValue: First log
+            observedTimeUnixNano: "1700000000000000000"
+            severityNumber: 9
+            severityText: info
+            timeUnixNano: "1000000000000000"
+        scope: {}
+  - resource:
+      attributes:
+        - key: host.name
+          value:
+            stringValue: host2
+        - key: service.name
+          value:
+            stringValue: service2
+    scopeLogs:
+      - logRecords:
+          - attributes:
+              - key: datadog.ddsource
+                value:
+                  stringValue: source2
+              - key: tag2
+                value:
+                  stringValue: value2
+              - key: tagB
+                value:
+                  stringValue: valueB
+            body:
+              stringValue: Second log
+            observedTimeUnixNano: "1700000000000000000"
+            severityNumber: 17
+            severityText: error
+            timeUnixNano: "2000000000000000"
+        scope: {}
+  - resource:
+      attributes:
+        - key: host.name
+          value:
+            stringValue: host3
+        - key: service.name
+          value:
+            stringValue: service3
+    scopeLogs:
+      - logRecords:
+          - attributes:
+              - key: datadog.ddsource
+                value:
+                  stringValue: source3
+              - key: tag3
+                value:
+                  stringValue: value3
+            body:
+              stringValue: Third log
+            observedTimeUnixNano: "1700000000000000000"
+            severityNumber: 13
+            severityText: warning
+            timeUnixNano: "3000000000000000"
+        scope: {}

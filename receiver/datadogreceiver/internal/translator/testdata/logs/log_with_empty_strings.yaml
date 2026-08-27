@@ -1,0 +1,8 @@
+resourceLogs:
+  - resource: {}
+    scopeLogs:
+      - logRecords:
+          - body:
+              stringValue: ""
+            observedTimeUnixNano: "1700000000000000000"
+        scope: {}

@@ -4,7 +4,6 @@
 package githubscraper
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +14,7 @@ import (
 	"time"
 
 	"github.com/Khan/genqlient/graphql"
-	"github.com/google/go-github/v72/github"
+	"github.com/google/go-github/v90/github"
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/collector/receiver/receivertest"
 
@@ -25,6 +24,7 @@ import (
 type responses struct {
 	repoResponse       repoResponse
 	prResponse         prResponse
+	mergedPRResponse   mergedPRResponse
 	branchResponse     branchResponse
 	checkLoginResponse loginResponse
 	contribResponse    contribResponse
@@ -40,6 +40,12 @@ type repoResponse struct {
 
 type prResponse struct {
 	prs          []getPullRequestDataRepositoryPullRequestsPullRequestConnection
+	responseCode int
+	page         int
+}
+
+type mergedPRResponse struct {
+	prs          []getMergedPullRequestDataRepositoryPullRequestsPullRequestConnection
 	responseCode int
 	page         int
 }
@@ -134,6 +140,39 @@ func MockServer(responses *responses) *http.ServeMux {
 					return
 				}
 				prResp.page++
+			}
+		case "getMergedPullRequestData":
+			mergedPRResp := &responses.mergedPRResponse
+			// Default to 200 if not set
+			responseCode := mergedPRResp.responseCode
+			if responseCode == 0 {
+				responseCode = http.StatusOK
+			}
+			w.WriteHeader(responseCode)
+			if responseCode == http.StatusOK {
+				// Handle case where no merged PR data is provided
+				var pullRequests getMergedPullRequestDataRepositoryPullRequestsPullRequestConnection
+				if len(mergedPRResp.prs) > 0 && mergedPRResp.page < len(mergedPRResp.prs) {
+					pullRequests = mergedPRResp.prs[mergedPRResp.page]
+					mergedPRResp.page++
+				} else {
+					// Return empty result
+					pullRequests = getMergedPullRequestDataRepositoryPullRequestsPullRequestConnection{
+						Nodes: []MergedPullRequestNode{},
+						PageInfo: getMergedPullRequestDataRepositoryPullRequestsPullRequestConnectionPageInfo{
+							HasPreviousPage: false,
+						},
+					}
+				}
+				resp := getMergedPullRequestDataResponse{
+					Repository: getMergedPullRequestDataRepository{
+						PullRequests: pullRequests,
+					},
+				}
+				graphqlResponse := graphql.Response{Data: &resp}
+				if err := json.NewEncoder(w).Encode(graphqlResponse); err != nil {
+					return
+				}
 			}
 		case "getCommitData":
 			commitResp := &responses.commitResponse
@@ -339,7 +378,7 @@ func TestCheckOwnerExists(t *testing.T) {
 			defer server.Close()
 
 			client := graphql.NewClient(server.URL, ghs.client)
-			loginType, err := ghs.login(context.Background(), client, tc.login)
+			loginType, err := ghs.login(t.Context(), client, tc.login)
 
 			assert.Equal(t, tc.expectedOwnerType, loginType)
 			if !tc.expectedError {
@@ -350,11 +389,17 @@ func TestCheckOwnerExists(t *testing.T) {
 }
 
 func TestGetPullRequests(t *testing.T) {
+	now := time.Now()
+	type prCount struct {
+		open   int
+		merged int
+	}
 	testCases := []struct {
 		desc            string
 		server          *http.ServeMux
+		lookbackDays    int
 		expectedErr     error
-		expectedPrCount int
+		expectedPrCount prCount
 	}{
 		{
 			desc: "TestSinglePageResponse",
@@ -383,7 +428,7 @@ func TestGetPullRequests(t *testing.T) {
 				},
 			}),
 			expectedErr:     nil,
-			expectedPrCount: 3, // 3 PRs per page, 1 pages
+			expectedPrCount: prCount{open: 3}, // 3 PRs per page, 1 page
 		},
 		{
 			desc: "TestMultiPageResponse",
@@ -428,7 +473,83 @@ func TestGetPullRequests(t *testing.T) {
 				},
 			}),
 			expectedErr:     nil,
-			expectedPrCount: 6, // 3 PRs per page, 2 pages
+			expectedPrCount: prCount{open: 6}, // 3 PRs per page, 2 pages
+		},
+		{
+			desc: "TestSinglePageResponseWithLookback",
+			server: MockServer(&responses{
+				prResponse: prResponse{
+					prs: []getPullRequestDataRepositoryPullRequestsPullRequestConnection{
+						{
+							PageInfo: getPullRequestDataRepositoryPullRequestsPullRequestConnectionPageInfo{
+								HasNextPage: false,
+							},
+							Nodes: []PullRequestNode{},
+						},
+					},
+					responseCode: http.StatusOK,
+				},
+				mergedPRResponse: mergedPRResponse{
+					prs: []getMergedPullRequestDataRepositoryPullRequestsPullRequestConnection{
+						{
+							PageInfo: getMergedPullRequestDataRepositoryPullRequestsPullRequestConnectionPageInfo{
+								HasPreviousPage: false,
+							},
+							Nodes: []MergedPullRequestNode{
+								{MergedAt: now.AddDate(0, 0, -10)}, // before cutoff — oldest first in page
+								{MergedAt: now.AddDate(0, 0, -5)},  // within cutoff
+								{MergedAt: now.AddDate(0, 0, -1)},  // within cutoff
+							},
+						},
+					},
+					responseCode: http.StatusOK,
+				},
+			}),
+			lookbackDays:    7,
+			expectedPrCount: prCount{merged: 2},
+		},
+		{
+			desc: "TestMultiPageResponseWithLookback",
+			server: MockServer(&responses{
+				prResponse: prResponse{
+					prs: []getPullRequestDataRepositoryPullRequestsPullRequestConnection{
+						{
+							PageInfo: getPullRequestDataRepositoryPullRequestsPullRequestConnectionPageInfo{
+								HasNextPage: false,
+							},
+							Nodes: []PullRequestNode{},
+						},
+					},
+					responseCode: http.StatusOK,
+				},
+				mergedPRResponse: mergedPRResponse{
+					prs: []getMergedPullRequestDataRepositoryPullRequestsPullRequestConnection{
+						{
+							// most recent page — both nodes within cutoff
+							PageInfo: getMergedPullRequestDataRepositoryPullRequestsPullRequestConnectionPageInfo{
+								HasPreviousPage: true,
+							},
+							Nodes: []MergedPullRequestNode{
+								{MergedAt: now.AddDate(0, 0, -3)},
+								{MergedAt: now.AddDate(0, 0, -1)},
+							},
+						},
+						{
+							// older page — all nodes before cutoff, stops pagination
+							PageInfo: getMergedPullRequestDataRepositoryPullRequestsPullRequestConnectionPageInfo{
+								HasPreviousPage: false,
+							},
+							Nodes: []MergedPullRequestNode{
+								{MergedAt: now.AddDate(0, 0, -12)},
+								{MergedAt: now.AddDate(0, 0, -9)},
+							},
+						},
+					},
+					responseCode: http.StatusOK,
+				},
+			}),
+			lookbackDays:    7,
+			expectedPrCount: prCount{merged: 2},
 		},
 		{
 			desc: "Test404Response",
@@ -438,8 +559,7 @@ func TestGetPullRequests(t *testing.T) {
 					responseCode: http.StatusNotFound,
 				},
 			}),
-			expectedErr:     errors.New("returned error 404"),
-			expectedPrCount: 0,
+			expectedErr: errors.New("returned error 404"),
 		},
 	}
 
@@ -449,18 +569,19 @@ func TestGetPullRequests(t *testing.T) {
 			defaultConfig := factory.CreateDefaultConfig()
 			settings := receivertest.NewNopSettings(metadata.Type)
 			ghs := newGitHubScraper(settings, defaultConfig.(*Config))
+			ghs.cfg.MergedPRLookbackDays = tc.lookbackDays
 			server := httptest.NewServer(tc.server)
 			defer server.Close()
 			client := graphql.NewClient(server.URL, ghs.client)
 
-			prs, err := ghs.getPullRequests(context.Background(), client, "repo name")
-
-			assert.Len(t, prs, tc.expectedPrCount)
+			openPRs, mergedPRs, err := ghs.getPullRequests(t.Context(), client, "repo name")
 			if tc.expectedErr == nil {
 				assert.NoError(t, err)
 			} else {
 				assert.ErrorContains(t, err, tc.expectedErr.Error())
 			}
+
+			assert.Equal(t, prCount{open: len(openPRs), merged: len(mergedPRs)}, tc.expectedPrCount)
 		})
 	}
 }
@@ -556,7 +677,7 @@ func TestGetRepos(t *testing.T) {
 			defer server.Close()
 			client := graphql.NewClient(server.URL, ghs.client)
 
-			_, count, err := ghs.getRepos(context.Background(), client, "fake query")
+			_, count, err := ghs.getRepos(t.Context(), client, "fake query")
 
 			assert.Equal(t, tc.expected, count)
 			if tc.expectedErr == nil {
@@ -660,7 +781,7 @@ func TestGetBranches(t *testing.T) {
 			defer server.Close()
 			client := graphql.NewClient(server.URL, ghs.client)
 
-			_, count, err := ghs.getBranches(context.Background(), client, "deathstarrepo", "main")
+			_, count, err := ghs.getBranches(t.Context(), client, "deathstarrepo", "main")
 
 			assert.Equal(t, tc.expected, count)
 			if tc.expectedErr == nil {
@@ -687,10 +808,10 @@ func TestGetContributors(t *testing.T) {
 				contribResponse: contribResponse{
 					contribs: [][]*github.Contributor{{
 						{
-							ID: github.Ptr(int64(1)),
+							ID: new(int64(1)),
 						},
 						{
-							ID: github.Ptr(int64(2)),
+							ID: new(int64(2)),
 						},
 					}},
 					responseCode: http.StatusOK,
@@ -713,12 +834,12 @@ func TestGetContributors(t *testing.T) {
 			server := httptest.NewServer(tc.server)
 			defer func() { server.Close() }()
 
-			client := github.NewClient(nil)
 			url, _ := url.Parse(server.URL + "/api-v3" + "/")
-			client.BaseURL = url
-			client.UploadURL = url
+			urlString := url.String()
+			client, err := github.NewClient(github.WithURLs(&urlString, &urlString))
+			assert.NoError(t, err)
 
-			contribs, err := ghs.getContributorCount(context.Background(), client, tc.repo)
+			contribs, err := ghs.getContributorCount(t.Context(), client, tc.repo)
 			assert.NoError(t, err)
 			assert.Equal(t, tc.expectedCount, contribs)
 		})
@@ -896,7 +1017,7 @@ func TestEvalCommits(t *testing.T) {
 			server := httptest.NewServer(tc.server)
 			defer server.Close()
 			client := graphql.NewClient(server.URL, ghs.client)
-			adds, dels, age, err := ghs.evalCommits(context.Background(), client, "repo1", tc.branch)
+			adds, dels, age, err := ghs.evalCommits(t.Context(), client, "repo1", tc.branch)
 
 			assert.Equal(t, tc.expectedDeletions, dels)
 			assert.Equal(t, tc.expectedAdditions, adds)

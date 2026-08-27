@@ -4,7 +4,6 @@
 package azureblobexporter
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -24,9 +23,10 @@ func TestCreateDefaultConfig(t *testing.T) {
 func TestCreateMetricsExporter(t *testing.T) {
 	cfg := createDefaultConfig()
 	exp, err := createMetricsExporter(
-		context.Background(),
+		t.Context(),
 		exportertest.NewNopSettings(metadata.Type),
-		cfg)
+		cfg,
+	)
 	assert.NoError(t, err)
 	require.NotNil(t, exp)
 }
@@ -34,9 +34,10 @@ func TestCreateMetricsExporter(t *testing.T) {
 func TestCreateTracesExporter(t *testing.T) {
 	cfg := createDefaultConfig()
 	exp, err := createTracesExporter(
-		context.Background(),
+		t.Context(),
 		exportertest.NewNopSettings(metadata.Type),
-		cfg)
+		cfg,
+	)
 	assert.NoError(t, err)
 	require.NotNil(t, exp)
 }
@@ -44,9 +45,10 @@ func TestCreateTracesExporter(t *testing.T) {
 func TestCreateLogsExporter(t *testing.T) {
 	cfg := createDefaultConfig()
 	exp, err := createLogsExporter(
-		context.Background(),
+		t.Context(),
 		exportertest.NewNopSettings(metadata.Type),
-		cfg)
+		cfg,
+	)
 	assert.NoError(t, err)
 	require.NotNil(t, exp)
 }

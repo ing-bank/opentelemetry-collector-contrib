@@ -9,7 +9,7 @@ import (
 	"github.com/microsoft/ApplicationInsights-Go/appinsights/contracts"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
-	conventions "go.opentelemetry.io/otel/semconv/v1.27.0"
+	conventions "go.opentelemetry.io/otel/semconv/v1.40.0"
 	"go.uber.org/zap"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal/traceutil"
@@ -20,7 +20,7 @@ type logPacker struct {
 	config *Config
 }
 
-func (packer *logPacker) initEnvelope(logRecord plog.LogRecord) (*contracts.Envelope, *contracts.Data) {
+func (*logPacker) initEnvelope(logRecord plog.LogRecord) (*contracts.Envelope, *contracts.Data) {
 	envelope := contracts.NewEnvelope()
 	envelope.Tags = make(map[string]string)
 	envelope.Time = toTime(timestampFromLogRecord(logRecord)).Format(time.RFC3339Nano)
@@ -64,12 +64,23 @@ func (packer *logPacker) handleMessageData(envelope *contracts.Envelope, data *c
 	resourceAttributes := resource.Attributes()
 	applyResourcesToDataProperties(messageData.Properties, resourceAttributes)
 	applyInstrumentationScopeValueToDataProperties(messageData.Properties, instrumentationScope)
-	applyCloudTagsToEnvelope(envelope, resourceAttributes)
+	applyCloudTagsToEnvelope(envelope, resourceAttributes, packer.tagMappings())
+	applyApplicationTagsToEnvelope(envelope, resourceAttributes, packer.tagMappings())
+	applyDeviceTagsToEnvelope(envelope, resourceAttributes)
 	applyInternalSdkVersionTagToEnvelope(envelope)
 
 	setAttributesAsProperties(logRecord.Attributes(), messageData.Properties)
 
 	packer.sanitizeAll(envelope, messageData)
+}
+
+// tagMappings returns the configured envelope tag mappings if any, else nil
+// to signal historical hardcoded behavior to the envelope helpers.
+func (packer *logPacker) tagMappings() *TagMappingsConfig {
+	if packer.config == nil {
+		return nil
+	}
+	return &packer.config.TagMappings
 }
 
 func (packer *logPacker) sanitizeAll(envelope *contracts.Envelope, data any) {
@@ -118,7 +129,9 @@ func (packer *logPacker) handleExceptionData(envelope *contracts.Envelope, data 
 	resourceAttributes := resource.Attributes()
 	applyResourcesToDataProperties(exceptionData.Properties, resourceAttributes)
 	applyInstrumentationScopeValueToDataProperties(exceptionData.Properties, instrumentationScope)
-	applyCloudTagsToEnvelope(envelope, resourceAttributes)
+	applyCloudTagsToEnvelope(envelope, resourceAttributes, packer.tagMappings())
+	applyApplicationTagsToEnvelope(envelope, resourceAttributes, packer.tagMappings())
+	applyDeviceTagsToEnvelope(envelope, resourceAttributes)
 	applyInternalSdkVersionTagToEnvelope(envelope)
 
 	setAttributesAsProperties(logAttributeMap, exceptionData.Properties)
@@ -132,7 +145,7 @@ func (packer *logPacker) sanitize(sanitizeFunc func() []string) {
 	}
 }
 
-func (packer *logPacker) toAiSeverityLevel(sn plog.SeverityNumber) contracts.SeverityLevel {
+func (*logPacker) toAiSeverityLevel(sn plog.SeverityNumber) contracts.SeverityLevel {
 	switch {
 	case sn >= plog.SeverityNumberTrace && sn <= plog.SeverityNumberDebug4:
 		return contracts.Verbose

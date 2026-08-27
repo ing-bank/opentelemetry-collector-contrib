@@ -4,7 +4,6 @@
 package metricsgenerationprocessor
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -281,7 +280,7 @@ func TestMetricsGenerationProcessor(t *testing.T) {
 			}
 			factory := NewFactory()
 			mgp, err := factory.CreateMetrics(
-				context.Background(),
+				t.Context(),
 				processortest.NewNopSettings(metadata.Type),
 				cfg,
 				next,
@@ -291,10 +290,12 @@ func TestMetricsGenerationProcessor(t *testing.T) {
 
 			caps := mgp.Capabilities()
 			assert.True(t, caps.MutatesData)
-			ctx := context.Background()
+			ctx := t.Context()
 			require.NoError(t, mgp.Start(ctx, nil))
 
-			cErr := mgp.ConsumeMetrics(context.Background(), test.inMetrics)
+			inputCopy := pmetric.NewMetrics()
+			test.inMetrics.CopyTo(inputCopy)
+			cErr := mgp.ConsumeMetrics(t.Context(), inputCopy)
 			assert.NoError(t, cErr)
 			got := next.AllMetrics()
 
@@ -515,7 +516,7 @@ func TestGoldenFileMetrics(t *testing.T) {
 
 	for _, testCase := range testCaseNames {
 		t.Run(testCase.name, func(t *testing.T) {
-			require.NoError(t, featuregate.GlobalRegistry().Set(matchAttributes.ID(), testCase.matchAttributesFlagEnabled))
+			require.NoError(t, featuregate.GlobalRegistry().Set(metadata.MetricsgenerationMatchAttributesFeatureGate.ID(), testCase.matchAttributesFlagEnabled))
 
 			cm, err := confmaptest.LoadConf(filepath.Join("testdata", testCase.testDir, "config.yaml"))
 			assert.NoError(t, err)
@@ -529,7 +530,7 @@ func TestGoldenFileMetrics(t *testing.T) {
 			require.NoError(t, sub.Unmarshal(cfg))
 
 			mgp, err := factory.CreateMetrics(
-				context.Background(),
+				t.Context(),
 				processortest.NewNopSettings(metadata.Type),
 				cfg,
 				next,
@@ -538,12 +539,12 @@ func TestGoldenFileMetrics(t *testing.T) {
 			assert.NoError(t, err)
 
 			assert.True(t, mgp.Capabilities().MutatesData)
-			require.NoError(t, mgp.Start(context.Background(), nil))
+			require.NoError(t, mgp.Start(t.Context(), nil))
 
 			inputMetrics, err := golden.ReadMetrics(filepath.Join("testdata", testCase.testDir, "metrics_input.yaml"))
 			assert.NoError(t, err)
 
-			err = mgp.ConsumeMetrics(context.Background(), inputMetrics)
+			err = mgp.ConsumeMetrics(t.Context(), inputMetrics)
 			assert.NoError(t, err)
 
 			got := next.AllMetrics()

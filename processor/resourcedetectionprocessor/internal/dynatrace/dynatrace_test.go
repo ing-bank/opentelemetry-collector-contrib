@@ -4,7 +4,6 @@
 package dynatrace
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,11 +20,12 @@ dt.entity.host=my-host-from-properties
 host.name=my-host-from-properties
 dt.entity.host_group=my-host-group-from-properties
 dt.foo=bar
+dt.smartscape.host=my-smartscaped-host
 invalid-entry
 `
 
 func TestDetectorNewDetector(t *testing.T) {
-	d, err := NewDetector(processor.Settings{}, nil)
+	d, err := NewDetector(processor.Settings{}, nil, false)
 
 	require.NoError(t, err)
 	require.NotNil(t, d)
@@ -43,7 +43,7 @@ func TestDetector_DetectFromProperties(t *testing.T) {
 		TelemetrySettings: component.TelemetrySettings{
 			Logger: zap.NewNop(),
 		},
-	}, nil)
+	}, nil, false)
 
 	require.NoError(t, err)
 
@@ -52,11 +52,11 @@ func TestDetector_DetectFromProperties(t *testing.T) {
 	require.NoError(t, createTestFile(tempDir, dtHostMetadataProperties, testPropertiesFile))
 	d.(*Detector).enrichmentDirectory = tempDir
 
-	resource, _, err := d.Detect(context.Background())
+	resource, _, err := d.Detect(t.Context())
 
 	require.NoError(t, err)
 	require.NotNil(t, resource)
-	require.Equal(t, 2, resource.Attributes().Len())
+	require.Equal(t, len(dtHostProperties), resource.Attributes().Len())
 
 	get, ok := resource.Attributes().Get("dt.entity.host")
 	require.True(t, ok)
@@ -65,6 +65,10 @@ func TestDetector_DetectFromProperties(t *testing.T) {
 	get, ok = resource.Attributes().Get("host.name")
 	require.True(t, ok)
 	require.Equal(t, "my-host-from-properties", get.Str())
+
+	get, ok = resource.Attributes().Get("dt.smartscape.host")
+	require.True(t, ok)
+	require.Equal(t, "my-smartscaped-host", get.Str())
 
 	// verify that we do not take any additional properties
 	_, ok = resource.Attributes().Get("dt.entity.host_group")
@@ -76,15 +80,14 @@ func TestDetector_DetectNoFileAvailable(t *testing.T) {
 		TelemetrySettings: component.TelemetrySettings{
 			Logger: zap.NewNop(),
 		},
-	}, nil)
+	}, nil, false)
 
 	require.NoError(t, err)
-
 	tempDir := t.TempDir()
 
 	d.(*Detector).enrichmentDirectory = tempDir
 
-	resource, _, err := d.Detect(context.Background())
+	resource, _, err := d.Detect(t.Context())
 
 	require.NoError(t, err)
 	require.NotNil(t, resource)

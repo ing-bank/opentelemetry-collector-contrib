@@ -19,12 +19,13 @@ type MetricDataPointAttributes struct {
 	ConditionalAttributeChange migrate.ConditionalAttributeSet
 }
 
-func (o MetricDataPointAttributes) IsMigrator() {}
+func (MetricDataPointAttributes) IsMigrator() {}
 
 func (o MetricDataPointAttributes) Do(ss migrate.StateSelector, metric pmetric.Metric) error {
-	// todo(ankit) handle MetricTypeEmpty
 	var datam alias.Attributed
 	switch metric.Type() {
+	case pmetric.MetricTypeEmpty:
+		return nil
 	case pmetric.MetricTypeExponentialHistogram:
 		for dp := 0; dp < metric.ExponentialHistogram().DataPoints().Len(); dp++ {
 			datam = metric.ExponentialHistogram().DataPoints().At(dp)
@@ -73,7 +74,7 @@ type SpanConditionalAttributes struct {
 	Migrator migrate.ConditionalAttributeSet
 }
 
-func (o SpanConditionalAttributes) IsMigrator() {}
+func (SpanConditionalAttributes) IsMigrator() {}
 
 func (o SpanConditionalAttributes) Do(ss migrate.StateSelector, span ptrace.Span) error {
 	return o.Migrator.Do(ss, span.Attributes(), span.Name())

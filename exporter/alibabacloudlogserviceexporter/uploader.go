@@ -5,6 +5,7 @@ package alibabacloudlogserviceexporter // import "github.com/open-telemetry/open
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 
@@ -47,22 +48,17 @@ func newLogServiceClient(config *Config, logger *zap.Logger) (logServiceClient, 
 		return nil, errors.New("missing logservice params: Endpoint, Project, Logstore")
 	}
 
-	producerConfig := producer.GetDefaultProducerConfig()
-	producerConfig.Endpoint = config.Endpoint
-	producerConfig.AccessKeyID = config.AccessKeyID
-	producerConfig.AccessKeySecret = string(config.AccessKeySecret)
-	if config.ECSRamRole != "" || config.TokenFilePath != "" {
-		tokenUpdateFunc, _ := slsutil.NewTokenUpdateFunc(config.ECSRamRole, config.TokenFilePath)
-		provider := sls.NewUpdateFuncProviderAdapter(tokenUpdateFunc)
-		producerConfig.CredentialsProvider = provider
+	producerConfig := newProducerConfig(config)
 
-		producerConfig.StsTokenShutDown = make(chan struct{})
+	producer, err := producer.NewProducer(producerConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Log Service producer: %w", err)
 	}
 
 	c := &logServiceClientImpl{
 		project:        config.Project,
 		logstore:       config.Logstore,
-		clientInstance: producer.InitProducer(producerConfig),
+		clientInstance: producer,
 		logger:         logger,
 	}
 	c.clientInstance.Start()
@@ -73,13 +69,35 @@ func newLogServiceClient(config *Config, logger *zap.Logger) (logServiceClient, 
 	return c, nil
 }
 
+func newProducerConfig(config *Config) *producer.ProducerConfig {
+	producerConfig := producer.GetDefaultProducerConfig()
+	producerConfig.Endpoint = config.Endpoint
+	producerConfig.AccessKeyID = config.AccessKeyID
+	producerConfig.AccessKeySecret = string(config.AccessKeySecret)
+	if config.ECSRamRole != "" || config.TokenFilePath != "" {
+		tokenUpdateFunc, _ := slsutil.NewTokenUpdateFunc(config.ECSRamRole, config.TokenFilePath)
+		provider := sls.NewUpdateFuncProviderAdapter(tokenUpdateFunc)
+		producerConfig.CredentialsProvider = provider
+
+		producerConfig.StsTokenShutDown = make(chan struct{})
+	} else if config.SecurityToken != "" {
+		producerConfig.CredentialsProvider = sls.NewStaticCredentialsProvider(
+			config.AccessKeyID,
+			string(config.AccessKeySecret),
+			string(config.SecurityToken),
+		)
+	}
+
+	return producerConfig
+}
+
 // sendLogs send message to LogService
 func (c *logServiceClientImpl) sendLogs(logs []*sls.Log) error {
 	return c.clientInstance.SendLogListWithCallBack(c.project, c.logstore, c.topic, c.source, logs, c)
 }
 
 // Success is impl of producer.CallBack
-func (c *logServiceClientImpl) Success(*producer.Result) {}
+func (*logServiceClientImpl) Success(*producer.Result) {}
 
 // Fail is impl of producer.CallBack
 func (c *logServiceClientImpl) Fail(result *producer.Result) {

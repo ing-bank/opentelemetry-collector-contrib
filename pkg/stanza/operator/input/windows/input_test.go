@@ -8,8 +8,11 @@ package windows // import "github.com/open-telemetry/opentelemetry-collector-con
 import (
 	"context"
 	"errors"
+	"math"
+	"runtime"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -46,6 +49,21 @@ func TestInputStart_LocalSubscriptionError(t *testing.T) {
 
 	err := input.Start(persister)
 	assert.ErrorContains(t, err, "The specified channel could not be found")
+}
+
+// TestInputStart_NoErrorIfIgnoreChannelErrorsEnabled ensures no error is thrown when ignore_channel_errors flag is enabled
+// Other existing tests ensures the default behavior of error out when any error occurs while subscribing to the channel
+func TestInputStart_NoErrorIfIgnoreChannelErrorEnabled(t *testing.T) {
+	persister := testutil.NewMockPersister("")
+
+	input := newTestInput()
+	input.channel = "test-channel"
+	input.startAt = "beginning"
+	input.ignoreChannelErrors = true
+	input.pollInterval = 1 * time.Second
+
+	err := input.Start(persister)
+	assert.NoError(t, err, "Expected no error when ignoreMissingChannel is true")
 }
 
 // TestInputStart_RemoteSubscriptionError ensures the input correctly handles remote subscription errors.
@@ -88,10 +106,10 @@ func TestInputStart_RemoteSessionError(t *testing.T) {
 func TestInputStart_RemoteAccessDeniedError(t *testing.T) {
 	persister := testutil.NewMockPersister("")
 
-	originalEvtSubscribeFunc := evtSubscribeFunc
-	defer func() { evtSubscribeFunc = originalEvtSubscribeFunc }()
+	originalEvtSubscribe := evtSubscribe
+	defer func() { evtSubscribe = originalEvtSubscribe }()
 
-	evtSubscribeFunc = func(_ uintptr, _ windows.Handle, _ *uint16, _ *uint16, _ uintptr, _ uintptr, _ uintptr, _ uint32) (uintptr, error) {
+	evtSubscribe = func(_ uintptr, _ windows.Handle, _, _ *uint16, _, _, _ uintptr, _ uint32) (uintptr, error) {
 		return 0, windows.ERROR_ACCESS_DENIED
 	}
 
@@ -113,10 +131,10 @@ func TestInputStart_RemoteAccessDeniedError(t *testing.T) {
 func TestInputStart_BadChannelName(t *testing.T) {
 	persister := testutil.NewMockPersister("")
 
-	originalEvtSubscribeFunc := evtSubscribeFunc
-	defer func() { evtSubscribeFunc = originalEvtSubscribeFunc }()
+	originalEvtSubscribe := evtSubscribe
+	defer func() { evtSubscribe = originalEvtSubscribe }()
 
-	evtSubscribeFunc = func(_ uintptr, _ windows.Handle, _ *uint16, _ *uint16, _ uintptr, _ uintptr, _ uintptr, _ uint32) (uintptr, error) {
+	evtSubscribe = func(_ uintptr, _ windows.Handle, _, _ *uint16, _, _, _ uintptr, _ uint32) (uintptr, error) {
 		return 0, windows.ERROR_EVT_CHANNEL_NOT_FOUND
 	}
 
@@ -134,46 +152,83 @@ func TestInputStart_BadChannelName(t *testing.T) {
 	assert.ErrorContains(t, err, "The specified channel could not be found")
 }
 
+func TestInputStart_RemoteSessionWithDomain(t *testing.T) {
+	persister := testutil.NewMockPersister("")
+
+	// Mock EvtOpenSession to capture the login struct and verify Domain handling
+	originalOpenSessionProc := openSessionProc
+	var capturedDomain string
+	var domainWasNil bool
+	openSessionProc = MockProc{
+		call: func(a ...uintptr) (uintptr, uintptr, error) {
+			// a[0] = loginClass, a[1] = login pointer, a[2] = timeout, a[3] = flags
+			if len(a) >= 4 && a[1] != 0 {
+				capturedDomain = "remote-domain"
+				domainWasNil = false
+			} else {
+				domainWasNil = true
+			}
+			return 1, 0, nil
+		},
+	}
+	defer func() { openSessionProc = originalOpenSessionProc }()
+
+	input := newTestInput()
+	input.ignoreChannelErrors = true
+	input.channel = "test-channel"
+	input.startAt = "beginning"
+	input.pollInterval = 1 * time.Second
+	input.remote = RemoteConfig{
+		Server:   "remote-server",
+		Username: "test-user",
+		Password: "test-pass",
+		Domain:   "remote-domain",
+	}
+
+	err := input.Start(persister)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, input.Stop())
+	})
+
+	require.False(t, domainWasNil)
+	require.Equal(t, "remote-domain", capturedDomain)
+}
+
 // TestInputRead_RPCInvalidBound tests that the Input handles RPC_S_INVALID_BOUND errors properly
 func TestInputRead_RPCInvalidBound(t *testing.T) {
 	// Save original procs and restore after test
-	originalNextProc := nextProc
-	originalCloseProc := closeProc
-	originalSubscribeProc := subscribeProc
+	originalEvtNext := evtNext
+	originalEvtClose := evtClose
+	originalEvtSubscribe := evtSubscribe
 
 	// Track calls to our mocked functions
 	var nextCalls, closeCalls, subscribeCalls int
 
 	// Mock the procs
-	closeProc = MockProc{
-		call: func(_ ...uintptr) (uintptr, uintptr, error) {
-			closeCalls++
-			return 1, 0, nil
-		},
+	evtClose = func(_ uintptr) error {
+		closeCalls++
+		return nil
 	}
 
-	subscribeProc = MockProc{
-		call: func(_ ...uintptr) (uintptr, uintptr, error) {
-			subscribeCalls++
-			return 42, 0, nil
-		},
+	evtSubscribe = func(_ uintptr, _ windows.Handle, _, _ *uint16, _, _, _ uintptr, _ uint32) (uintptr, error) {
+		subscribeCalls++
+		return 42, nil
 	}
 
-	nextProc = MockProc{
-		call: func(_ ...uintptr) (uintptr, uintptr, error) {
-			nextCalls++
-			if nextCalls == 1 {
-				return 0, 0, windows.RPC_S_INVALID_BOUND
-			}
+	evtNext = func(_ uintptr, _ uint32, _ *uintptr, _, _ uint32, _ *uint32) error {
+		nextCalls++
+		if nextCalls == 1 {
+			return windows.RPC_S_INVALID_BOUND
+		}
 
-			return 1, 0, nil
-		},
+		return nil
 	}
 
 	defer func() {
-		nextProc = originalNextProc
-		closeProc = originalCloseProc
-		subscribeProc = originalSubscribeProc
+		evtNext = originalEvtNext
+		evtClose = originalEvtClose
+		evtSubscribe = originalEvtSubscribe
 	}()
 
 	// Create a logger with an observer for testing log output
@@ -189,17 +244,13 @@ func TestInputRead_RPCInvalidBound(t *testing.T) {
 	input.maxReads = 100
 	input.currentMaxReads = 100
 
-	// Set up subscription with valid handle and enough info to reopen
+	// Set up subscription with valid handle
 	input.subscription = Subscription{
-		handle:        42, // Dummy handle
-		startAt:       "beginning",
-		sessionHandle: 0,
-		channel:       "test-channel",
+		handle: 42, // Dummy handle
 	}
 
 	// Call the method under test
-	ctx := context.Background()
-	input.read(ctx)
+	input.read(t.Context())
 
 	// Verify the correct number of calls to each mock
 	assert.Equal(t, 2, nextCalls, "nextProc should be called twice (initial failure and retry)")
@@ -212,6 +263,91 @@ func TestInputRead_RPCInvalidBound(t *testing.T) {
 	// Verify that a warning log was generated
 	require.Equal(t, 1, logs.Len())
 	assert.Contains(t, logs.All()[0].Message, "Encountered RPC_S_INVALID_BOUND")
+}
+
+// TestInputReadWithRetry_UsesInputBookmarkForRecovery verifies that on RPC_S_INVALID_BOUND the
+// Input's own bookmark handle — not any internal subscription state — is forwarded to
+// evtSubscribe when reopening the subscription.
+func TestInputReadWithRetry_UsesInputBookmarkForRecovery(t *testing.T) {
+	originalEvtNext := evtNext
+	originalEvtClose := evtClose
+	originalEvtSubscribe := evtSubscribe
+	defer func() {
+		evtNext = originalEvtNext
+		evtClose = originalEvtClose
+		evtSubscribe = originalEvtSubscribe
+	}()
+
+	const bookmarkHandle uintptr = 99
+
+	var capturedBookmark uintptr
+	evtClose = func(_ uintptr) error { return nil }
+	evtSubscribe = func(_ uintptr, _ windows.Handle, _, _ *uint16, bookmark, _, _ uintptr, _ uint32) (uintptr, error) {
+		capturedBookmark = bookmark
+		return 42, nil
+	}
+
+	var nextCalls int
+	evtNext = func(_ uintptr, _ uint32, _ *uintptr, _, _ uint32, _ *uint32) error {
+		nextCalls++
+		if nextCalls == 1 {
+			return windows.RPC_S_INVALID_BOUND
+		}
+		return nil
+	}
+
+	input := newTestInput()
+	input.maxReads = 100
+	input.currentMaxReads = 100
+	input.bookmark = Bookmark{handle: bookmarkHandle}
+	input.subscription = Subscription{handle: 42}
+	defer input.subscription.Close()
+
+	_, err := input.readWithRetry(100)
+	require.NoError(t, err)
+
+	assert.Equal(t, bookmarkHandle, capturedBookmark, "evtSubscribe should receive the Input's bookmark handle")
+	assert.Equal(t, 50, input.currentMaxReads, "batch size should be halved after RPC_S_INVALID_BOUND")
+}
+
+// TestInputReadWithRetry_RecursiveBatchReduction verifies that repeated RPC_S_INVALID_BOUND
+// errors cause the batch size to keep halving until a read succeeds.
+func TestInputReadWithRetry_RecursiveBatchReduction(t *testing.T) {
+	originalEvtNext := evtNext
+	originalEvtClose := evtClose
+	originalEvtSubscribe := evtSubscribe
+	defer func() {
+		evtNext = originalEvtNext
+		evtClose = originalEvtClose
+		evtSubscribe = originalEvtSubscribe
+	}()
+
+	evtClose = func(_ uintptr) error { return nil }
+	evtSubscribe = func(_ uintptr, _ windows.Handle, _, _ *uint16, _, _, _ uintptr, _ uint32) (uintptr, error) {
+		return 42, nil
+	}
+
+	var nextCalls int
+	evtNext = func(_ uintptr, _ uint32, _ *uintptr, _, _ uint32, _ *uint32) error {
+		nextCalls++
+		if nextCalls < 4 {
+			return windows.RPC_S_INVALID_BOUND
+		}
+		return nil
+	}
+
+	input := newTestInput()
+	input.maxReads = 100
+	input.currentMaxReads = 100
+	input.subscription = Subscription{handle: 42}
+	defer input.subscription.Close()
+
+	_, err := input.readWithRetry(100)
+	require.NoError(t, err)
+
+	// 100 → 50 → 25 → 12
+	assert.Equal(t, 12, input.currentMaxReads)
+	assert.Equal(t, 4, nextCalls)
 }
 
 // TestInputIncludeLogRecordOriginal tests that the log.record.original attribute is added when include_log_record_original is true
@@ -229,7 +365,6 @@ func TestInputIncludeLogRecordOriginal(t *testing.T) {
 		},
 	}
 
-	ctx := context.Background()
 	persister := testutil.NewMockPersister("")
 	fake := testutil.NewFakeOutput(t)
 	input.OutputOperators = []operator.Operator{fake}
@@ -237,7 +372,7 @@ func TestInputIncludeLogRecordOriginal(t *testing.T) {
 	err := input.Start(persister)
 	require.NoError(t, err)
 
-	err = input.sendEvent(ctx, eventXML)
+	err = input.sendEvent(t.Context(), eventXML)
 	require.NoError(t, err)
 
 	expectedEntry := &entry.Entry{
@@ -262,6 +397,7 @@ func TestInputIncludeLogRecordOriginal(t *testing.T) {
 			"record_id":   uint64(0),
 			"system_time": "2024-01-01T00:00:00Z",
 			"task":        "",
+			"version":     uint8(0),
 		},
 		Attributes: map[string]any{
 			"log.record.original": eventXML.Original,
@@ -295,7 +431,6 @@ func TestInputIncludeLogRecordOriginalFalse(t *testing.T) {
 		},
 	}
 
-	ctx := context.Background()
 	persister := testutil.NewMockPersister("")
 	fake := testutil.NewFakeOutput(t)
 	input.OutputOperators = []operator.Operator{fake}
@@ -303,7 +438,7 @@ func TestInputIncludeLogRecordOriginalFalse(t *testing.T) {
 	err := input.Start(persister)
 	require.NoError(t, err)
 
-	err = input.sendEvent(ctx, eventXML)
+	err = input.sendEvent(t.Context(), eventXML)
 	require.NoError(t, err)
 
 	expectedEntry := &entry.Entry{
@@ -328,6 +463,7 @@ func TestInputIncludeLogRecordOriginalFalse(t *testing.T) {
 			"record_id":   uint64(0),
 			"system_time": "2024-01-01T00:00:00Z",
 			"task":        "",
+			"version":     uint8(0),
 		},
 		Attributes: nil,
 	}
@@ -343,4 +479,115 @@ func TestInputIncludeLogRecordOriginalFalse(t *testing.T) {
 
 	err = input.Stop()
 	require.NoError(t, err)
+}
+
+// TestInputRead_Batching tests that the Input handles MaxEventsPerPoll and MaxReads correctly
+func TestInputRead_Batching(t *testing.T) {
+	originalEvtNext := evtNext
+	originalEvtRender := evtRender
+	originalEvtClose := evtClose
+	originalEvtSubscribe := evtSubscribe
+	originalCreateBookmarkProc := createBookmarkProc
+	originalEvtUpdateBookmark := evtUpdateBookmark
+	defer func() {
+		evtNext = originalEvtNext
+		evtRender = originalEvtRender
+		evtClose = originalEvtClose
+		evtSubscribe = originalEvtSubscribe
+		createBookmarkProc = originalCreateBookmarkProc
+		evtUpdateBookmark = originalEvtUpdateBookmark
+	}()
+
+	evtSubscribe = func(_ uintptr, _ windows.Handle, _, _ *uint16, _, _, _ uintptr, _ uint32) (uintptr, error) {
+		return 42, nil
+	}
+
+	evtRender = func(_, _ uintptr, _, _ uint32, _ *byte) (*uint32, error) {
+		bufferUsed := new(uint32)
+		return bufferUsed, nil
+	}
+
+	evtClose = func(_ uintptr) error {
+		return nil
+	}
+
+	createBookmarkProc = MockProc{
+		call: func(_ ...uintptr) (uintptr, uintptr, error) {
+			return 1, 0, nil
+		},
+	}
+
+	evtUpdateBookmark = func(_, _ uintptr) error {
+		return nil
+	}
+
+	var nextCalls, processedEvents, emittedEvents int
+
+	maxEventsToEmit := -1
+
+	mockBatch := make([]uintptr, 99)
+	var pinner runtime.Pinner
+	pinner.Pin(&mockBatch[0])
+	defer pinner.Unpin()
+
+	producedEvents := 0
+
+	for i := range mockBatch {
+		mockBatch[i] = uintptr(i)
+	}
+
+	evtNext = func(_ uintptr, eventsSize uint32, events *uintptr, _, _ uint32, returned *uint32) error {
+		nextCalls++
+
+		wantsToRead := int(eventsSize)
+		producedEvents = min(len(mockBatch), wantsToRead)
+		if maxEventsToEmit >= 0 {
+			producedEvents = min(producedEvents, maxEventsToEmit-emittedEvents)
+		}
+
+		*returned = uint32(producedEvents)
+		*events = uintptr(unsafe.Pointer(&mockBatch[0]))
+
+		emittedEvents += producedEvents
+
+		return nil
+	}
+
+	input := newTestInput()
+
+	input.processEvent = func(_ context.Context, _ Event) error {
+		processedEvents++
+		return nil
+	}
+
+	input.buffer = NewBuffer()
+	input.maxReads = len(mockBatch) - 10
+	input.currentMaxReads = input.maxReads
+	input.maxEventsPerPollCycle = 999
+
+	input.subscription = Subscription{
+		handle: 42,
+	}
+
+	input.read(t.Context())
+
+	requiredNextCalls := int(math.Ceil(float64(input.maxEventsPerPollCycle) / float64(input.maxReads)))
+	assert.Equal(t, input.maxEventsPerPollCycle, input.eventsReadInPollCycle)
+	assert.Equal(t, requiredNextCalls, nextCalls)
+	assert.Equal(t, input.maxEventsPerPollCycle, processedEvents)
+	assert.Equal(t, input.currentMaxReads, input.maxReads)
+
+	nextCalls = 0
+	input.maxEventsPerPollCycle = 0
+	input.eventsReadInPollCycle = 0
+	emittedEvents = 0
+	processedEvents = 0
+	maxEventsToEmit = 420
+	input.read(t.Context())
+
+	// +1 is the 0 event stop call
+	requiredNextCalls = int(math.Ceil(float64(maxEventsToEmit)/float64(input.maxReads))) + 1
+	assert.Equal(t, requiredNextCalls, nextCalls)
+	assert.Equal(t, maxEventsToEmit, processedEvents)
+	assert.Equal(t, input.currentMaxReads, input.maxReads)
 }

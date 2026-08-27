@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -93,7 +94,7 @@ func (mr *monitoringReceiver) Scrape(ctx context.Context) (pmetric.Metrics, erro
 	defer mr.mutex.RUnlock()
 	for metricType, metricDesc := range mr.metricDescriptors {
 		// Set interval and delay times, using defaults if not provided
-		gInterval = mr.config.CollectionInterval
+		gInterval = mr.config.ControllerConfig.CollectionInterval
 		if gInterval <= 0 {
 			gInterval = defaultCollectionInterval
 		}
@@ -107,7 +108,7 @@ func (mr *monitoringReceiver) Scrape(ctx context.Context) (pmetric.Metrics, erro
 		calStartTime, calEndTime = calculateStartEndTime(gInterval, gDelay)
 
 		// Get the filter query for the metric
-		filterQuery = fmt.Sprintf(`metric.type = "%s"`, metricType)
+		filterQuery = fmt.Sprintf(`metric.type = %q`, metricType)
 
 		// Define the request to list time series data
 		tsReq := &monitoringpb.ListTimeSeriesRequest{
@@ -153,8 +154,16 @@ func (mr *monitoringReceiver) initializeClient(ctx context.Context) error {
 		return fmt.Errorf("failed to find default credentials: %w", err)
 	}
 
+	opts := []option.ClientOption{option.WithCredentials(creds)}
+	if mr.config.UniverseDomain != "" {
+		opts = append(opts, option.WithUniverseDomain(mr.config.UniverseDomain))
+	}
+	if mr.config.Endpoint != "" {
+		opts = append(opts, option.WithEndpoint(mr.config.Endpoint))
+	}
+
 	// Attempt to create the monitoring client
-	client, err := monitoring.NewMetricClient(ctx, option.WithCredentials(creds))
+	client, err := monitoring.NewMetricClient(ctx, opts...)
 	if err != nil {
 		return fmt.Errorf("failed to create a monitoring client: %w", err)
 	}
@@ -237,7 +246,7 @@ func getFilterQuery(metric MetricConfig) string {
 
 	// see https://cloud.google.com/monitoring/api/v3/filters
 	if metric.MetricName != "" {
-		filterQuery = fmt.Sprintf(`metric.type = "%s"`, metric.MetricName)
+		filterQuery = fmt.Sprintf(`metric.type = %q`, metric.MetricName)
 	} else {
 		filterQuery = metric.MetricDescriptorFilter
 	}
@@ -274,15 +283,8 @@ func (mr *monitoringReceiver) convertGCPTimeSeriesToMetrics(metrics pmetric.Metr
 			}
 			if timeSeries.GetMetadata().GetSystemLabels() != nil {
 				for k, v := range timeSeries.GetMetadata().GetSystemLabels().GetFields() {
-					resource.Attributes().PutStr(k, fmt.Sprintf("%v", v))
+					resource.Attributes().PutStr(k, v.String())
 				}
-			}
-		}
-
-		// Add metric-specific labels if they are present
-		if len(timeSeries.GetMetric().Labels) > 0 {
-			for k, v := range timeSeries.GetMetric().GetLabels() {
-				resource.Attributes().PutStr(k, fmt.Sprintf("%v", v))
 			}
 		}
 
@@ -334,19 +336,20 @@ func (mr *monitoringReceiver) convertGCPTimeSeriesToMetrics(metrics pmetric.Metr
 
 // Helper function to generate a unique key for a resource based on its attributes
 func generateResourceKey(resourceType string, labels map[string]string, timeSeries *monitoringpb.TimeSeries) string {
-	key := resourceType
+	var key strings.Builder
+	key.WriteString(resourceType)
 	for k, v := range labels {
-		key += k + v
+		key.WriteString(k + v)
 	}
 	if timeSeries != nil {
 		for k, v := range timeSeries.Metric.Labels {
-			key += k + v
+			key.WriteString(k + v)
 		}
 		if timeSeries.Resource.Labels != nil {
 			for k, v := range timeSeries.Resource.Labels {
-				key += k + v
+				key.WriteString(k + v)
 			}
 		}
 	}
-	return key
+	return key.String()
 }

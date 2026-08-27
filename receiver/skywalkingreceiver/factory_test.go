@@ -4,7 +4,6 @@
 package skywalkingreceiver
 
 import (
-	"context"
 	"path/filepath"
 	"testing"
 
@@ -15,6 +14,7 @@ import (
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/confignet"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configtls"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
 	"go.opentelemetry.io/collector/consumer/consumertest"
@@ -41,7 +41,7 @@ func TestCreateReceiver(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 	// have to enable at least one protocol for the skywalking receiver to be created
-	cfg.(*Config).GRPC = &configgrpc.ServerConfig{
+	cfg.(*Config).Protocols.GRPC = &configgrpc.ServerConfig{
 		NetAddr: confignet.AddrConfig{
 			Endpoint:  "0.0.0.0:11800",
 			Transport: confignet.TransportTypeTCP,
@@ -49,12 +49,12 @@ func TestCreateReceiver(t *testing.T) {
 	}
 	traceSink := new(consumertest.TracesSink)
 	set := receivertest.NewNopSettings(metadata.Type)
-	tReceiver, err := factory.CreateTraces(context.Background(), set, cfg, traceSink)
+	tReceiver, err := factory.CreateTraces(t.Context(), set, cfg, traceSink)
 	assert.NoError(t, err, "trace receiver creation failed")
 	assert.NotNil(t, tReceiver, "trace receiver creation failed")
 
 	metricSink := new(consumertest.MetricsSink)
-	mReceiver, err := factory.CreateMetrics(context.Background(), set, cfg, metricSink)
+	mReceiver, err := factory.CreateMetrics(t.Context(), set, cfg, metricSink)
 	assert.NoError(t, err, "metric receiver creation failed")
 	assert.NotNil(t, mReceiver, "metric receiver creation failed")
 }
@@ -71,12 +71,12 @@ func TestCreateReceiverGeneralConfig(t *testing.T) {
 
 	set := receivertest.NewNopSettings(metadata.Type)
 	traceSink := new(consumertest.TracesSink)
-	tReceiver, err := factory.CreateTraces(context.Background(), set, cfg, traceSink)
+	tReceiver, err := factory.CreateTraces(t.Context(), set, cfg, traceSink)
 	assert.NoError(t, err, "trace receiver creation failed")
 	assert.NotNil(t, tReceiver, "trace receiver creation failed")
 
 	metricSink := new(consumertest.MetricsSink)
-	mReceiver, err := factory.CreateMetrics(context.Background(), set, cfg, metricSink)
+	mReceiver, err := factory.CreateMetrics(t.Context(), set, cfg, metricSink)
 	assert.NoError(t, err, "metric receiver creation failed")
 	assert.NotNil(t, mReceiver, "metric receiver creation failed")
 }
@@ -85,7 +85,7 @@ func TestCreateDefaultGRPCEndpoint(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 
-	cfg.(*Config).GRPC = &configgrpc.ServerConfig{
+	cfg.(*Config).Protocols.GRPC = &configgrpc.ServerConfig{
 		NetAddr: confignet.AddrConfig{
 			Endpoint:  "0.0.0.0:11800",
 			Transport: confignet.TransportTypeTCP,
@@ -93,7 +93,7 @@ func TestCreateDefaultGRPCEndpoint(t *testing.T) {
 	}
 	traceSink := new(consumertest.TracesSink)
 	set := receivertest.NewNopSettings(metadata.Type)
-	r, err := factory.CreateTraces(context.Background(), set, cfg, traceSink)
+	r, err := factory.CreateTraces(t.Context(), set, cfg, traceSink)
 	assert.NoError(t, err, "unexpected error creating receiver")
 	assert.Equal(t, 11800, r.(*sharedcomponent.SharedComponent).
 		Unwrap().(*swReceiver).config.CollectorGRPCPort, "grpc port should be default")
@@ -103,21 +103,21 @@ func TestCreateTLSGPRCEndpoint(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 
-	cfg.(*Config).GRPC = &configgrpc.ServerConfig{
+	cfg.(*Config).Protocols.GRPC = &configgrpc.ServerConfig{
 		NetAddr: confignet.AddrConfig{
 			Endpoint:  "0.0.0.0:11800",
 			Transport: confignet.TransportTypeTCP,
 		},
-		TLS: &configtls.ServerConfig{
+		TLS: configoptional.Some(configtls.ServerConfig{
 			Config: configtls.Config{
 				CertFile: "./testdata/server.crt",
 				KeyFile:  "./testdata/server.key",
 			},
-		},
+		}),
 	}
 	set := receivertest.NewNopSettings(metadata.Type)
 	traceSink := new(consumertest.TracesSink)
-	_, err := factory.CreateTraces(context.Background(), set, cfg, traceSink)
+	_, err := factory.CreateTraces(t.Context(), set, cfg, traceSink)
 	assert.NoError(t, err, "tls-enabled receiver creation failed")
 }
 
@@ -125,19 +125,27 @@ func TestCreateTLSHTTPEndpoint(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 
-	cfg.(*Config).HTTP = &confighttp.ServerConfig{
-		Endpoint: "0.0.0.0:12800",
-		TLS: &configtls.ServerConfig{
-			Config: configtls.Config{
-				CertFile: "./testdata/server.crt",
-				KeyFile:  "./testdata/server.key",
-			},
-		},
+	httpServerConfig := confighttp.NewDefaultServerConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	httpServerConfig.WriteTimeout = 0
+	httpServerConfig.ReadHeaderTimeout = 0
+	httpServerConfig.IdleTimeout = 0           //nolint:staticcheck // SA1019: see TODO above
+	httpServerConfig.KeepAlivesEnabled = false //nolint:staticcheck // SA1019: see TODO above
+	httpServerConfig.NetAddr = confignet.AddrConfig{
+		Transport: confignet.TransportTypeTCP,
+		Endpoint:  "0.0.0.0:12800",
 	}
+	httpServerConfig.TLS = configoptional.Some(configtls.ServerConfig{
+		Config: configtls.Config{
+			CertFile: "./testdata/server.crt",
+			KeyFile:  "./testdata/server.key",
+		},
+	})
+	cfg.(*Config).Protocols.HTTP = &httpServerConfig
 
 	set := receivertest.NewNopSettings(metadata.Type)
 	traceSink := new(consumertest.TracesSink)
-	_, err := factory.CreateTraces(context.Background(), set, cfg, traceSink)
+	_, err := factory.CreateTraces(t.Context(), set, cfg, traceSink)
 	assert.NoError(t, err, "tls-enabled receiver creation failed")
 }
 
@@ -145,12 +153,20 @@ func TestCreateInvalidHTTPEndpoint(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 
-	cfg.(*Config).HTTP = &confighttp.ServerConfig{
-		Endpoint: "0.0.0.0:12800",
+	httpServerConfig := confighttp.NewDefaultServerConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	httpServerConfig.WriteTimeout = 0
+	httpServerConfig.ReadHeaderTimeout = 0
+	httpServerConfig.IdleTimeout = 0           //nolint:staticcheck // SA1019: see TODO above
+	httpServerConfig.KeepAlivesEnabled = false //nolint:staticcheck // SA1019: see TODO above
+	httpServerConfig.NetAddr = confignet.AddrConfig{
+		Transport: confignet.TransportTypeTCP,
+		Endpoint:  "0.0.0.0:12800",
 	}
+	cfg.(*Config).Protocols.HTTP = &httpServerConfig
 	set := receivertest.NewNopSettings(metadata.Type)
 	traceSink := new(consumertest.TracesSink)
-	r, err := factory.CreateTraces(context.Background(), set, cfg, traceSink)
+	r, err := factory.CreateTraces(t.Context(), set, cfg, traceSink)
 	assert.NoError(t, err, "unexpected error creating receiver")
 	assert.Equal(t, 12800, r.(*sharedcomponent.SharedComponent).
 		Unwrap().(*swReceiver).config.CollectorHTTPPort, "http port should be default")

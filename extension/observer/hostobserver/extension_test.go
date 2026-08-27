@@ -4,7 +4,6 @@
 package hostobserver
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -100,7 +99,8 @@ func TestHostObserver(t *testing.T) {
 				host = getExpectedHost(host, isIPv6)
 				expectedID := observer.EndpointID(
 					fmt.Sprintf(
-						"(host_observer/1)%s-%s-%s-%d", host, port, tt.protocol, selfPid),
+						"(host_observer/1)%s-%s-%s-%d", host, port, tt.protocol, selfPid,
+					),
 				)
 
 				actualEndpoint := notifier.endpointsMap[expectedID]
@@ -178,7 +178,7 @@ func startAndStopObserver(
 
 	mn := mockNotifier{map[observer.EndpointID]observer.Endpoint{}}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	require.NoError(t, h.Start(ctx, componenttest.NewNopHost()))
 	h.ListAndWatch(mn)
 
@@ -249,7 +249,7 @@ type mockNotifier struct {
 	endpointsMap map[observer.EndpointID]observer.Endpoint
 }
 
-func (m mockNotifier) ID() observer.NotifyID {
+func (mockNotifier) ID() observer.NotifyID {
 	return "mockNotifier"
 }
 

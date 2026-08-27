@@ -86,6 +86,25 @@ func TestZookeeperMetricsScraperScrape(t *testing.T) {
 			expectedNumResourceMetrics: 1,
 		},
 		{
+			name: "Test correctness with v3.7.2",
+			mockedZKCmdToOutputFilename: map[string]string{
+				"mntr": "mntr-3.7.2",
+				"ruok": "ruok-valid",
+			},
+			expectedMetricsFilename: "correctness-v3.7.2",
+			expectedResourceAttributes: map[string]string{
+				"server.state": "standalone",
+				"zk.version":   "3.7.2-a055d78707164783287056086786315873919992",
+			},
+			expectedLogs: []logMsg{
+				{
+					msg:   "metric computation failed",
+					level: zapcore.DebugLevel,
+				},
+			},
+			expectedNumResourceMetrics: 1,
+		},
+		{
 			name:                "Arbitrary connection error",
 			mockZKConnectionErr: true,
 			expectedLogs: []logMsg{
@@ -122,7 +141,7 @@ func TestZookeeperMetricsScraperScrape(t *testing.T) {
 			},
 			expectedLogs: []logMsg{
 				{
-					msg:   "non-integer value from mntr",
+					msg:   "non-parseable value from mntr",
 					level: zapcore.DebugLevel,
 				},
 				{
@@ -192,7 +211,7 @@ func TestZookeeperMetricsScraperScrape(t *testing.T) {
 				"zk.version":   "3.4.14-4c25d480e66aadd371de8bd2fd8da255ac140bcf",
 			},
 			expectedNumResourceMetrics: 1,
-			setConnectionDeadline: func(_ net.Conn, _ time.Time) error {
+			setConnectionDeadline: func(net.Conn, time.Time) error {
 				return errors.New("")
 			},
 		},
@@ -222,7 +241,7 @@ func TestZookeeperMetricsScraperScrape(t *testing.T) {
 				"zk.version":   "3.4.14-4c25d480e66aadd371de8bd2fd8da255ac140bcf",
 			},
 			expectedNumResourceMetrics: 1,
-			closeConnection: func(_ net.Conn) error {
+			closeConnection: func(net.Conn) error {
 				return errors.New("")
 			},
 		},
@@ -238,7 +257,7 @@ func TestZookeeperMetricsScraperScrape(t *testing.T) {
 					level: zapcore.ErrorLevel,
 				},
 			},
-			sendCmd: func(_ net.Conn, _ string) (*bufio.Scanner, error) {
+			sendCmd: func(net.Conn, string) (*bufio.Scanner, error) {
 				return nil, errors.New("")
 			},
 		},
@@ -285,9 +304,9 @@ func TestZookeeperMetricsScraperScrape(t *testing.T) {
 			}
 
 			cfg := createDefaultConfig().(*Config)
-			cfg.Endpoint = localAddr
+			cfg.TCPAddrConfig.Endpoint = localAddr
 			if tt.metricsConfig != nil {
-				cfg.Metrics = tt.metricsConfig()
+				cfg.MetricsBuilderConfig.Metrics = tt.metricsConfig()
 			}
 
 			core, observedLogs := observer.New(zap.DebugLevel)
@@ -306,11 +325,11 @@ func TestZookeeperMetricsScraperScrape(t *testing.T) {
 			if tt.sendCmd != nil {
 				z.sendCmd = tt.sendCmd
 			}
-			require.NoError(t, z.Start(context.Background(), componenttest.NewNopHost()))
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			require.NoError(t, z.Start(t.Context(), componenttest.NewNopHost()))
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			actualMetrics, err := z.ScrapeMetrics(ctx)
-			require.NoError(t, z.Shutdown(context.Background()))
+			require.NoError(t, z.Shutdown(t.Context()))
 
 			require.Equal(t, len(tt.expectedLogs), observedLogs.Len())
 			for i, log := range tt.expectedLogs {
@@ -323,7 +342,7 @@ func TestZookeeperMetricsScraperScrape(t *testing.T) {
 					require.Error(t, err)
 					require.Equal(t, pmetric.NewMetrics(), actualMetrics)
 				}
-				require.NoError(t, z.Shutdown(context.Background()))
+				require.NoError(t, z.Shutdown(t.Context()))
 				return
 			}
 
@@ -340,8 +359,8 @@ func TestZookeeperMetricsScraperScrape(t *testing.T) {
 func TestZookeeperShutdownBeforeScrape(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	z := newZookeeperMetricsScraper(scrapertest.NewNopSettings(metadata.Type), cfg)
-	require.NoError(t, z.Start(context.Background(), componenttest.NewNopHost()))
-	require.NoError(t, z.Shutdown(context.Background()))
+	require.NoError(t, z.Start(t.Context(), componenttest.NewNopHost()))
+	require.NoError(t, z.Shutdown(t.Context()))
 }
 
 type mockedServer struct {

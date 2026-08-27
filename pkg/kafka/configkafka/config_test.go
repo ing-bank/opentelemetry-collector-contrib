@@ -4,16 +4,18 @@
 package configkafka // import "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/kafka/configkafka"
 
 import (
+	"fmt"
+	"math"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/config/configcompression"
 	"go.opentelemetry.io/collector/config/configtls"
+	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
-	"go.opentelemetry.io/collector/confmap/xconfmap"
 )
 
 func TestClientConfig(t *testing.T) {
@@ -26,10 +28,9 @@ func TestClientConfig(t *testing.T) {
 		},
 		"full": {
 			expected: ClientConfig{
-				Brokers:                              []string{"foo:123", "bar:456"},
-				ResolveCanonicalBootstrapServersOnly: true,
-				ClientID:                             "vip",
-				ProtocolVersion:                      "1.2.3",
+				Brokers:         []string{"foo:123", "bar:456"},
+				ClientID:        "vip",
+				ProtocolVersion: "3.1.2",
 				TLS: &configtls.ClientConfig{
 					Config: configtls.Config{
 						CAFile:   "ca.pem",
@@ -52,6 +53,9 @@ func TestClientConfig(t *testing.T) {
 						Backoff: 5 * time.Second,
 					},
 				},
+				RackID:          "rack1",
+				UseLeaderEpoch:  true,
+				ConnIdleTimeout: 5 * time.Minute,
 			},
 		},
 		"sasl_aws_msk_iam_oauthbearer": {
@@ -63,6 +67,18 @@ func TestClientConfig(t *testing.T) {
 				return cfg
 			}(),
 		},
+		"sasl_aws_msk_iam_oauthbearer_with_region": {
+			expected: func() ClientConfig {
+				cfg := NewDefaultClientConfig()
+				cfg.Authentication.SASL = &SASLConfig{
+					Mechanism: "AWS_MSK_IAM_OAUTHBEARER",
+					AWSMSK: AWSMSKConfig{
+						Region: "us-east-1",
+					},
+				}
+				return cfg
+			}(),
+		},
 		"sasl_plain": {
 			expected: func() ClientConfig {
 				cfg := NewDefaultClientConfig()
@@ -70,31 +86,21 @@ func TestClientConfig(t *testing.T) {
 					Mechanism: "PLAIN",
 					Username:  "abc",
 					Password:  "def",
-					Version:   1,
 				}
 				return cfg
 			}(),
 		},
-		"legacy_auth_tls": {
+		"not_use_leader_epoch": {
 			expected: func() ClientConfig {
 				cfg := NewDefaultClientConfig()
-				cfg.Authentication.TLS = &configtls.ClientConfig{
-					Config: configtls.Config{
-						CAFile:   "ca.pem",
-						CertFile: "cert.pem",
-						KeyFile:  "key.pem",
-					},
-				}
+				cfg.UseLeaderEpoch = false
 				return cfg
 			}(),
 		},
-		"legacy_auth_plain_text": {
+		"conn_idle_timeout": {
 			expected: func() ClientConfig {
 				cfg := NewDefaultClientConfig()
-				cfg.Authentication.PlainText = &PlainTextConfig{
-					Username: "abc",
-					Password: "def",
-				}
+				cfg.ConnIdleTimeout = 5 * time.Minute
 				return cfg
 			}(),
 		},
@@ -104,13 +110,10 @@ func TestClientConfig(t *testing.T) {
 			expectedErr: "brokers must be specified",
 		},
 		"invalid_protocol_version": {
-			expectedErr: "invalid protocol version: invalid version `none`",
+			expectedErr: `invalid protocol version: "none"`,
 		},
 		"sasl_invalid_mechanism": {
 			expectedErr: "auth::sasl: mechanism should be one of 'PLAIN', 'AWS_MSK_IAM_OAUTHBEARER', 'SCRAM-SHA-256' or 'SCRAM-SHA-512'. configured value FANCY",
-		},
-		"sasl_invalid_version": {
-			expectedErr: "auth::sasl: version has to be either 0 or 1. configured value -1",
 		},
 		"sasl_plain_username_required": {
 			expectedErr: "auth::sasl: username is required",
@@ -139,16 +142,51 @@ func TestConsumerConfig(t *testing.T) {
 					Enable:   false,
 					Interval: 10 * time.Minute,
 				},
-				MinFetchSize:     10,
-				DefaultFetchSize: 1024,
-				MaxFetchSize:     4096,
-				MaxFetchWait:     1 * time.Second,
+				MinFetchSize:          10,
+				MaxFetchSize:          4096,
+				MaxFetchWait:          1 * time.Second,
+				MaxPartitionFetchSize: 4096,
+			},
+		},
+		"group_rebalance_strategies": {
+			expected: func() ConsumerConfig {
+				config := NewDefaultConsumerConfig()
+				config.GroupRebalanceStrategies = []GroupRebalanceStrategy{
+					CooperativeStickyBalanceStrategy,
+					"my_balancer",
+				}
+				return config
+			}(),
+		},
+		"zero_min_fetch_size": {
+			expected: ConsumerConfig{
+				SessionTimeout:    10 * time.Second,
+				HeartbeatInterval: 3 * time.Second,
+				GroupID:           "otel-collector",
+				InitialOffset:     "latest",
+				AutoCommit: AutoCommitConfig{
+					Enable:   true,
+					Interval: 1 * time.Second,
+				},
+				MinFetchSize:          0,
+				MaxFetchSize:          1048576,
+				MaxFetchWait:          250 * time.Millisecond,
+				MaxPartitionFetchSize: 1048576,
 			},
 		},
 
 		// Invalid configurations
 		"invalid_initial_offset": {
 			expectedErr: "initial_offset should be one of 'latest' or 'earliest'. configured value middle",
+		},
+		"invalid_fetch_size": {
+			expectedErr: "max_fetch_size (100) cannot be less than min_fetch_size (1000)",
+		},
+		"negative_min_fetch_size": {
+			expectedErr: "min_fetch_size (-100) must be non-negative",
+		},
+		"empty_group_rebalance_strategies_entry": {
+			expectedErr: "group_rebalance_strategies entries cannot be empty",
 		},
 	})
 }
@@ -162,34 +200,55 @@ func TestProducerConfig(t *testing.T) {
 			expected: NewDefaultProducerConfig(),
 		},
 		"full": {
-			expected: ProducerConfig{
-				MaxMessageBytes: 1,
-				RequiredAcks:    0,
-				Compression:     "gzip",
-				CompressionParams: configcompression.CompressionParams{
-					Level: 1,
-				},
-				FlushMaxMessages: 2,
-			},
+			expected: func() ProducerConfig {
+				cfg := NewDefaultProducerConfig()
+				cfg.MaxMessageBytes = 1
+				cfg.RequiredAcks = 0
+				cfg.Compression = "gzip"
+				cfg.CompressionParams.Level = 1
+				cfg.FlushMaxMessages = 2
+				return cfg
+			}(),
 		},
 		"default_compression_level": {
-			expected: ProducerConfig{
-				MaxMessageBytes: 1,
-				RequiredAcks:    0,
-				Compression:     "zstd",
-				CompressionParams: configcompression.CompressionParams{
-					// zero is treated as the codec-specific default
-					Level: 0,
-				},
-				FlushMaxMessages: 2,
-			},
+			expected: func() ProducerConfig {
+				cfg := NewDefaultProducerConfig()
+				cfg.MaxMessageBytes = 1
+				cfg.RequiredAcks = 0
+				cfg.Compression = "zstd"
+				// zero is treated as the codec-specific default
+				cfg.CompressionParams.Level = 0
+				cfg.FlushMaxMessages = 2
+				return cfg
+			}(),
 		},
 		"snappy_compression": {
-			expected: ProducerConfig{
-				MaxMessageBytes: 1000000,
-				RequiredAcks:    1,
-				Compression:     "snappy",
-			},
+			expected: func() ProducerConfig {
+				cfg := NewDefaultProducerConfig()
+				cfg.Compression = "snappy"
+				return cfg
+			}(),
+		},
+		"disable_auto_topic_creation": {
+			expected: func() ProducerConfig {
+				cfg := NewDefaultProducerConfig()
+				cfg.AllowAutoTopicCreation = false
+				return cfg
+			}(),
+		},
+		"producer_linger": {
+			expected: func() ProducerConfig {
+				cfg := NewDefaultProducerConfig()
+				cfg.Linger = 100 * time.Millisecond
+				return cfg
+			}(),
+		},
+		"producer_linger_1s": {
+			expected: func() ProducerConfig {
+				cfg := NewDefaultProducerConfig()
+				cfg.Linger = 1 * time.Second
+				return cfg
+			}(),
 		},
 		"invalid_compression_level": {
 			expectedErr: `unsupported parameters {Level:-123} for compression type "gzip"`,
@@ -201,6 +260,21 @@ func TestProducerConfig(t *testing.T) {
 				return cfg
 			}(),
 		},
+		"custom_flush_max_messages": {
+			expected: func() ProducerConfig {
+				cfg := NewDefaultProducerConfig()
+				cfg.FlushMaxMessages = 5000
+				return cfg
+			}(),
+		},
+		"large_message": {
+			expected: func() ProducerConfig {
+				cfg := NewDefaultProducerConfig()
+				cfg.MaxMessageBytes = 209715200
+				cfg.MaxBrokerWriteBytes = 268435456
+				return cfg
+			}(),
+		},
 
 		// Invalid configurations
 		"invalid_compression": {
@@ -209,6 +283,50 @@ func TestProducerConfig(t *testing.T) {
 		"invalid_required_acks": {
 			expectedErr: "required_acks: expected 'all' (-1), 0, or 1; configured value is 3",
 		},
+		"flush_max_messages_zero": {
+			expectedErr: "flush_max_messages (0) must be at least 1",
+		},
+		"flush_max_messages_negative": {
+			expectedErr: "flush_max_messages (-1) must be at least 1",
+		},
+		"max_message_bytes_negative": {
+			expectedErr: "max_message_bytes (-1000) must be non-negative",
+		},
+		"max_broker_write_bytes_negative": {
+			expectedErr: "max_broker_write_bytes (-1000) must be non-negative",
+		},
+		"max_broker_write_bytes_too_small": {
+			expectedErr: fmt.Sprintf("max_broker_write_bytes (1000) must be at least %d (%d MiB, franz-go minimum)", franzGoMinBrokerWriteBytes, franzGoMinBrokerWriteBytes>>20),
+		},
+		"max_message_bytes_exceeds_broker": {
+			expectedErr: fmt.Sprintf("max_message_bytes (209715200) cannot be greater than max_broker_write_bytes (%d)", franzGoMinBrokerWriteBytes),
+		},
+	})
+}
+
+// TestProducerConfigInt32Overflow verifies that size limits exceeding the int32
+// range used by franz-go are rejected. Values above math.MaxInt32 are only
+// representable on platforms where int is 64-bit, so this is skipped elsewhere.
+func TestProducerConfigInt32Overflow(t *testing.T) {
+	if strconv.IntSize < 64 {
+		t.Skip("int is not wide enough to exceed math.MaxInt32 on this architecture")
+	}
+	// Use a runtime int64 value so the conversion to int is not a compile-time
+	// constant (which would overflow int and fail to build on 32-bit platforms).
+	maxInt32 := int64(math.MaxInt32)
+	overflow := int(maxInt32 + 1)
+
+	t.Run("max_message_bytes", func(t *testing.T) {
+		cfg := NewDefaultProducerConfig()
+		cfg.MaxMessageBytes = overflow
+		require.EqualError(t, cfg.Validate(),
+			fmt.Sprintf("max_message_bytes (%d) must not exceed %d", overflow, math.MaxInt32))
+	})
+	t.Run("max_broker_write_bytes", func(t *testing.T) {
+		cfg := NewDefaultProducerConfig()
+		cfg.MaxBrokerWriteBytes = overflow
+		require.EqualError(t, cfg.Validate(),
+			fmt.Sprintf("max_broker_write_bytes (%d) must not exceed %d", overflow, math.MaxInt32))
 	})
 }
 
@@ -230,7 +348,7 @@ func testConfig[ConfigStruct any](t *testing.T, filename string, defaultConfig f
 			require.NoError(t, err)
 			require.NoError(t, sub.Unmarshal(&cfg))
 
-			err = xconfmap.Validate(cfg)
+			err = confmap.Validate(cfg)
 			if tt.expectedErr != "" {
 				require.EqualError(t, err, tt.expectedErr)
 			} else {

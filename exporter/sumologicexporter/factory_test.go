@@ -11,8 +11,9 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configauth"
 	"go.opentelemetry.io/collector/config/confighttp"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configretry"
-	"go.opentelemetry.io/collector/confmap/xconfmap"
+	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/sumologicexporter/internal/metadata"
@@ -27,14 +28,27 @@ func TestType(t *testing.T) {
 func TestCreateDefaultConfig(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
-	qs := exporterhelper.NewDefaultQueueConfig()
-	qs.Enabled = false
+	qConfig := exporterhelper.NewDefaultQueueConfig()
+	qConfig.QueueSize = 1024000
+	qConfig.Batch = configoptional.Default(exporterhelper.BatchConfig{
+		FlushTimeout: 1 * time.Second,
+		Sizer:        exporterhelper.RequestSizerTypeItems,
+		MinSize:      1024,
+		MaxSize:      2048,
+	})
+	qs := configoptional.Default(qConfig)
+	retryConfig := configretry.NewDefaultBackOffConfig()
+	retryConfig.Enabled = true
+	retryConfig.InitialInterval = 5 * time.Second
+	retryConfig.Multiplier = 1.2
+	retryConfig.MaxInterval = 5 * time.Minute
+	retryConfig.MaxElapsedTime = 1 * time.Hour
 	clientConfig := confighttp.NewDefaultClientConfig()
 	clientConfig.Timeout = 30 * time.Second
 	clientConfig.Compression = "gzip"
-	clientConfig.Auth = &configauth.Config{
+	clientConfig.Auth = configoptional.Some(configauth.Config{
 		AuthenticatorID: component.NewID(metadata.Type),
-	}
+	})
 	assert.Equal(t, &Config{
 		MaxRequestBodySize: 1_048_576,
 		LogFormat:          "otlp",
@@ -42,9 +56,9 @@ func TestCreateDefaultConfig(t *testing.T) {
 		Client:             "otelcol",
 
 		ClientConfig:  clientConfig,
-		BackOffConfig: configretry.NewDefaultBackOffConfig(),
+		BackOffConfig: retryConfig,
 		QueueSettings: qs,
 	}, cfg)
 
-	assert.NoError(t, xconfmap.Validate(cfg))
+	assert.NoError(t, confmap.Validate(cfg))
 }

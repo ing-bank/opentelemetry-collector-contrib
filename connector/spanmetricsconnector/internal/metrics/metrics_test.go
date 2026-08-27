@@ -5,6 +5,7 @@ package metrics
 
 import (
 	"testing"
+	"time"
 
 	"github.com/lightstep/go-expohisto/structure"
 	"github.com/stretchr/testify/assert"
@@ -113,9 +114,9 @@ func TestSum_AddExemplar(t *testing.T) {
 		want  int
 	}{
 		{
-			name:  "Sum Metric - No exemplars configured",
-			input: Sum{exemplars: pmetric.NewExemplarSlice(), maxExemplarCount: &maxCount},
-			want:  1,
+			name:  "Sum Metric - set maxExemplarCount zero",
+			input: Sum{exemplars: pmetric.NewExemplarSlice(), maxExemplarCount: 0},
+			want:  0,
 		},
 		{
 			name: "Sum Metric - With exemplars length less than configured max count",
@@ -128,7 +129,7 @@ func TestSum_AddExemplar(t *testing.T) {
 
 				return Sum{
 					exemplars:        exs,
-					maxExemplarCount: &maxCount,
+					maxExemplarCount: maxCount,
 				}
 			}(),
 			want: 2,
@@ -152,7 +153,7 @@ func TestSum_AddExemplar(t *testing.T) {
 
 				return Sum{
 					exemplars:        exs,
-					maxExemplarCount: &maxCount,
+					maxExemplarCount: maxCount,
 				}
 			}(),
 			want: 3,
@@ -174,9 +175,9 @@ func TestExplicitHistogram_AddExemplar(t *testing.T) {
 		want  int
 	}{
 		{
-			name:  "Explicit Histogram - No exemplars configured",
-			input: explicitHistogram{exemplars: pmetric.NewExemplarSlice(), maxExemplarCount: &maxCount},
-			want:  1,
+			name:  "Explicit Histogram - set maxExemplarCount zero",
+			input: explicitHistogram{exemplars: pmetric.NewExemplarSlice(), maxExemplarCount: 0},
+			want:  0,
 		},
 		{
 			name: "Explicit Histogram - With exemplars length less than configured max count",
@@ -189,7 +190,7 @@ func TestExplicitHistogram_AddExemplar(t *testing.T) {
 
 				return explicitHistogram{
 					exemplars:        exs,
-					maxExemplarCount: &maxCount,
+					maxExemplarCount: maxCount,
 				}
 			}(),
 			want: 2,
@@ -213,7 +214,7 @@ func TestExplicitHistogram_AddExemplar(t *testing.T) {
 
 				return explicitHistogram{
 					exemplars:        exs,
-					maxExemplarCount: &maxCount,
+					maxExemplarCount: maxCount,
 				}
 			}(),
 			want: 3,
@@ -235,9 +236,9 @@ func TestExponentialHistogram_AddExemplar(t *testing.T) {
 		want  int
 	}{
 		{
-			name:  "Exponential Histogram - No exemplars configured",
-			input: exponentialHistogram{exemplars: pmetric.NewExemplarSlice(), maxExemplarCount: &maxCount},
-			want:  1,
+			name:  "Exponential Histogram - set maxExemplarCount zero",
+			input: exponentialHistogram{exemplars: pmetric.NewExemplarSlice(), maxExemplarCount: 0},
+			want:  0,
 		},
 		{
 			name: "Exponential Histogram - With exemplars length less than configured max count",
@@ -250,7 +251,7 @@ func TestExponentialHistogram_AddExemplar(t *testing.T) {
 
 				return exponentialHistogram{
 					exemplars:        exs,
-					maxExemplarCount: &maxCount,
+					maxExemplarCount: maxCount,
 				}
 			}(),
 			want: 2,
@@ -274,7 +275,7 @@ func TestExponentialHistogram_AddExemplar(t *testing.T) {
 
 				return exponentialHistogram{
 					exemplars:        exs,
-					maxExemplarCount: &maxCount,
+					maxExemplarCount: maxCount,
 				}
 			}(),
 			want: 3,
@@ -368,6 +369,7 @@ func TestSumMetrics_IsCardinalityLimitReached(t *testing.T) {
 }
 
 func TestSumMetrics_GetOrCreate(t *testing.T) {
+	now := time.Unix(123, 0)
 	tests := []struct {
 		name               string
 		metrics            map[Key]*Sum
@@ -446,7 +448,7 @@ func TestSumMetrics_GetOrCreate(t *testing.T) {
 			attributesFun := func() pcommon.Map {
 				return tt.attributes
 			}
-			sum, limitReached := sm.GetOrCreate(tt.key, attributesFun, pcommon.Timestamp(0))
+			sum, limitReached := sm.GetOrCreate(tt.key, attributesFun, pcommon.Timestamp(0), now)
 			sum.Add(1)
 			assert.Equal(t, tt.limitReached, limitReached)
 			assert.Len(t, sm.metrics, tt.expectedMetricsLen)
@@ -458,6 +460,53 @@ func TestSumMetrics_GetOrCreate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSumMetrics_ExpireSeries(t *testing.T) {
+	now := time.Unix(123, 0)
+	sm := SumMetrics{
+		metrics: map[Key]*Sum{
+			"active":    {lastSeen: now},
+			"stale":     {lastSeen: now.Add(-2 * time.Second)},
+			overflowKey: {lastSeen: now.Add(-2 * time.Second)},
+		},
+	}
+
+	sm.ExpireSeries(time.Second, now)
+
+	assert.Contains(t, sm.metrics, Key("active"))
+	assert.NotContains(t, sm.metrics, Key("stale"))
+	assert.NotContains(t, sm.metrics, Key(overflowKey))
+}
+
+func TestExplicitHistogramMetrics_ExpireSeries(t *testing.T) {
+	now := time.Unix(123, 0)
+	hm := &explicitHistogramMetrics{
+		metrics: map[Key]*explicitHistogram{
+			"active": {lastSeen: now},
+			"stale":  {lastSeen: now.Add(-2 * time.Second)},
+		},
+	}
+
+	hm.ExpireSeries(time.Second, now)
+
+	assert.Contains(t, hm.metrics, Key("active"))
+	assert.NotContains(t, hm.metrics, Key("stale"))
+}
+
+func TestExponentialHistogramMetrics_ExpireSeries(t *testing.T) {
+	now := time.Unix(123, 0)
+	hm := &exponentialHistogramMetrics{
+		metrics: map[Key]*exponentialHistogram{
+			"active": {lastSeen: now},
+			"stale":  {lastSeen: now.Add(-2 * time.Second)},
+		},
+	}
+
+	hm.ExpireSeries(time.Second, now)
+
+	assert.Contains(t, hm.metrics, Key("active"))
+	assert.NotContains(t, hm.metrics, Key("stale"))
 }
 
 func TestSumMetrics_BuildMetrics(t *testing.T) {

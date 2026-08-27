@@ -19,13 +19,13 @@ import (
 )
 
 func (s *processScraper) recordCPUTimeMetric(now pcommon.Timestamp, cpuTime *cpu.TimesStat) {
-	s.mb.RecordProcessCPUTimeDataPoint(now, cpuTime.User, metadata.AttributeStateUser)
-	s.mb.RecordProcessCPUTimeDataPoint(now, cpuTime.System, metadata.AttributeStateSystem)
+	s.mb.RecordProcessCPUTimeDataPoint(now, cpuTime.User, metadata.AttributeStateUser, metadata.AttributeCPUModeUser)
+	s.mb.RecordProcessCPUTimeDataPoint(now, cpuTime.System, metadata.AttributeStateSystem, metadata.AttributeCPUModeSystem)
 }
 
 func (s *processScraper) recordCPUUtilization(now pcommon.Timestamp, cpuUtilization ucal.CPUUtilization) {
-	s.mb.RecordProcessCPUUtilizationDataPoint(now, cpuUtilization.User, metadata.AttributeStateUser)
-	s.mb.RecordProcessCPUUtilizationDataPoint(now, cpuUtilization.System, metadata.AttributeStateSystem)
+	s.mb.RecordProcessCPUUtilizationDataPoint(now, cpuUtilization.User, metadata.AttributeStateUser, metadata.AttributeCPUModeUser)
+	s.mb.RecordProcessCPUUtilizationDataPoint(now, cpuUtilization.System, metadata.AttributeStateSystem, metadata.AttributeCPUModeSystem)
 }
 
 func getProcessName(_ context.Context, _ processHandle, exePath string) (string, error) {
@@ -50,7 +50,7 @@ func getProcessExecutable(ctx context.Context, proc processHandle) (string, erro
 }
 
 // matches the first argument before an unquoted space or slash
-var cmdRegex = regexp.MustCompile(`^((?:[^"]*?"[^"]*?")*?[^"]*?)(?:[ \/]|$)`)
+var cmdRegex = regexp.MustCompile(`^((?:[^"]*?"[^"]*?")*?[^"]*?)(?:[ /]|$)`)
 
 func getProcessCommand(ctx context.Context, proc processHandle) (*commandMetadata, error) {
 	cmdline, err := proc.CmdlineWithContext(ctx)

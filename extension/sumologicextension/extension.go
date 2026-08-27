@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -23,17 +24,16 @@ import (
 	"github.com/Showmax/go-fqdn"
 	"github.com/cenkalti/backoff/v4"
 	"github.com/shirou/gopsutil/v4/host"
-	"github.com/shirou/gopsutil/v4/process"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/extension"
 	"go.opentelemetry.io/collector/extension/extensionauth"
-	"go.opentelemetry.io/collector/featuregate"
 	"go.uber.org/zap"
 
-	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/sumologicextension/api"
-	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/sumologicextension/credentials"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/sumologicextension/internal/api"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/sumologicextension/internal/credentials"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/sumologicextension/internal/procx"
 )
 
 type SumologicExtension struct {
@@ -61,10 +61,12 @@ type SumologicExtension struct {
 	stickySessionCookieLock sync.RWMutex
 	stickySessionCookie     string
 
-	closeChan chan struct{}
-	closeOnce sync.Once
-	backOff   *backoff.ExponentialBackOff
-	id        component.ID
+	closeChan            chan struct{}
+	closeOnce            sync.Once
+	backOff              *backoff.ExponentialBackOff
+	id                   component.ID
+	collectorCredentials credentials.CollectorCredentials
+	procx                *procx.Procx
 }
 
 const (
@@ -77,30 +79,11 @@ const (
 	collectorCredentialIDField = "collector_credential_id"
 
 	stickySessionKey = "AWSALB"
-
-	activeMQJavaProcess      = "activemq.jar"
-	cassandraJavaProcess     = "org.apache.cassandra.service.CassandraDaemon"
-	dockerDesktopJavaProcess = "com.docker.backend"
-	jmxJavaProcess           = "com.sun.management.jmxremote"
 )
 
 const (
-	updateCollectorMetadataID    = "extension.sumologic.updateCollectorMetadata"
-	updateCollectorMetadataStage = featuregate.StageAlpha
-
 	DefaultHeartbeatInterval = 15 * time.Second
 )
-
-var updateCollectorMetadataFeatureGate *featuregate.Gate
-
-func init() {
-	updateCollectorMetadataFeatureGate = featuregate.GlobalRegistry().MustRegister(
-		updateCollectorMetadataID,
-		updateCollectorMetadataStage,
-		featuregate.WithRegisterDescription("When enabled, the collector will update its Sumo Logic metadata on startup."),
-		featuregate.WithRegisterReferenceURL("https://github.com/SumoLogic/sumologic-otel-collector/pull/858"),
-	)
-}
 
 // SumologicExtension implements extensionauth.HTTPClient
 var (
@@ -129,7 +112,16 @@ func newSumologicExtension(conf *Config, logger *zap.Logger, id component.ID, bu
 	var (
 		collectorName string
 		hashKey       = createHashKey(conf)
+		hashKeyV2     = createHashKeyV2(conf)
 	)
+
+	_, err = credentialsStore.Get(hashKeyV2)
+	if err != nil {
+		logger.Info("credentials not found, trying legacy credentials", zap.Error(err))
+	} else {
+		logger.Debug("v2 credentials found")
+		hashKey = hashKeyV2
+	}
 	if conf.CollectorName == "" {
 		// If collector name is not set by the user, check if the collector was restarted
 		// and that we can reuse collector name save in credentials store.
@@ -163,16 +155,24 @@ func newSumologicExtension(conf *Config, logger *zap.Logger, id component.ID, bu
 		logger:            logger,
 		hashKey:           hashKey,
 		credentialsStore:  credentialsStore,
-		updateMetadata:    updateCollectorMetadataFeatureGate.IsEnabled(),
+		updateMetadata:    conf.UpdateMetadata,
 		closeChan:         make(chan struct{}),
 		backOff:           backOff,
 		id:                id,
+		procx:             procx.NewProcx(logger),
 	}, nil
 }
 
 func createHashKey(conf *Config) string {
 	return fmt.Sprintf("%s%s%s",
 		conf.CollectorName,
+		conf.Credentials.InstallationToken,
+		strings.TrimSuffix(conf.APIBaseURL, "/"),
+	)
+}
+
+func createHashKeyV2(conf *Config) string {
+	return fmt.Sprintf("%s%s",
 		conf.Credentials.InstallationToken,
 		strings.TrimSuffix(conf.APIBaseURL, "/"),
 	)
@@ -191,11 +191,13 @@ func (se *SumologicExtension) Start(ctx context.Context, host component.Host) er
 	}
 
 	colCreds, err := se.getCredentials(ctx)
+	se.collectorCredentials = colCreds
 	if err != nil {
 		return err
 	}
 
-	if err = se.injectCredentials(ctx, colCreds); err != nil {
+	err = se.injectCredentials(ctx, colCreds)
+	if err != nil {
 		return err
 	}
 
@@ -206,9 +208,10 @@ func (se *SumologicExtension) Start(ctx context.Context, host component.Host) er
 	)
 
 	if se.updateMetadata {
-		err = se.updateMetadataWithBackoff(ctx)
+		err = se.updateMetadataWithHTTPClient(ctx, se.httpClient)
 		if err != nil {
-			return err
+			se.logger.Warn("Initial metadata update failed, will retry asynchronously", zap.Error(err))
+			go se.updateMetadataAsync()
 		}
 	}
 
@@ -217,9 +220,20 @@ func (se *SumologicExtension) Start(ctx context.Context, host component.Host) er
 	return nil
 }
 
-// Shutdown is invoked during service shutdown.
 func (se *SumologicExtension) Shutdown(ctx context.Context) error {
 	se.closeOnce.Do(func() { close(se.closeChan) })
+
+	hashKeyV2 := createHashKeyV2(se.conf)
+	_, err := se.credentialsStore.Get(hashKeyV2)
+	se.logger.Debug("Shutting down Sumo Logic extension migrating to hashkeyV2 ")
+	if err != nil {
+		se.logger.Warn("Failed to get collector v2 credentials on shutdown, migrating to v2", zap.Error(err))
+		err := se.credentialsStore.Store(hashKeyV2, se.collectorCredentials)
+		if err != nil {
+			se.logger.Warn("Failed to migrate collector credentials to v2 on shutdown", zap.Error(err))
+		}
+	}
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -303,7 +317,7 @@ func (se *SumologicExtension) getHTTPClient(
 ) (*http.Client, error) {
 	httpClient, err := httpClientSettings.ToClient(
 		ctx,
-		se.host,
+		se.host.GetExtensions(),
 		componenttest.NewNopTelemetrySettings(),
 	)
 	if err != nil {
@@ -428,7 +442,7 @@ func (se *SumologicExtension) registerCollector(ctx context.Context, collectorNa
 	}
 
 	var buff bytes.Buffer
-	if err = json.NewEncoder(&buff).Encode(api.OpenRegisterRequestPayload{
+	err = json.NewEncoder(&buff).Encode(api.OpenRegisterRequestPayload{
 		CollectorName: collectorName,
 		Description:   se.conf.CollectorDescription,
 		Category:      se.conf.CollectorCategory,
@@ -437,7 +451,9 @@ func (se *SumologicExtension) registerCollector(ctx context.Context, collectorNa
 		Ephemeral:     se.conf.Ephemeral,
 		Clobber:       se.conf.Clobber,
 		TimeZone:      se.conf.TimeZone,
-	}); err != nil {
+		FleetID:       se.conf.FleetID,
+	})
+	if err != nil {
 		return credentials.CollectorCredentials{}, err
 	}
 
@@ -466,6 +482,18 @@ func (se *SumologicExtension) registerCollector(ctx context.Context, collectorNa
 	defer res.Body.Close()
 
 	if res.StatusCode < 200 || res.StatusCode >= 400 {
+		if se.conf.FleetID != "" && (res.StatusCode == http.StatusBadRequest || res.StatusCode == http.StatusNotFound) {
+			bodyBytes, readErr := io.ReadAll(res.Body)
+			if readErr == nil && isFleetIDError(bodyBytes) {
+				se.logger.Warn("Fleet ID error, retrying registration without fleet ID",
+					zap.String("fleet_id", se.conf.FleetID),
+					zap.Int("status_code", res.StatusCode),
+				)
+				se.conf.FleetID = ""
+				return se.registerCollector(ctx, collectorName)
+			}
+			res.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		}
 		return credentials.CollectorCredentials{}, se.handleRegistrationError(res)
 	} else if res.StatusCode == http.StatusMovedPermanently {
 		// Use the URL from Location header for subsequent requests.
@@ -528,6 +556,19 @@ func (se *SumologicExtension) handleRegistrationError(res *http.Response) error 
 	return fmt.Errorf(
 		"failed to register the collector, got HTTP status code: %d", res.StatusCode,
 	)
+}
+
+func isFleetIDError(body []byte) bool {
+	var errResponse api.ErrorResponsePayload
+	if err := json.Unmarshal(body, &errResponse); err != nil {
+		return false
+	}
+	for _, e := range errResponse.Errors {
+		if e.Code == "collector-registration:invalid_fleet_id" || e.Code == "collector-registration:fleet_not_found" {
+			return true
+		}
+	}
+	return false
 }
 
 // callRegisterWithBackoff calls registration using exponential backoff algorithm
@@ -647,7 +688,7 @@ func (se *SumologicExtension) sendHeartbeatWithHTTPClient(ctx context.Context, h
 	if err != nil {
 		return fmt.Errorf("unable to parse heartbeat URL %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), http.NoBody)
 	if err != nil {
 		return fmt.Errorf("unable to create HTTP request %w", err)
 	}
@@ -703,96 +744,12 @@ func baseURL() (string, error) {
 	return h, nil
 }
 
-var sumoAppProcesses = map[string]string{
-	"apache":                "apache",
-	"apache2":               "apache",
-	"httpd":                 "apache",
-	"docker":                "docker", // docker cli
-	"elasticsearch":         "elasticsearch",
-	"mysql-server":          "mysql",
-	"mysqld":                "mysql",
-	"nginx":                 "nginx",
-	"postgresql":            "postgres",
-	"postgresql-9.5":        "postgres",
-	"rabbitmq-server":       "rabbitmq",
-	"redis":                 "redis",
-	"tomcat":                "tomcat",
-	"kafka-server-start.sh": "kafka", // Need to test this, most common shell wrapper.
-	"redis-server":          "redis",
-	"mongod":                "mongodb",
-	"cassandra":             "cassandra",
-	"jmx":                   "jmx",
-	"activemq":              "activemq",
-	"memcached":             "memcached",
-	"haproxy":               "haproxy",
-	"dockerd":               "docker-ce", // docker engine, for when process runs natively
-	"com.docker.backend":    "docker-ce", // docker daemon runs on a VM in Docker Desktop, process doesn't show on mac
-	"sqlservr":              "mssql",     // linux SQL Server process
-}
-
-func (se *SumologicExtension) filteredProcessList() ([]string, error) {
-	var pl []string
-
-	processes, err := process.Processes()
-	if err != nil {
-		return pl, fmt.Errorf("process discovery failed: %w", err)
-	}
-
-	for _, v := range processes {
-		e, err := v.Name()
-		if err != nil {
-			// If we can't get a process name, it may be a zombie process.
-			// We do not want to error out here, as it's not worth disrupting
-			// the startup process of the collector.
-			se.logger.Warn(
-				"process discovery: failed to get executable name (is it a zombie?)",
-				zap.Int32("pid", v.Pid),
-				zap.Error(err))
-			continue
-		}
-
-		e = strings.ToLower(e)
-
-		if a, i := sumoAppProcesses[e]; i {
-			pl = append(pl, a)
-		}
-
-		// handling for Docker Desktop
-		if e == dockerDesktopJavaProcess {
-			pl = append(pl, "docker-ce")
-		}
-
-		// handling Java background processes
-		if e == "java" {
-			cmdline, err := v.Cmdline()
-			if err != nil {
-				se.logger.Warn(
-					"process discovery: failed to get process arguments",
-					zap.Int32("pid", v.Pid),
-					zap.Error(err))
-				continue
-			}
-
-			switch {
-			case strings.Contains(cmdline, cassandraJavaProcess):
-				pl = append(pl, "cassandra")
-			case strings.Contains(cmdline, jmxJavaProcess):
-				pl = append(pl, "jmx")
-			case strings.Contains(cmdline, activeMQJavaProcess):
-				pl = append(pl, "activemq")
-			}
-		}
-	}
-
-	return pl, nil
-}
-
 func (se *SumologicExtension) discoverTags() (map[string]any, error) {
 	t := map[string]any{
 		"sumo.disco.enabled": "true",
 	}
 
-	pl, err := se.filteredProcessList()
+	pl, err := se.procx.FilteredProcessList()
 	if err != nil {
 		return t, err
 	}
@@ -834,12 +791,10 @@ func (se *SumologicExtension) updateMetadataWithHTTPClient(ctx context.Context, 
 		}
 	}
 
-	for k, v := range se.conf.CollectorFields {
-		td[k] = v
-	}
+	maps.Copy(td, se.conf.CollectorFields)
 
 	var buff bytes.Buffer
-	if err = json.NewEncoder(&buff).Encode(api.OpenMetadataRequestPayload{
+	err = json.NewEncoder(&buff).Encode(api.OpenMetadataRequestPayload{
 		HostDetails: api.OpenMetadataHostDetails{
 			Name:        hostname,
 			OsName:      info.OS,
@@ -853,7 +808,8 @@ func (se *SumologicExtension) updateMetadataWithHTTPClient(ctx context.Context, 
 			HostIPAddress: ip,
 		},
 		TagDetails: td,
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
 
@@ -904,30 +860,61 @@ func (se *SumologicExtension) updateMetadataWithHTTPClient(ctx context.Context, 
 	return nil
 }
 
-func (se *SumologicExtension) updateMetadataWithBackoff(ctx context.Context) error {
-	se.backOff.Reset()
+// updateMetadataAsync retries metadata update in the background with exponential
+// backoff until the update succeeds or the collector shuts down. It is started
+// when the initial synchronous attempt in Start() fails so that startup is not
+// blocked by transient network unavailability (e.g. Windows boot race).
+func (se *SumologicExtension) updateMetadataAsync() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-se.closeChan:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	bo := backoff.NewExponentialBackOff()
+	bo.InitialInterval = se.conf.BackOff.InitialInterval
+	bo.MaxElapsedTime = se.conf.BackOff.MaxElapsedTime
+	bo.MaxInterval = se.conf.BackOff.MaxInterval
+	bo.Reset()
+
 	for {
-		err := se.updateMetadataWithHTTPClient(ctx, se.httpClient)
-		if err == nil {
-			return nil
+		select {
+		case <-se.closeChan:
+			se.logger.Info("Async metadata update loop stopped: collector shutting down")
+			return
+		default:
 		}
 
-		se.logger.Warn(fmt.Sprintf("collector metadata update failed: %s", err))
+		err := se.updateMetadataWithHTTPClient(ctx, se.httpClient)
+		if err == nil {
+			se.logger.Info("Async metadata update succeeded")
+			return
+		}
 
-		nbo := se.backOff.NextBackOff()
-		var backOffErr *backoff.PermanentError
-		// Return error if backoff reaches the limit or uncoverable error is spotted
-		if ok := errors.As(err, &backOffErr); nbo == se.backOff.Stop || ok {
-			return fmt.Errorf("collector metadata update failed: %w", err)
+		se.logger.Warn("Async metadata update failed, will retry", zap.Error(err))
+
+		if _, ok := errors.AsType[*backoff.PermanentError](err); ok {
+			se.logger.Error("Async metadata update encountered a permanent error, stopping retries", zap.Error(err))
+			return
+		}
+
+		nbo := bo.NextBackOff()
+		if nbo == bo.Stop {
+			se.logger.Warn("Async metadata update stopped: backoff elapsed time exceeded")
+			return
 		}
 
 		t := time.NewTimer(nbo)
-		defer t.Stop()
-
 		select {
 		case <-t.C:
-		case <-ctx.Done():
-			return fmt.Errorf("collector metadata update cancelled: %w", ctx.Err())
+		case <-se.closeChan:
+			t.Stop()
+			se.logger.Info("Async metadata update loop stopped: collector shutting down")
+			return
 		}
 	}
 }
@@ -1068,7 +1055,7 @@ func (rt roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	return resp, err
 }
 
-func addCollectorCredentials(req *http.Request, collectorCredentialID string, collectorCredentialKey string) {
+func addCollectorCredentials(req *http.Request, collectorCredentialID, collectorCredentialKey string) {
 	token := base64.StdEncoding.EncodeToString(
 		[]byte(collectorCredentialID + ":" + collectorCredentialKey),
 	)

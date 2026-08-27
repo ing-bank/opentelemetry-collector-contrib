@@ -5,6 +5,8 @@ package awss3exporter // import "github.com/open-telemetry/opentelemetry-collect
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/retry"
@@ -13,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"go.uber.org/zap"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/awss3exporter/internal/upload"
 )
@@ -20,8 +23,10 @@ import (
 func newUploadManager(
 	ctx context.Context,
 	conf *Config,
+	logger *zap.Logger,
 	metadata string,
 	format string,
+	isCompressed bool,
 ) (upload.Manager, error) {
 	configOpts := []func(*config.LoadOptions) error{}
 
@@ -78,15 +83,38 @@ func newUploadManager(
 			upload.WithACL(s3types.ObjectCannedACL(conf.S3Uploader.ACL)))
 	}
 
+	var uniqueKeyFunc func() string
+	switch conf.S3Uploader.UniqueKeyFuncName {
+	case "uuidv7":
+		uniqueKeyFunc = upload.GenerateUUIDv7
+	default:
+		uniqueKeyFunc = nil
+	}
+
+	var s3PartitionTimeLocation *time.Location
+	if conf.S3Uploader.S3PartitionTimezone != "" {
+		s3PartitionTimeLocation, err = time.LoadLocation(conf.S3Uploader.S3PartitionTimezone)
+		if err != nil {
+			return nil, fmt.Errorf("invalid S3 partition timezone: %w", err)
+		}
+	} else {
+		s3PartitionTimeLocation = time.Local
+	}
+
 	return upload.NewS3Manager(
+		logger,
 		conf.S3Uploader.S3Bucket,
 		&upload.PartitionKeyBuilder{
-			PartitionPrefix: conf.S3Uploader.S3Prefix,
-			PartitionFormat: conf.S3Uploader.S3PartitionFormat,
-			FilePrefix:      conf.S3Uploader.FilePrefix,
-			Metadata:        metadata,
-			FileFormat:      format,
-			Compression:     conf.S3Uploader.Compression,
+			PartitionBasePrefix:   conf.S3Uploader.S3BasePrefix,
+			PartitionPrefix:       conf.S3Uploader.S3Prefix,
+			PartitionFormat:       conf.S3Uploader.S3PartitionFormat,
+			PartitionTimeLocation: s3PartitionTimeLocation,
+			FilePrefix:            conf.S3Uploader.FilePrefix,
+			FileFormat:            format,
+			Metadata:              metadata,
+			Compression:           conf.S3Uploader.Compression,
+			UniqueKeyFunc:         uniqueKeyFunc,
+			IsCompressed:          isCompressed,
 		},
 		s3.NewFromConfig(cfg, s3Opts...),
 		s3types.StorageClass(conf.S3Uploader.StorageClass),

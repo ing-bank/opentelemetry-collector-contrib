@@ -22,12 +22,13 @@ type MetricAttributes struct {
 	AttributeChange migrate.AttributeChangeSet
 }
 
-func (o MetricAttributes) IsMigrator() {}
+func (MetricAttributes) IsMigrator() {}
 
 func (o MetricAttributes) Do(ss migrate.StateSelector, metric pmetric.Metric) error {
-	// todo(ankit) handle MetricTypeEmpty
 	var datam alias.Attributed
 	switch metric.Type() {
+	case pmetric.MetricTypeEmpty:
+		return nil
 	case pmetric.MetricTypeExponentialHistogram:
 		for dp := 0; dp < metric.ExponentialHistogram().DataPoints().Len(); dp++ {
 			datam = metric.ExponentialHistogram().DataPoints().At(dp)
@@ -76,7 +77,7 @@ type LogAttributes struct {
 	AttributeChange migrate.AttributeChangeSet
 }
 
-func (o LogAttributes) IsMigrator() {}
+func (LogAttributes) IsMigrator() {}
 
 func (o LogAttributes) Do(ss migrate.StateSelector, log plog.LogRecord) error {
 	return o.AttributeChange.Do(ss, log.Attributes())
@@ -88,7 +89,7 @@ type SpanAttributes struct {
 	AttributeChange migrate.AttributeChangeSet
 }
 
-func (o SpanAttributes) IsMigrator() {}
+func (SpanAttributes) IsMigrator() {}
 
 func (o SpanAttributes) Do(ss migrate.StateSelector, span ptrace.Span) error {
 	return o.AttributeChange.Do(ss, span.Attributes())
@@ -99,7 +100,7 @@ type SpanEventAttributes struct {
 	AttributeChange migrate.AttributeChangeSet
 }
 
-func (o SpanEventAttributes) IsMigrator() {}
+func (SpanEventAttributes) IsMigrator() {}
 
 func (o SpanEventAttributes) Do(ss migrate.StateSelector, spanEvent ptrace.SpanEvent) error {
 	return o.AttributeChange.Do(ss, spanEvent.Attributes())
@@ -111,7 +112,7 @@ type ResourceAttributes struct {
 	AttributeChange migrate.AttributeChangeSet
 }
 
-func (o ResourceAttributes) IsMigrator() {}
+func (ResourceAttributes) IsMigrator() {}
 
 func (o ResourceAttributes) Do(ss migrate.StateSelector, resource pcommon.Resource) error {
 	return o.AttributeChange.Do(ss, resource.Attributes())
@@ -137,7 +138,7 @@ func NewAllAttributesTransformer(set migrate.AttributeChangeSet) AllAttributes {
 	}
 }
 
-func (o AllAttributes) IsMigrator() {}
+func (AllAttributes) IsMigrator() {}
 
 func (o AllAttributes) Do(ss migrate.StateSelector, data any) error {
 	switch typedData := data.(type) {

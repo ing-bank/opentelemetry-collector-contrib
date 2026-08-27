@@ -4,12 +4,11 @@
 package mongodbreceiver // import "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/mongodbreceiver"
 
 import (
-	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"go.opentelemetry.io/collector/confmap/xconfmap"
+	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/receiver/receivertest"
 	"go.opentelemetry.io/collector/scraper/scraperhelper"
@@ -25,18 +24,57 @@ func TestType(t *testing.T) {
 
 func TestValidConfig(t *testing.T) {
 	factory := NewFactory()
-	require.NoError(t, xconfmap.Validate(factory.CreateDefaultConfig()))
+	require.NoError(t, confmap.Validate(factory.CreateDefaultConfig()))
 }
 
 func TestCreateMetrics(t *testing.T) {
 	factory := NewFactory()
 	_, err := factory.CreateMetrics(
-		context.Background(),
+		t.Context(),
 		receivertest.NewNopSettings(metadata.Type),
 		&Config{
 			ControllerConfig: scraperhelper.ControllerConfig{
 				CollectionInterval: 10 * time.Second,
 				InitialDelay:       time.Second,
+			},
+		},
+		consumertest.NewNop(),
+	)
+	require.NoError(t, err)
+}
+
+func TestCreateLogsReceiver(t *testing.T) {
+	factory := NewFactory()
+	_, err := factory.CreateLogs(
+		t.Context(),
+		receivertest.NewNopSettings(metadata.Type),
+		&Config{
+			ControllerConfig: scraperhelper.ControllerConfig{
+				CollectionInterval: 10 * time.Second,
+				InitialDelay:       time.Second,
+			},
+		},
+		consumertest.NewNop(),
+	)
+	require.NoError(t, err)
+}
+
+func TestCreateLogsReceiverWithEvents(t *testing.T) {
+	factory := NewFactory()
+	_, err := factory.CreateLogs(
+		t.Context(),
+		receivertest.NewNopSettings(metadata.Type),
+		&Config{
+			ControllerConfig: scraperhelper.ControllerConfig{
+				CollectionInterval: 10 * time.Second,
+				InitialDelay:       time.Second,
+			},
+			LogsBuilderConfig: metadata.LogsBuilderConfig{
+				Events: metadata.EventsConfig{
+					DbServerQuerySample: metadata.EventConfig{
+						Enabled: true,
+					},
+				},
 			},
 		},
 		consumertest.NewNop(),

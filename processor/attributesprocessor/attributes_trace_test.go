@@ -4,7 +4,6 @@
 package attributesprocessor
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,7 +12,6 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/processor"
 	"go.opentelemetry.io/collector/processor/processortest"
-	conventions "go.opentelemetry.io/otel/semconv/v1.6.1"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal/attraction"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal/testdata"
@@ -35,7 +33,7 @@ type testCase struct {
 func runIndividualTestCase(t *testing.T, tt testCase, tp processor.Traces) {
 	t.Run(tt.name, func(t *testing.T) {
 		td := generateTraceData(tt.serviceName, tt.name, tt.inputAttributes)
-		assert.NoError(t, tp.ConsumeTraces(context.Background(), td))
+		assert.NoError(t, tp.ConsumeTraces(t.Context(), td))
 		require.NoError(t, ptracetest.CompareTraces(generateTraceData(tt.serviceName, tt.name, tt.expectedAttributes), td))
 	})
 }
@@ -44,7 +42,7 @@ func generateTraceData(serviceName, spanName string, attrs map[string]any) ptrac
 	td := ptrace.NewTraces()
 	rs := td.ResourceSpans().AppendEmpty()
 	if serviceName != "" {
-		rs.Resource().Attributes().PutStr(string(conventions.ServiceNameKey), serviceName)
+		rs.Resource().Attributes().PutStr("service.name", serviceName)
 	}
 	span := rs.ScopeSpans().AppendEmpty().Spans().AppendEmpty()
 	span.SetName(spanName)
@@ -86,17 +84,17 @@ func TestSpanProcessor_NilEmptyData(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 	oCfg := cfg.(*Config)
-	oCfg.Actions = []attraction.ActionKeyValue{
+	oCfg.Settings.Actions = []attraction.ActionKeyValue{
 		{Key: "attribute1", Action: attraction.INSERT, Value: 123},
 		{Key: "attribute1", Action: attraction.DELETE},
 	}
 
-	tp, err := factory.CreateTraces(context.Background(), processortest.NewNopSettings(metadata.Type), oCfg, consumertest.NewNop())
+	tp, err := factory.CreateTraces(t.Context(), processortest.NewNopSettings(metadata.Type), oCfg, consumertest.NewNop())
 	require.NoError(t, err)
 	require.NotNil(t, tp)
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.NoError(t, tp.ConsumeTraces(context.Background(), tt.input))
+			assert.NoError(t, tp.ConsumeTraces(t.Context(), tt.input))
 			assert.Equal(t, tt.output, tt.input)
 		})
 	}
@@ -144,20 +142,20 @@ func TestAttributes_FilterSpans(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 	oCfg := cfg.(*Config)
-	oCfg.Actions = []attraction.ActionKeyValue{
+	oCfg.Settings.Actions = []attraction.ActionKeyValue{
 		{Key: "attribute1", Action: attraction.INSERT, Value: 123},
 	}
-	oCfg.Include = &filterconfig.MatchProperties{
+	oCfg.MatchConfig.Include = &filterconfig.MatchProperties{
 		Services: []string{"svcA", "svcB.*"},
 		Config:   *createConfig(filterset.Regexp),
 	}
-	oCfg.Exclude = &filterconfig.MatchProperties{
+	oCfg.MatchConfig.Exclude = &filterconfig.MatchProperties{
 		Attributes: []filterconfig.Attribute{
 			{Key: "NoModification", Value: true},
 		},
 		Config: *createConfig(filterset.Strict),
 	}
-	tp, err := factory.CreateTraces(context.Background(), processortest.NewNopSettings(metadata.Type), cfg, consumertest.NewNop())
+	tp, err := factory.CreateTraces(t.Context(), processortest.NewNopSettings(metadata.Type), cfg, consumertest.NewNop())
 	require.NoError(t, err)
 	require.NotNil(t, tp)
 
@@ -214,18 +212,18 @@ func TestAttributes_FilterSpansByNameStrict(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 	oCfg := cfg.(*Config)
-	oCfg.Actions = []attraction.ActionKeyValue{
+	oCfg.Settings.Actions = []attraction.ActionKeyValue{
 		{Key: "attribute1", Action: attraction.INSERT, Value: 123},
 	}
-	oCfg.Include = &filterconfig.MatchProperties{
+	oCfg.MatchConfig.Include = &filterconfig.MatchProperties{
 		SpanNames: []string{"apply", "dont_apply"},
 		Config:    *createConfig(filterset.Strict),
 	}
-	oCfg.Exclude = &filterconfig.MatchProperties{
+	oCfg.MatchConfig.Exclude = &filterconfig.MatchProperties{
 		SpanNames: []string{"dont_apply"},
 		Config:    *createConfig(filterset.Strict),
 	}
-	tp, err := factory.CreateTraces(context.Background(), processortest.NewNopSettings(metadata.Type), cfg, consumertest.NewNop())
+	tp, err := factory.CreateTraces(t.Context(), processortest.NewNopSettings(metadata.Type), cfg, consumertest.NewNop())
 	require.NoError(t, err)
 	require.NotNil(t, tp)
 
@@ -282,18 +280,18 @@ func TestAttributes_FilterSpansByNameRegexp(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 	oCfg := cfg.(*Config)
-	oCfg.Actions = []attraction.ActionKeyValue{
+	oCfg.Settings.Actions = []attraction.ActionKeyValue{
 		{Key: "attribute1", Action: attraction.INSERT, Value: 123},
 	}
-	oCfg.Include = &filterconfig.MatchProperties{
+	oCfg.MatchConfig.Include = &filterconfig.MatchProperties{
 		SpanNames: []string{"^apply.*"},
 		Config:    *createConfig(filterset.Regexp),
 	}
-	oCfg.Exclude = &filterconfig.MatchProperties{
+	oCfg.MatchConfig.Exclude = &filterconfig.MatchProperties{
 		SpanNames: []string{".*dont_apply$"},
 		Config:    *createConfig(filterset.Regexp),
 	}
-	tp, err := factory.CreateTraces(context.Background(), processortest.NewNopSettings(metadata.Type), cfg, consumertest.NewNop())
+	tp, err := factory.CreateTraces(t.Context(), processortest.NewNopSettings(metadata.Type), cfg, consumertest.NewNop())
 	require.NoError(t, err)
 	require.NotNil(t, tp)
 
@@ -345,14 +343,14 @@ func TestAttributes_Hash(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 	oCfg := cfg.(*Config)
-	oCfg.Actions = []attraction.ActionKeyValue{
+	oCfg.Settings.Actions = []attraction.ActionKeyValue{
 		{Key: "user.email", Action: attraction.HASH},
 		{Key: "user.id", Action: attraction.HASH},
 		{Key: "user.balance", Action: attraction.HASH},
 		{Key: "user.authenticated", Action: attraction.HASH},
 	}
 
-	tp, err := factory.CreateTraces(context.Background(), processortest.NewNopSettings(metadata.Type), cfg, consumertest.NewNop())
+	tp, err := factory.CreateTraces(t.Context(), processortest.NewNopSettings(metadata.Type), cfg, consumertest.NewNop())
 	require.NoError(t, err)
 	require.NotNil(t, tp)
 
@@ -449,18 +447,167 @@ func TestAttributes_Convert(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 	oCfg := cfg.(*Config)
-	oCfg.Actions = []attraction.ActionKeyValue{
+	oCfg.Settings.Actions = []attraction.ActionKeyValue{
 		{Key: "to.int", Action: attraction.CONVERT, ConvertedType: "int"},
 		{Key: "to.double", Action: attraction.CONVERT, ConvertedType: "double"},
 		{Key: "to.string", Action: attraction.CONVERT, ConvertedType: "string"},
 	}
 
-	tp, err := factory.CreateTraces(context.Background(), processortest.NewNopSettings(metadata.Type), cfg, consumertest.NewNop())
+	tp, err := factory.CreateTraces(t.Context(), processortest.NewNopSettings(metadata.Type), cfg, consumertest.NewNop())
 	require.NoError(t, err)
 	require.NotNil(t, tp)
 
 	for _, tt := range testCases {
 		runIndividualTestCase(t, tt, tp)
+	}
+}
+
+func TestSpanProcessor_WithDefaultValue(t *testing.T) {
+	testCases := []struct {
+		name               string
+		config             *Config
+		inputAttributes    map[string]any
+		expectedAttributes map[string]any
+	}{
+		{
+			name: "default_value_used_when_from_attribute_missing",
+			config: &Config{
+				Settings: attraction.Settings{
+					Actions: []attraction.ActionKeyValue{
+						{Key: "env", FromAttribute: "environment", DefaultValue: "production", Action: attraction.INSERT},
+					},
+				},
+			},
+			inputAttributes: map[string]any{},
+			expectedAttributes: map[string]any{
+				"env": "production",
+			},
+		},
+		{
+			name: "default_value_not_used_when_from_attribute_exists",
+			config: &Config{
+				Settings: attraction.Settings{
+					Actions: []attraction.ActionKeyValue{
+						{Key: "env", FromAttribute: "environment", DefaultValue: "production", Action: attraction.INSERT},
+					},
+				},
+			},
+			inputAttributes: map[string]any{
+				"environment": "staging",
+			},
+			expectedAttributes: map[string]any{
+				"environment": "staging",
+				"env":         "staging",
+			},
+		},
+		{
+			name: "default_value_with_upsert_creates_new_attribute",
+			config: &Config{
+				Settings: attraction.Settings{
+					Actions: []attraction.ActionKeyValue{
+						{Key: "region", FromAttribute: "cloud.region", DefaultValue: "us-east-1", Action: attraction.UPSERT},
+					},
+				},
+			},
+			inputAttributes:    map[string]any{},
+			expectedAttributes: map[string]any{"region": "us-east-1"},
+		},
+		{
+			name: "default_value_with_upsert_overwrites_existing",
+			config: &Config{
+				Settings: attraction.Settings{
+					Actions: []attraction.ActionKeyValue{
+						{Key: "region", Value: "us-west-2", DefaultValue: "us-east-1", Action: attraction.UPSERT},
+					},
+				},
+			},
+			inputAttributes: map[string]any{
+				"region": "old-value",
+			},
+			expectedAttributes: map[string]any{
+				"region": "us-west-2",
+			},
+		},
+		{
+			name: "default_value_with_update_does_not_create_new",
+			config: &Config{
+				Settings: attraction.Settings{
+					Actions: []attraction.ActionKeyValue{
+						{Key: "service.namespace", FromAttribute: "namespace", DefaultValue: "default", Action: attraction.UPDATE},
+					},
+				},
+			},
+			inputAttributes:    map[string]any{},
+			expectedAttributes: map[string]any{},
+		},
+		{
+			name: "default_value_with_update_modifies_existing",
+			config: &Config{
+				Settings: attraction.Settings{
+					Actions: []attraction.ActionKeyValue{
+						{Key: "service.namespace", FromAttribute: "namespace", DefaultValue: "default", Action: attraction.UPDATE},
+					},
+				},
+			},
+			inputAttributes: map[string]any{
+				"service.namespace": "old",
+			},
+			expectedAttributes: map[string]any{
+				"service.namespace": "default",
+			},
+		},
+		{
+			name: "multiple_attributes_with_default_values",
+			config: &Config{
+				Settings: attraction.Settings{
+					Actions: []attraction.ActionKeyValue{
+						{Key: "env", FromAttribute: "environment", DefaultValue: "prod", Action: attraction.INSERT},
+						{Key: "region", FromAttribute: "cloud.region", DefaultValue: "us-east-1", Action: attraction.INSERT},
+						{Key: "tier", Value: "frontend", Action: attraction.INSERT},
+					},
+				},
+			},
+			inputAttributes: map[string]any{
+				"cloud.region": "eu-west-1",
+			},
+			expectedAttributes: map[string]any{
+				"env":          "prod",
+				"region":       "eu-west-1",
+				"cloud.region": "eu-west-1",
+				"tier":         "frontend",
+			},
+		},
+		{
+			name: "default_value_with_different_types",
+			config: &Config{
+				Settings: attraction.Settings{
+					Actions: []attraction.ActionKeyValue{
+						{Key: "string_attr", FromAttribute: "missing", DefaultValue: "default_string", Action: attraction.INSERT},
+						{Key: "int_attr", FromAttribute: "missing", DefaultValue: 42, Action: attraction.INSERT},
+						{Key: "bool_attr", FromAttribute: "missing", DefaultValue: true, Action: attraction.INSERT},
+					},
+				},
+			},
+			inputAttributes: map[string]any{},
+			expectedAttributes: map[string]any{
+				"string_attr": "default_string",
+				"int_attr":    int64(42),
+				"bool_attr":   true,
+			},
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			factory := NewFactory()
+			tp, err := factory.CreateTraces(t.Context(), processortest.NewNopSettings(metadata.Type), tt.config, consumertest.NewNop())
+			require.NoError(t, err)
+			require.NotNil(t, tp)
+
+			td := generateTraceData("", tt.name, tt.inputAttributes)
+			assert.NoError(t, tp.ConsumeTraces(t.Context(), td))
+			require.NoError(t, ptracetest.CompareTraces(generateTraceData("", tt.name, tt.expectedAttributes), td))
+		})
 	}
 }
 
@@ -493,13 +640,13 @@ func BenchmarkAttributes_FilterSpansByName(b *testing.B) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 	oCfg := cfg.(*Config)
-	oCfg.Actions = []attraction.ActionKeyValue{
+	oCfg.Settings.Actions = []attraction.ActionKeyValue{
 		{Key: "attribute1", Action: attraction.INSERT, Value: 123},
 	}
-	oCfg.Include = &filterconfig.MatchProperties{
+	oCfg.MatchConfig.Include = &filterconfig.MatchProperties{
 		SpanNames: []string{"^apply.*"},
 	}
-	tp, err := factory.CreateTraces(context.Background(), processortest.NewNopSettings(metadata.Type), cfg, consumertest.NewNop())
+	tp, err := factory.CreateTraces(b.Context(), processortest.NewNopSettings(metadata.Type), cfg, consumertest.NewNop())
 	require.NoError(b, err)
 	require.NotNil(b, tp)
 
@@ -507,8 +654,8 @@ func BenchmarkAttributes_FilterSpansByName(b *testing.B) {
 		td := generateTraceData(tt.serviceName, tt.name, tt.inputAttributes)
 
 		b.Run(tt.name, func(b *testing.B) {
-			for i := 0; i < b.N; i++ {
-				assert.NoError(b, tp.ConsumeTraces(context.Background(), td))
+			for b.Loop() {
+				assert.NoError(b, tp.ConsumeTraces(b.Context(), td))
 			}
 		})
 

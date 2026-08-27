@@ -13,9 +13,10 @@ import (
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/confignet"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configtls"
+	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
-	"go.opentelemetry.io/collector/confmap/xconfmap"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/jaegerreceiver/internal/metadata"
 )
@@ -26,6 +27,50 @@ func TestLoadConfig(t *testing.T) {
 	cm, err := confmaptest.LoadConf(filepath.Join("testdata", "config.yaml"))
 	require.NoError(t, err)
 
+	customnameThriftHTTPServerConfig := confighttp.NewDefaultServerConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	customnameThriftHTTPServerConfig.WriteTimeout = 0
+	customnameThriftHTTPServerConfig.ReadHeaderTimeout = 0
+	customnameThriftHTTPServerConfig.IdleTimeout = 0           //nolint:staticcheck // SA1019: see TODO above
+	customnameThriftHTTPServerConfig.KeepAlivesEnabled = false //nolint:staticcheck // SA1019: see TODO above
+	customnameThriftHTTPServerConfig.NetAddr = confignet.AddrConfig{
+		Endpoint:  ":3456",
+		Transport: confignet.TransportTypeTCP,
+	}
+
+	defaultsThriftHTTPServerConfig := confighttp.NewDefaultServerConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	defaultsThriftHTTPServerConfig.WriteTimeout = 0
+	defaultsThriftHTTPServerConfig.ReadHeaderTimeout = 0
+	defaultsThriftHTTPServerConfig.IdleTimeout = 0           //nolint:staticcheck // SA1019: see TODO above
+	defaultsThriftHTTPServerConfig.KeepAlivesEnabled = false //nolint:staticcheck // SA1019: see TODO above
+	defaultsThriftHTTPServerConfig.NetAddr = confignet.AddrConfig{
+		Endpoint:  "localhost:14268",
+		Transport: confignet.TransportTypeTCP,
+	}
+
+	mixedThriftHTTPServerConfig := confighttp.NewDefaultServerConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	mixedThriftHTTPServerConfig.WriteTimeout = 0
+	mixedThriftHTTPServerConfig.ReadHeaderTimeout = 0
+	mixedThriftHTTPServerConfig.IdleTimeout = 0           //nolint:staticcheck // SA1019: see TODO above
+	mixedThriftHTTPServerConfig.KeepAlivesEnabled = false //nolint:staticcheck // SA1019: see TODO above
+	mixedThriftHTTPServerConfig.NetAddr = confignet.AddrConfig{
+		Endpoint:  defaultHTTPEndpoint,
+		Transport: confignet.TransportTypeTCP,
+	}
+
+	tlsThriftHTTPServerConfig := confighttp.NewDefaultServerConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	tlsThriftHTTPServerConfig.WriteTimeout = 0
+	tlsThriftHTTPServerConfig.ReadHeaderTimeout = 0
+	tlsThriftHTTPServerConfig.IdleTimeout = 0           //nolint:staticcheck // SA1019: see TODO above
+	tlsThriftHTTPServerConfig.KeepAlivesEnabled = false //nolint:staticcheck // SA1019: see TODO above
+	tlsThriftHTTPServerConfig.NetAddr = confignet.AddrConfig{
+		Endpoint:  ":3456",
+		Transport: confignet.TransportTypeTCP,
+	}
+
 	tests := []struct {
 		id       component.ID
 		expected component.Config
@@ -34,16 +79,14 @@ func TestLoadConfig(t *testing.T) {
 			id: component.NewIDWithName(metadata.Type, "customname"),
 			expected: &Config{
 				Protocols: Protocols{
-					GRPC: &configgrpc.ServerConfig{
+					GRPC: configoptional.Some(configgrpc.ServerConfig{
 						NetAddr: confignet.AddrConfig{
 							Endpoint:  "localhost:9876",
 							Transport: confignet.TransportTypeTCP,
 						},
-					},
-					ThriftHTTP: &confighttp.ServerConfig{
-						Endpoint: ":3456",
-					},
-					ThriftCompactUDP: &ProtocolUDP{
+					}),
+					ThriftHTTP: configoptional.Some(customnameThriftHTTPServerConfig),
+					ThriftCompactUDP: configoptional.Some(ProtocolUDP{
 						Endpoint: "0.0.0.0:456",
 						ServerConfigUDP: ServerConfigUDP{
 							QueueSize:        100_000,
@@ -51,8 +94,8 @@ func TestLoadConfig(t *testing.T) {
 							Workers:          100,
 							SocketBufferSize: 65_536,
 						},
-					},
-					ThriftBinaryUDP: &ProtocolUDP{
+					}),
+					ThriftBinaryUDP: configoptional.Some(ProtocolUDP{
 						Endpoint: "0.0.0.0:789",
 						ServerConfigUDP: ServerConfigUDP{
 							QueueSize:        1_000,
@@ -60,7 +103,7 @@ func TestLoadConfig(t *testing.T) {
 							Workers:          5,
 							SocketBufferSize: 0,
 						},
-					},
+					}),
 				},
 			},
 		},
@@ -68,23 +111,21 @@ func TestLoadConfig(t *testing.T) {
 			id: component.NewIDWithName(metadata.Type, "defaults"),
 			expected: &Config{
 				Protocols: Protocols{
-					GRPC: &configgrpc.ServerConfig{
+					GRPC: configoptional.Some(configgrpc.ServerConfig{
 						NetAddr: confignet.AddrConfig{
 							Endpoint:  "localhost:14250",
 							Transport: confignet.TransportTypeTCP,
 						},
-					},
-					ThriftHTTP: &confighttp.ServerConfig{
-						Endpoint: "localhost:14268",
-					},
-					ThriftCompactUDP: &ProtocolUDP{
+					}),
+					ThriftHTTP: configoptional.Some(defaultsThriftHTTPServerConfig),
+					ThriftCompactUDP: configoptional.Some(ProtocolUDP{
 						Endpoint:        "localhost:6831",
 						ServerConfigUDP: defaultServerConfigUDP(),
-					},
-					ThriftBinaryUDP: &ProtocolUDP{
+					}),
+					ThriftBinaryUDP: configoptional.Some(ProtocolUDP{
 						Endpoint:        "localhost:6832",
 						ServerConfigUDP: defaultServerConfigUDP(),
-					},
+					}),
 				},
 			},
 		},
@@ -92,16 +133,23 @@ func TestLoadConfig(t *testing.T) {
 			id: component.NewIDWithName(metadata.Type, "mixed"),
 			expected: &Config{
 				Protocols: Protocols{
-					GRPC: &configgrpc.ServerConfig{
+					GRPC: configoptional.Some(configgrpc.ServerConfig{
 						NetAddr: confignet.AddrConfig{
 							Endpoint:  "localhost:9876",
 							Transport: confignet.TransportTypeTCP,
 						},
-					},
-					ThriftCompactUDP: &ProtocolUDP{
+					}),
+					ThriftCompactUDP: configoptional.Some(ProtocolUDP{
 						Endpoint:        "localhost:6831",
 						ServerConfigUDP: defaultServerConfigUDP(),
-					},
+					}),
+
+					// defaults for ThriftHTTP and ThriftBinaryUDP
+					ThriftHTTP: configoptional.Default(mixedThriftHTTPServerConfig),
+					ThriftBinaryUDP: configoptional.Default(ProtocolUDP{
+						Endpoint:        defaultThriftBinaryEndpoint,
+						ServerConfigUDP: defaultServerConfigUDP(),
+					}),
 				},
 			},
 		},
@@ -109,21 +157,29 @@ func TestLoadConfig(t *testing.T) {
 			id: component.NewIDWithName(metadata.Type, "tls"),
 			expected: &Config{
 				Protocols: Protocols{
-					GRPC: &configgrpc.ServerConfig{
+					GRPC: configoptional.Some(configgrpc.ServerConfig{
 						NetAddr: confignet.AddrConfig{
 							Endpoint:  "localhost:9876",
 							Transport: confignet.TransportTypeTCP,
 						},
-						TLS: &configtls.ServerConfig{
+						TLS: configoptional.Some(configtls.ServerConfig{
 							Config: configtls.Config{
 								CertFile: "/test.crt",
 								KeyFile:  "/test.key",
 							},
-						},
-					},
-					ThriftHTTP: &confighttp.ServerConfig{
-						Endpoint: ":3456",
-					},
+						}),
+					}),
+					ThriftHTTP: configoptional.Some(tlsThriftHTTPServerConfig),
+
+					// defaults for ThriftBinaryUDP and ThriftCompactUDP
+					ThriftBinaryUDP: configoptional.Default(ProtocolUDP{
+						Endpoint:        defaultThriftBinaryEndpoint,
+						ServerConfigUDP: defaultServerConfigUDP(),
+					}),
+					ThriftCompactUDP: configoptional.Default(ProtocolUDP{
+						Endpoint:        defaultThriftCompactEndpoint,
+						ServerConfigUDP: defaultServerConfigUDP(),
+					}),
 				},
 			},
 		},
@@ -138,7 +194,7 @@ func TestLoadConfig(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, sub.Unmarshal(cfg))
 
-			assert.NoError(t, xconfmap.Validate(cfg))
+			assert.NoError(t, confmap.Validate(cfg))
 			assert.Equal(t, tt.expected, cfg)
 		})
 	}
@@ -148,22 +204,26 @@ func TestFailedLoadConfig(t *testing.T) {
 	cm, err := confmaptest.LoadConf(filepath.Join("testdata", "config.yaml"))
 	require.NoError(t, err)
 	factory := NewFactory()
-	cfg := factory.CreateDefaultConfig()
 
+	cfg := factory.CreateDefaultConfig()
 	sub, err := cm.Sub(component.NewIDWithName(metadata.Type, "typo_default_proto_config").String())
 	require.NoError(t, err)
 	err = sub.Unmarshal(cfg)
 	assert.ErrorContains(t, err, "'protocols' has invalid keys: thrift_htttp")
 
+	cfg = factory.CreateDefaultConfig()
 	sub, err = cm.Sub(component.NewIDWithName(metadata.Type, "bad_proto_config").String())
 	require.NoError(t, err)
 	err = sub.Unmarshal(cfg)
 	assert.ErrorContains(t, err, "'protocols' has invalid keys: thrift_htttp")
 
+	cfg = factory.CreateDefaultConfig()
 	sub, err = cm.Sub(component.NewIDWithName(metadata.Type, "empty").String())
 	require.NoError(t, err)
 	err = sub.Unmarshal(cfg)
-	assert.EqualError(t, err, "empty config for Jaeger receiver")
+	require.NoError(t, err)
+	err = confmap.Validate(cfg)
+	assert.ErrorContains(t, err, "must specify at least one protocol when using the Jaeger receiver")
 }
 
 func TestInvalidConfig(t *testing.T) {
@@ -175,39 +235,47 @@ func TestInvalidConfig(t *testing.T) {
 		{
 			desc: "thrift-http-no-port",
 			apply: func(cfg *Config) {
-				cfg.ThriftHTTP = &confighttp.ServerConfig{
-					Endpoint: "localhost:",
+				thriftHTTPServerConfig := confighttp.NewDefaultServerConfig()
+				// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+				thriftHTTPServerConfig.WriteTimeout = 0
+				thriftHTTPServerConfig.ReadHeaderTimeout = 0
+				thriftHTTPServerConfig.IdleTimeout = 0           //nolint:staticcheck // SA1019: see TODO above
+				thriftHTTPServerConfig.KeepAlivesEnabled = false //nolint:staticcheck // SA1019: see TODO above
+				thriftHTTPServerConfig.NetAddr = confignet.AddrConfig{
+					Endpoint:  "localhost:",
+					Transport: confignet.TransportTypeTCP,
 				}
+				cfg.Protocols.ThriftHTTP = configoptional.Some(thriftHTTPServerConfig)
 			},
 			err: "receiver creation with no port number for Thrift HTTP must fail",
 		},
 		{
 			desc: "thrift-udp-compact-no-port",
 			apply: func(cfg *Config) {
-				cfg.ThriftCompactUDP = &ProtocolUDP{
+				cfg.Protocols.ThriftCompactUDP = configoptional.Some(ProtocolUDP{
 					Endpoint: "localhost:",
-				}
+				})
 			},
 			err: "receiver creation with no port number for Thrift UDP - Compact must fail",
 		},
 		{
 			desc: "thrift-udp-binary-no-port",
 			apply: func(cfg *Config) {
-				cfg.ThriftBinaryUDP = &ProtocolUDP{
+				cfg.Protocols.ThriftBinaryUDP = configoptional.Some(ProtocolUDP{
 					Endpoint: "localhost:",
-				}
+				})
 			},
 			err: "receiver creation with no port number for Thrift UDP - Binary must fail",
 		},
 		{
 			desc: "grpc-invalid-host",
 			apply: func(cfg *Config) {
-				cfg.GRPC = &configgrpc.ServerConfig{
+				cfg.Protocols.GRPC = configoptional.Some(configgrpc.ServerConfig{
 					NetAddr: confignet.AddrConfig{
 						Endpoint:  "1234",
 						Transport: confignet.TransportTypeTCP,
 					},
-				}
+				})
 			},
 			err: "receiver creation with bad hostname must fail",
 		},
@@ -221,9 +289,9 @@ func TestInvalidConfig(t *testing.T) {
 		{
 			desc: "port-outside-of-range",
 			apply: func(cfg *Config) {
-				cfg.ThriftBinaryUDP = &ProtocolUDP{
+				cfg.Protocols.ThriftBinaryUDP = configoptional.Some(ProtocolUDP{
 					Endpoint: "localhost:65536",
-				}
+				})
 			},
 			err: "receiver creation with too large port number must fail",
 		},
@@ -235,7 +303,7 @@ func TestInvalidConfig(t *testing.T) {
 
 			tC.apply(cfg)
 
-			err := xconfmap.Validate(cfg)
+			err := confmap.Validate(cfg)
 			assert.Error(t, err, tC.err)
 		})
 	}

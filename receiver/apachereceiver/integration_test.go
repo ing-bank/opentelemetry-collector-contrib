@@ -39,13 +39,15 @@ func TestIntegration(t *testing.T) {
 				}},
 				ExposedPorts: []string{apachePort},
 				WaitingFor:   waitStrategy{},
-			}),
+			},
+		),
 		scraperinttest.WithCustomConfig(
 			func(t *testing.T, cfg component.Config, ci *scraperinttest.ContainerInfo) {
 				rCfg := cfg.(*Config)
 				rCfg.ControllerConfig.CollectionInterval = 100 * time.Millisecond
-				rCfg.Endpoint = fmt.Sprintf("http://%s:%s/server-status?auto", ci.Host(t), ci.MappedPort(t, apachePort))
-			}),
+				rCfg.ClientConfig.Endpoint = fmt.Sprintf("http://%s:%s/server-status?auto", ci.Host(t), ci.MappedPort(t, apachePort))
+			},
+		),
 		scraperinttest.WithCompareOptions(
 			pmetrictest.IgnoreResourceAttributeValue("apache.server.port"),
 			pmetrictest.IgnoreMetricValues(),
@@ -58,7 +60,7 @@ func TestIntegration(t *testing.T) {
 
 type waitStrategy struct{}
 
-func (ws waitStrategy) WaitUntilReady(ctx context.Context, st wait.StrategyTarget) error {
+func (waitStrategy) WaitUntilReady(ctx context.Context, st wait.StrategyTarget) error {
 	if err := wait.ForListeningPort(apachePort).
 		WithStartupTimeout(time.Minute).
 		WaitUntilReady(ctx, st); err != nil {

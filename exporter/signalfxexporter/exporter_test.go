@@ -5,7 +5,6 @@ package signalfxexporter
 
 import (
 	"compress/gzip"
-	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -18,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +28,7 @@ import (
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/configopaque"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configtls"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
@@ -42,12 +43,23 @@ import (
 	componentmetadata "github.com/open-telemetry/opentelemetry-collector-contrib/exporter/signalfxexporter/internal/metadata"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/signalfxexporter/internal/translation"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/signalfxexporter/internal/translation/dpfilters"
-	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/signalfxexporter/internal/utils"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/splunk"
 	metadata "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/experimentalmetricmetadata"
 )
 
 func TestNew(t *testing.T) {
+	successClientConfig := confighttp.NewDefaultClientConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	successClientConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+	successClientConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+	successClientConfig.ForceAttemptHTTP2 = false
+	successClientConfig.Timeout = 1 * time.Second
+	hostMetadataClientConfig := confighttp.NewDefaultClientConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	hostMetadataClientConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+	hostMetadataClientConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+	hostMetadataClientConfig.ForceAttemptHTTP2 = false
+	hostMetadataClientConfig.Timeout = 1 * time.Second
 	tests := []struct {
 		name           string
 		config         *Config
@@ -73,7 +85,7 @@ func TestNew(t *testing.T) {
 			config: &Config{
 				AccessToken:  "someToken",
 				Realm:        "xyz",
-				ClientConfig: confighttp.ClientConfig{Timeout: 1 * time.Second},
+				ClientConfig: successClientConfig,
 			},
 		},
 		{
@@ -81,7 +93,7 @@ func TestNew(t *testing.T) {
 			config: &Config{
 				AccessToken:      "someToken",
 				Realm:            "xyz",
-				ClientConfig:     confighttp.ClientConfig{Timeout: 1 * time.Second},
+				ClientConfig:     hostMetadataClientConfig,
 				SyncHostMetadata: true,
 			},
 		},
@@ -185,14 +197,20 @@ func TestConsumeMetrics(t *testing.T) {
 			serverURL, err := url.Parse(server.URL)
 			assert.NoError(t, err)
 
+			clientConfig := confighttp.NewDefaultClientConfig()
+			// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+			clientConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+			clientConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+			clientConfig.ForceAttemptHTTP2 = false
+			clientConfig.Timeout = 1 * time.Second
+			clientConfig.Headers = configopaque.MapList{
+				{Name: "test_header_", Value: "test"},
+			}
 			cfg := &Config{
-				ClientConfig: confighttp.ClientConfig{
-					Timeout: 1 * time.Second,
-					Headers: map[string]configopaque.String{"test_header_": "test"},
-				},
+				ClientConfig: clientConfig,
 			}
 
-			client, err := cfg.ToClient(context.Background(), componenttest.NewNopHost(), exportertest.NewNopSettings(componentmetadata.Type).TelemetrySettings)
+			client, err := cfg.ClientConfig.ToClient(t.Context(), nil, exportertest.NewNopSettings(componentmetadata.Type).TelemetrySettings)
 			require.NoError(t, err)
 
 			c, err := translation.NewMetricsConverter(zap.NewNop(), nil, nil, nil, "", false, true)
@@ -215,7 +233,7 @@ func TestConsumeMetrics(t *testing.T) {
 				http.StatusText(tt.wantStatusCode),
 			)
 
-			numDroppedTimeSeries, err := dpClient.pushMetricsData(context.Background(), tt.md)
+			numDroppedTimeSeries, err := dpClient.pushMetricsData(t.Context(), tt.md)
 			assert.Equal(t, tt.numDroppedTimeSeries, numDroppedTimeSeries)
 
 			if tt.wantErr {
@@ -547,22 +565,21 @@ func TestConsumeMetricsWithAccessTokenPassthrough(t *testing.T) {
 			cfg := factory.CreateDefaultConfig().(*Config)
 			cfg.IngestURL = server.URL
 			cfg.APIURL = server.URL
-			cfg.Headers = make(map[string]configopaque.String)
 			for k, v := range tt.additionalHeaders {
-				cfg.Headers[k] = configopaque.String(v)
+				cfg.ClientConfig.Headers.Set(k, configopaque.String(v))
 			}
-			cfg.Headers["test_header_"] = configopaque.String(tt.name)
+			cfg.ClientConfig.Headers.Set("test_header_", configopaque.String(tt.name))
 			cfg.AccessToken = configopaque.String(fromHeaders)
-			cfg.AccessTokenPassthrough = tt.accessTokenPassthrough
+			cfg.AccessTokenPassthroughConfig.AccessTokenPassthrough = tt.accessTokenPassthrough
 			cfg.SendOTLPHistograms = tt.sendOTLPHistograms
-			sfxExp, err := NewFactory().CreateMetrics(context.Background(), exportertest.NewNopSettings(componentmetadata.Type), cfg)
+			sfxExp, err := NewFactory().CreateMetrics(t.Context(), exportertest.NewNopSettings(componentmetadata.Type), cfg)
 			require.NoError(t, err)
-			require.NoError(t, sfxExp.Start(context.Background(), componenttest.NewNopHost()))
+			require.NoError(t, sfxExp.Start(t.Context(), componenttest.NewNopHost()))
 			defer func() {
-				require.NoError(t, sfxExp.Shutdown(context.Background()))
+				require.NoError(t, sfxExp.Shutdown(t.Context()))
 			}()
 
-			err = sfxExp.ConsumeMetrics(context.Background(), tt.metrics)
+			err = sfxExp.ConsumeMetrics(t.Context(), tt.metrics)
 
 			assert.NoError(t, err)
 			require.Eventually(t, func() bool {
@@ -670,18 +687,17 @@ func TestConsumeMetricsAccessTokenPassthroughPriorityToContext(t *testing.T) {
 			cfg := factory.CreateDefaultConfig().(*Config)
 			cfg.IngestURL = server.URL
 			cfg.APIURL = server.URL
-			cfg.Headers = make(map[string]configopaque.String)
 			for k, v := range tt.additionalHeaders {
-				cfg.Headers[k] = configopaque.String(v)
+				cfg.ClientConfig.Headers.Set(k, configopaque.String(v))
 			}
-			cfg.Headers["test_header_"] = configopaque.String(tt.name)
+			cfg.ClientConfig.Headers.Set("test_header_", configopaque.String(tt.name))
 			cfg.AccessToken = configopaque.String(fromHeaders)
-			cfg.AccessTokenPassthrough = tt.accessTokenPassthrough
+			cfg.AccessTokenPassthroughConfig.AccessTokenPassthrough = tt.accessTokenPassthrough
 			cfg.SendOTLPHistograms = tt.sendOTLPHistograms
-			cfg.QueueSettings.Enabled = false
-			sfxExp, err := NewFactory().CreateMetrics(context.Background(), exportertest.NewNopSettings(componentmetadata.Type), cfg)
+			cfg.QueueSettings = configoptional.Default(*cfg.QueueSettings.Get())
+			sfxExp, err := NewFactory().CreateMetrics(t.Context(), exportertest.NewNopSettings(componentmetadata.Type), cfg)
 			require.NoError(t, err)
-			ctx := context.Background()
+			ctx := t.Context()
 			if tt.inContext {
 				ctx = client.NewContext(
 					ctx,
@@ -692,7 +708,7 @@ func TestConsumeMetricsAccessTokenPassthroughPriorityToContext(t *testing.T) {
 			}
 			require.NoError(t, sfxExp.Start(ctx, componenttest.NewNopHost()))
 			defer func() {
-				require.NoError(t, sfxExp.Shutdown(context.Background()))
+				require.NoError(t, sfxExp.Shutdown(t.Context()))
 			}()
 
 			err = sfxExp.ConsumeMetrics(ctx, tt.metrics)
@@ -774,19 +790,18 @@ func TestConsumeLogsAccessTokenPassthrough(t *testing.T) {
 			cfg := factory.CreateDefaultConfig().(*Config)
 			cfg.IngestURL = server.URL
 			cfg.APIURL = server.URL
-			cfg.Headers = make(map[string]configopaque.String)
-			cfg.Headers["test_header_"] = configopaque.String(tt.name)
+			cfg.ClientConfig.Headers.Set("test_header_", configopaque.String(tt.name))
 			cfg.AccessToken = configopaque.String(fromHeaders)
-			cfg.AccessTokenPassthrough = tt.accessTokenPassthrough
-			cfg.QueueSettings.Enabled = false
-			sfxExp, err := NewFactory().CreateLogs(context.Background(), exportertest.NewNopSettings(componentmetadata.Type), cfg)
+			cfg.AccessTokenPassthroughConfig.AccessTokenPassthrough = tt.accessTokenPassthrough
+			cfg.QueueSettings = configoptional.Default(*cfg.QueueSettings.Get())
+			sfxExp, err := NewFactory().CreateLogs(t.Context(), exportertest.NewNopSettings(componentmetadata.Type), cfg)
 			require.NoError(t, err)
-			require.NoError(t, sfxExp.Start(context.Background(), componenttest.NewNopHost()))
+			require.NoError(t, sfxExp.Start(t.Context(), componenttest.NewNopHost()))
 			defer func() {
-				require.NoError(t, sfxExp.Shutdown(context.Background()))
+				require.NoError(t, sfxExp.Shutdown(t.Context()))
 			}()
 
-			ctx := context.Background()
+			ctx := t.Context()
 			if tt.inContext {
 				ctx = client.NewContext(
 					ctx,
@@ -808,31 +823,39 @@ func TestConsumeLogsAccessTokenPassthrough(t *testing.T) {
 }
 
 func TestNewEventExporter(t *testing.T) {
-	got, err := newEventExporter(nil, exportertest.NewNopSettings(componentmetadata.Type))
+	exp, err := newEventExporter(nil, exportertest.NewNopSettings(componentmetadata.Type))
 	assert.EqualError(t, err, "nil config")
-	assert.Nil(t, got)
+	assert.Nil(t, exp)
 
-	got, err = newEventExporter(nil, exportertest.NewNopSettings(componentmetadata.Type))
+	exp, err = newEventExporter(nil, exportertest.NewNopSettings(componentmetadata.Type))
 	assert.Error(t, err)
-	assert.Nil(t, got)
+	assert.Nil(t, exp)
 
+	clientConfig := confighttp.NewDefaultClientConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	clientConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+	clientConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+	clientConfig.ForceAttemptHTTP2 = false
+	clientConfig.Timeout = 1 * time.Second
 	cfg := &Config{
 		AccessToken:  "someToken",
 		Realm:        "xyz",
-		ClientConfig: confighttp.ClientConfig{Timeout: 1 * time.Second},
+		ClientConfig: clientConfig,
 	}
 
-	got, err = newEventExporter(cfg, exportertest.NewNopSettings(componentmetadata.Type))
+	exp, err = newEventExporter(cfg, exportertest.NewNopSettings(componentmetadata.Type))
 	assert.NoError(t, err)
-	require.NotNil(t, got)
+	require.NotNil(t, exp)
 
-	err = got.startLogs(context.Background(), componenttest.NewNopHost())
+	err = exp.startLogs(t.Context(), componenttest.NewNopHost())
 	assert.NoError(t, err)
 
 	// This is expected to fail.
 	ld := makeSampleResourceLogs()
-	err = got.pushLogs(context.Background(), ld)
+	err = exp.pushLogs(t.Context(), ld)
 	assert.Error(t, err)
+
+	require.NoError(t, exp.shutdown(t.Context()))
 }
 
 func makeSampleResourceLogs() plog.Logs {
@@ -859,61 +882,51 @@ func makeSampleResourceLogs() plog.Logs {
 
 func TestConsumeEventData(t *testing.T) {
 	tests := []struct {
-		name                 string
-		resourceLogs         plog.Logs
-		reqTestFunc          func(t *testing.T, r *http.Request)
-		httpResponseCode     int
-		numDroppedLogRecords int
-		wantErr              bool
+		name             string
+		events           []*sfxpb.Event
+		reqTestFunc      func(t *testing.T, r *http.Request)
+		httpResponseCode int
+		wantErr          bool
 	}{
 		{
-			name:             "happy_path",
-			resourceLogs:     makeSampleResourceLogs(),
+			name: "happy_path",
+			events: []*sfxpb.Event{
+				{
+					EventType: "shutdown",
+					Category:  sfxpb.EventCategory_USER_DEFINED.Enum(),
+					Dimensions: []*sfxpb.Dimension{
+						{Key: "host", Value: "server1"},
+					},
+				},
+			},
 			reqTestFunc:      nil,
 			httpResponseCode: http.StatusAccepted,
 		},
 		{
-			name: "no_event_attribute",
-			resourceLogs: func() plog.Logs {
-				out := makeSampleResourceLogs()
-				attrs := out.ResourceLogs().At(0).ScopeLogs().At(0).LogRecords().At(0).Attributes()
-				attrs.Remove("com.splunk.signalfx.event_category")
-				attrs.Remove("com.splunk.signalfx.event_type")
-				return out
+			name:             "empty_events",
+			events:           []*sfxpb.Event{},
+			reqTestFunc:      nil,
+			httpResponseCode: http.StatusAccepted,
+		},
+		{
+			name:             "response_forbidden",
+			events:           []*sfxpb.Event{{EventType: "test"}},
+			reqTestFunc:      nil,
+			httpResponseCode: http.StatusForbidden,
+			wantErr:          true,
+		},
+		{
+			name: "large_batch",
+			events: func() []*sfxpb.Event {
+				events := make([]*sfxpb.Event, 65000)
+				for i := range events {
+					events[i] = &sfxpb.Event{
+						EventType: "test",
+						Category:  sfxpb.EventCategory_USER_DEFINED.Enum(),
+					}
+				}
+				return events
 			}(),
-			reqTestFunc:          nil,
-			numDroppedLogRecords: 1,
-			httpResponseCode:     http.StatusAccepted,
-		},
-		{
-			name: "nonconvertible_log_attrs",
-			resourceLogs: func() plog.Logs {
-				out := makeSampleResourceLogs()
-
-				attrs := out.ResourceLogs().At(0).ScopeLogs().At(0).LogRecords().At(0).Attributes()
-				attrs.PutEmptyMap("map")
-
-				propsAttrs, _ := attrs.Get("com.splunk.signalfx.event_properties")
-				propsAttrs.Map().PutEmptyMap("map")
-
-				return out
-			}(),
-			reqTestFunc: nil,
-			// The log does go through, just without that prop
-			numDroppedLogRecords: 0,
-			httpResponseCode:     http.StatusAccepted,
-		},
-		{
-			name:                 "response_forbidden",
-			resourceLogs:         makeSampleResourceLogs(),
-			reqTestFunc:          nil,
-			httpResponseCode:     http.StatusForbidden,
-			numDroppedLogRecords: 1,
-			wantErr:              true,
-		},
-		{
-			name:             "large_batch",
-			resourceLogs:     generateLargeEventBatch(),
 			reqTestFunc:      nil,
 			httpResponseCode: http.StatusAccepted,
 		},
@@ -932,14 +945,20 @@ func TestConsumeEventData(t *testing.T) {
 			serverURL, err := url.Parse(server.URL)
 			assert.NoError(t, err)
 
+			clientConfig := confighttp.NewDefaultClientConfig()
+			// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+			clientConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+			clientConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+			clientConfig.ForceAttemptHTTP2 = false
+			clientConfig.Timeout = 1 * time.Second
+			clientConfig.Headers = configopaque.MapList{
+				{Name: "test_header_", Value: "test"},
+			}
 			cfg := &Config{
-				ClientConfig: confighttp.ClientConfig{
-					Timeout: 1 * time.Second,
-					Headers: map[string]configopaque.String{"test_header_": "test"},
-				},
+				ClientConfig: clientConfig,
 			}
 
-			client, err := cfg.ToClient(context.Background(), componenttest.NewNopHost(), exportertest.NewNopSettings(componentmetadata.Type).TelemetrySettings)
+			client, err := cfg.ClientConfig.ToClient(t.Context(), nil, exportertest.NewNopSettings(componentmetadata.Type).TelemetrySettings)
 			require.NoError(t, err)
 
 			eventClient := &sfxEventClient{
@@ -951,15 +970,17 @@ func TestConsumeEventData(t *testing.T) {
 				logger: zap.NewNop(),
 			}
 
-			numDroppedLogRecords, err := eventClient.pushLogsData(context.Background(), tt.resourceLogs)
-			assert.Equal(t, tt.numDroppedLogRecords, numDroppedLogRecords)
+			var pushErr error
+			if len(tt.events) > 0 {
+				pushErr = eventClient.pushEvents(t.Context(), plog.NewResourceLogs(), tt.events)
+			}
 
 			if tt.wantErr {
-				assert.Error(t, err)
+				assert.Error(t, pushErr)
 				return
 			}
 
-			assert.NoError(t, err)
+			assert.NoError(t, pushErr)
 		})
 	}
 }
@@ -1029,18 +1050,17 @@ func TestConsumeLogsDataWithAccessTokenPassthrough(t *testing.T) {
 			cfg := factory.CreateDefaultConfig().(*Config)
 			cfg.IngestURL = server.URL
 			cfg.APIURL = server.URL
-			cfg.Headers = make(map[string]configopaque.String)
-			cfg.Headers["test_header_"] = configopaque.String(tt.name)
+			cfg.ClientConfig.Headers.Set("test_header_", configopaque.String(tt.name))
 			cfg.AccessToken = configopaque.String(fromHeaders)
-			cfg.AccessTokenPassthrough = tt.accessTokenPassthrough
-			sfxExp, err := NewFactory().CreateLogs(context.Background(), exportertest.NewNopSettings(componentmetadata.Type), cfg)
+			cfg.AccessTokenPassthroughConfig.AccessTokenPassthrough = tt.accessTokenPassthrough
+			sfxExp, err := NewFactory().CreateLogs(t.Context(), exportertest.NewNopSettings(componentmetadata.Type), cfg)
 			require.NoError(t, err)
-			require.NoError(t, sfxExp.Start(context.Background(), componenttest.NewNopHost()))
+			require.NoError(t, sfxExp.Start(t.Context(), componenttest.NewNopHost()))
 			defer func() {
-				require.NoError(t, sfxExp.Shutdown(context.Background()))
+				require.NoError(t, sfxExp.Shutdown(t.Context()))
 			}()
 
-			assert.NoError(t, sfxExp.ConsumeLogs(context.Background(), newLogData(tt.includedInLogData)))
+			assert.NoError(t, sfxExp.ConsumeLogs(t.Context(), newLogData(tt.includedInLogData)))
 
 			require.Eventually(t, func() bool {
 				receivedTokens.Lock()
@@ -1057,7 +1077,7 @@ func generateLargeDPBatch() pmetric.Metrics {
 	md.ResourceMetrics().EnsureCapacity(6500)
 
 	ts := time.Now()
-	for i := 0; i < 6500; i++ {
+	for i := range 6500 {
 		rm := md.ResourceMetrics().AppendEmpty()
 		ilm := rm.ScopeMetrics().AppendEmpty()
 		m := ilm.Metrics().AppendEmpty()
@@ -1074,23 +1094,6 @@ func generateLargeDPBatch() pmetric.Metrics {
 	return md
 }
 
-func generateLargeEventBatch() plog.Logs {
-	out := plog.NewLogs()
-	logs := out.ResourceLogs().AppendEmpty().ScopeLogs().AppendEmpty().LogRecords()
-
-	batchSize := 65000
-	logs.EnsureCapacity(batchSize)
-	ts := time.Now()
-	for i := 0; i < batchSize; i++ {
-		lr := logs.AppendEmpty()
-		lr.Attributes().PutStr("k0", "k1")
-		lr.Attributes().PutEmpty("com.splunk.signalfx.event_category")
-		lr.SetTimestamp(pcommon.NewTimestampFromTime(ts))
-	}
-
-	return out
-}
-
 func TestConsumeMetadataNotStarted(t *testing.T) {
 	exporter := &signalfxExporter{}
 	err := exporter.pushMetadata([]*metadata.MetadataUpdate{})
@@ -1099,16 +1102,6 @@ func TestConsumeMetadataNotStarted(t *testing.T) {
 
 func TestConsumeMetadata(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
-	converter, err := translation.NewMetricsConverter(
-		zap.NewNop(),
-		nil,
-		cfg.ExcludeMetrics,
-		cfg.IncludeMetrics,
-		cfg.NonAlphanumericDimensionChars,
-		false,
-		true,
-	)
-	require.NoError(t, err)
 	type args struct {
 		metadata []*metadata.MetadataUpdate
 	}
@@ -1410,22 +1403,23 @@ func TestConsumeMetadata(t *testing.T) {
 
 			dimClient := dimensions.NewDimensionClient(
 				dimensions.DimensionClientOptions{
-					Token:             "foo",
-					APIURL:            serverURL,
-					LogUpdates:        true,
-					Logger:            logger,
-					SendDelay:         tt.sendDelay,
-					MaxBuffered:       10,
-					MetricsConverter:  *converter,
-					ExcludeProperties: tt.excludeProperties,
-				})
+					Token:                   "foo",
+					APIURL:                  serverURL,
+					LogUpdates:              true,
+					Logger:                  logger,
+					SendDelay:               tt.sendDelay,
+					MaxBuffered:             10,
+					NonAlphanumericDimChars: cfg.NonAlphanumericDimensionChars,
+					ExcludeProperties:       tt.excludeProperties,
+				},
+			)
 			dimClient.Start()
 
 			se := &signalfxExporter{
 				dimClient: dimClient,
 			}
 			defer func() {
-				_ = se.shutdown(context.Background())
+				_ = se.shutdown(t.Context())
 			}()
 			sme := signalfMetadataExporter{
 				exporter: se,
@@ -1458,7 +1452,7 @@ func BenchmarkExporterConsumeData(b *testing.B) {
 	batchSize := 1000
 	metrics := pmetric.NewMetrics()
 	tmd := testMetricsData(false)
-	for i := 0; i < batchSize; i++ {
+	for range batchSize {
 		tmd.ResourceMetrics().At(0).CopyTo(metrics.ResourceMetrics().AppendEmpty())
 	}
 
@@ -1486,8 +1480,8 @@ func BenchmarkExporterConsumeData(b *testing.B) {
 		converter: c,
 	}
 
-	for i := 0; i < b.N; i++ {
-		numDroppedTimeSeries, err := dpClient.pushMetricsData(context.Background(), metrics)
+	for b.Loop() {
+		numDroppedTimeSeries, err := dpClient.pushMetricsData(b.Context(), metrics)
 		assert.NoError(b, err)
 		assert.Equal(b, 0, numDroppedTimeSeries)
 	}
@@ -1500,7 +1494,7 @@ func TestSignalFxExporterConsumeMetadata(t *testing.T) {
 	rCfg := cfg.(*Config)
 	rCfg.AccessToken = "token"
 	rCfg.Realm = "realm"
-	exp, err := f.CreateMetrics(context.Background(), exportertest.NewNopSettings(componentmetadata.Type), rCfg)
+	exp, err := f.CreateMetrics(t.Context(), exportertest.NewNopSettings(componentmetadata.Type), rCfg)
 	require.NoError(t, err)
 
 	kme, ok := exp.(metadata.MetadataExporter)
@@ -1573,8 +1567,8 @@ func TestTLSExporterInit(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			sfx, err := newSignalFxExporter(tt.config, exportertest.NewNopSettings(componentmetadata.Type))
 			assert.NoError(t, err)
-			err = sfx.start(context.Background(), componenttest.NewNopHost())
-			defer func() { require.NoError(t, sfx.shutdown(context.Background())) }()
+			err = sfx.start(t.Context(), componenttest.NewNopHost())
+			defer func() { require.NoError(t, sfx.shutdown(t.Context())) }()
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.wantErrMessage != "" {
@@ -1644,11 +1638,11 @@ func TestTLSIngestConnection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			sfx, err := newSignalFxExporter(tt.config, exportertest.NewNopSettings(componentmetadata.Type))
 			assert.NoError(t, err)
-			err = sfx.start(context.Background(), componenttest.NewNopHost())
+			err = sfx.start(t.Context(), componenttest.NewNopHost())
 			assert.NoError(t, err)
-			defer func() { assert.NoError(t, sfx.shutdown(context.Background())) }()
+			defer func() { assert.NoError(t, sfx.shutdown(t.Context())) }()
 
-			_, err = sfx.pushMetricsData(context.Background(), metricsPayload)
+			_, err = sfx.pushMetricsData(t.Context(), metricsPayload)
 			if tt.wantErr {
 				require.Error(t, err)
 				if tt.wantErrMessage != "" {
@@ -1661,7 +1655,7 @@ func TestTLSIngestConnection(t *testing.T) {
 	}
 }
 
-func TestDefaultSystemCPUTimeExcludedAndTranslated(t *testing.T) {
+func TestDefaultSystemCPUTimeIncludedAndTranslated(t *testing.T) {
 	translator, err := translation.NewMetricTranslator(defaultTranslationRules, 3600, make(chan struct{}))
 	require.NoError(t, err)
 	converter, err := translation.NewMetricsConverter(zap.NewNop(), translator, defaultExcludeMetrics, nil, "_-.", false, true)
@@ -1674,43 +1668,32 @@ func TestDefaultSystemCPUTimeExcludedAndTranslated(t *testing.T) {
 	m.SetName("system.cpu.time")
 	sum := m.SetEmptySum()
 	for _, state := range []string{"idle", "interrupt", "nice", "softirq", "steal", "system", "user", "wait"} {
-		for cpu := 0; cpu < 32; cpu++ {
-			dp := sum.DataPoints().AppendEmpty()
-			dp.SetDoubleValue(0)
-			dp.Attributes().PutStr("cpu", fmt.Sprintf("%d", cpu))
-			dp.Attributes().PutStr("state", state)
-		}
+		dp := sum.DataPoints().AppendEmpty()
+		dp.SetDoubleValue(0)
+		dp.Attributes().PutStr("state", state)
 	}
+	cpuCount := sm.Metrics().AppendEmpty()
+	cpuCount.SetName("system.cpu.logical.count")
+	cpuCountSum := cpuCount.SetEmptySum()
+	cpuCountSum.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+	cpuCountSum.DataPoints().AppendEmpty().SetIntValue(32)
+
 	dps := converter.MetricsToSignalFxV2(md)
-	found := map[string]int64{}
+	found := map[string][]*sfxpb.DataPoint{}
 	for _, dp := range dps {
-		if dp.Metric == "cpu.num_processors" || dp.Metric == "cpu.idle" {
-			intVal := dp.Value.IntValue
-			require.NotNilf(t, intVal, "unexpected nil IntValue for %q", dp.Metric)
-			found[dp.Metric] = *intVal
-		} else {
-			// account for unexpected w/ test-failing placeholder
-			found[dp.Metric] = -1
-		}
+		found[dp.Metric] = append(found[dp.Metric], dp)
 	}
-	require.Equal(t, map[string]int64{
-		"cpu.num_processors": 32,
-		"cpu.idle":           0,
-	}, found)
+	require.Len(t, found, 4)
+	require.Len(t, found["system.cpu.time"], 8)
+	require.Len(t, found["cpu.idle"], 1)
+	require.Len(t, found["cpu.num_processors"], 1)
+	require.Len(t, found["system.cpu.logical.count"], 1)
+	require.Equal(t, int64(32), *found["cpu.num_processors"][0].Value.IntValue)
+	require.Equal(t, int64(0), *found["cpu.idle"][0].Value.IntValue)
+	require.Equal(t, int64(32), *found["system.cpu.logical.count"][0].Value.IntValue)
 }
 
 func TestTLSAPIConnection(t *testing.T) {
-	cfg := createDefaultConfig().(*Config)
-	converter, err := translation.NewMetricsConverter(
-		zap.NewNop(),
-		nil,
-		cfg.ExcludeMetrics,
-		cfg.IncludeMetrics,
-		cfg.NonAlphanumericDimensionChars,
-		false,
-		true)
-	require.NoError(t, err)
-
 	metadata := []*metadata.MetadataUpdate{
 		{
 			ResourceIDKey: "key",
@@ -1767,21 +1750,23 @@ func TestTLSAPIConnection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			observedZapCore, observedLogs := observer.New(zap.DebugLevel)
 			logger := zap.New(observedZapCore)
-			apiTLSCfg, err := tt.config.APITLSs.LoadTLSConfig(context.Background())
+			apiTLSCfg, err := tt.config.APITLSs.LoadTLSConfig(t.Context())
 			require.NoError(t, err)
 			serverURL, err := url.Parse(tt.config.APIURL)
 			assert.NoError(t, err)
+
 			dimClient := dimensions.NewDimensionClient(
 				dimensions.DimensionClientOptions{
-					Token:            "",
-					APIURL:           serverURL,
-					LogUpdates:       true,
-					Logger:           logger,
-					SendDelay:        1,
-					MaxBuffered:      10,
-					MetricsConverter: *converter,
-					APITLSConfig:     apiTLSCfg,
-				})
+					Token:                   "",
+					APIURL:                  serverURL,
+					LogUpdates:              true,
+					Logger:                  logger,
+					SendDelay:               1,
+					MaxBuffered:             10,
+					APITLSConfig:            apiTLSCfg,
+					NonAlphanumericDimChars: "",
+				},
+			)
 			dimClient.Start()
 			defer func() { dimClient.Shutdown() }()
 
@@ -1819,27 +1804,44 @@ func newLocalHTTPSTestServer(handler http.Handler) (*httptest.Server, error) {
 	return ts, nil
 }
 
+func BenchmarkExporterConsumeDataWithSFxHistograms(b *testing.B) {
+	benchmarkExporterConsumeDataWithHistograms(b, false, "application/x-protobuf")
+}
+
 func BenchmarkExporterConsumeDataWithOTLPHistograms(b *testing.B) {
+	benchmarkExporterConsumeDataWithHistograms(b, true, otlpProtobufContentType)
+}
+
+func benchmarkExporterConsumeDataWithHistograms(b *testing.B, sendOTLPHistograms bool, expectedContentType string) {
 	batchSize := 1000
 	metrics := pmetric.NewMetrics()
 	tmd := testMetricsData(true)
-	for i := 0; i < batchSize; i++ {
+	for range batchSize {
 		tmd.ResourceMetrics().At(0).CopyTo(metrics.ResourceMetrics().AppendEmpty())
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	var requestCount atomic.Int64
+	var invalidContentType atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		if r.Header.Get("Content-Type") != expectedContentType {
+			invalidContentType.Store(true)
+		}
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer server.Close()
 	serverURL, err := url.Parse(server.URL)
-	assert.NoError(b, err)
+	require.NoError(b, err)
 
-	c, err := translation.NewMetricsConverter(zap.NewNop(), nil, nil, nil, "", false, false)
+	c, err := translation.NewMetricsConverter(zap.NewNop(), nil, nil, nil, "", false, !sendOTLPHistograms)
 	require.NoError(b, err)
 	require.NotNil(b, c)
 	dpClient := &sfxDPClient{
 		sfxClientBase: sfxClientBase{
 			ingestURL: serverURL,
+			headers: map[string]string{
+				contentTypeHeader: "application/x-protobuf",
+			},
 			client: &http.Client{
 				Timeout: 1 * time.Second,
 			},
@@ -1847,14 +1849,26 @@ func BenchmarkExporterConsumeDataWithOTLPHistograms(b *testing.B) {
 				return gzip.NewWriter(nil)
 			}},
 		},
-		logger:    zap.NewNop(),
-		converter: c,
+		logger:             zap.NewNop(),
+		converter:          c,
+		sendOTLPHistograms: sendOTLPHistograms,
 	}
 
-	for i := 0; i < b.N; i++ {
-		numDroppedTimeSeries, err := dpClient.pushMetricsData(context.Background(), metrics)
-		assert.NoError(b, err)
-		assert.Equal(b, 0, numDroppedTimeSeries)
+	b.ReportAllocs()
+	for b.Loop() {
+		numDroppedTimeSeries, err := dpClient.pushMetricsData(b.Context(), metrics)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if numDroppedTimeSeries != 0 {
+			b.Fatalf("dropped %d time series", numDroppedTimeSeries)
+		}
+	}
+	if invalidContentType.Load() {
+		b.Fatalf("expected Content-Type %q", expectedContentType)
+	}
+	if got := requestCount.Load(); got != int64(b.N) {
+		b.Fatalf("sent %d requests, expected %d", got, b.N)
 	}
 }
 
@@ -2050,14 +2064,20 @@ func TestConsumeMixedMetrics(t *testing.T) {
 			serverURL, err := url.Parse(server.URL)
 			assert.NoError(t, err)
 
+			clientConfig := confighttp.NewDefaultClientConfig()
+			// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+			clientConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+			clientConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+			clientConfig.ForceAttemptHTTP2 = false
+			clientConfig.Timeout = 1 * time.Second
+			clientConfig.Headers = configopaque.MapList{
+				{Name: "test_header_", Value: "test"},
+			}
 			cfg := &Config{
-				ClientConfig: confighttp.ClientConfig{
-					Timeout: 1 * time.Second,
-					Headers: map[string]configopaque.String{"test_header_": "test"},
-				},
+				ClientConfig: clientConfig,
 			}
 
-			client, err := cfg.ToClient(context.Background(), componenttest.NewNopHost(), exportertest.NewNopSettings(componentmetadata.Type).TelemetrySettings)
+			client, err := cfg.ClientConfig.ToClient(t.Context(), nil, exportertest.NewNopSettings(componentmetadata.Type).TelemetrySettings)
 			require.NoError(t, err)
 
 			c, err := translation.NewMetricsConverter(zap.NewNop(), nil, nil, nil, "", false, false)
@@ -2076,7 +2096,7 @@ func TestConsumeMixedMetrics(t *testing.T) {
 				sendOTLPHistograms: true,
 			}
 
-			numDroppedTimeSeries, err := sfxClient.pushMetricsData(context.Background(), tt.md)
+			numDroppedTimeSeries, err := sfxClient.pushMetricsData(t.Context(), tt.md)
 			assert.Equal(t, tt.numDroppedTimeSeries, numDroppedTimeSeries)
 
 			errMsg := fmt.Sprintf("HTTP \"/v2/datapoint\" %d %q",
@@ -2100,7 +2120,7 @@ func TestConsumeMixedMetrics(t *testing.T) {
 
 			if tt.wantThrottleErr {
 				if tt.wantPartialMetricsErr {
-					partialMetrics, _ := utils.GetHistograms(smallBatch)
+					partialMetrics, _ := getHistograms(smallBatch)
 					throttleErr := errors.New(errMsg)
 					throttleErr = exporterhelper.NewThrottleRetry(throttleErr, time.Duration(tt.retryAfter)*time.Second)
 					testErr := consumererror.NewMetrics(throttleErr, partialMetrics)
@@ -2124,7 +2144,7 @@ func generateLargeMixedDPBatch() pmetric.Metrics {
 	md.ResourceMetrics().EnsureCapacity(7500)
 
 	ts := pcommon.NewTimestampFromTime(time.Now())
-	for i := 0; i < 7500; i++ {
+	for i := range 7500 {
 		rm := md.ResourceMetrics().AppendEmpty()
 		rm.Resource().Attributes().PutStr("kr0", "vr0")
 		ilm := rm.ScopeMetrics().AppendEmpty()

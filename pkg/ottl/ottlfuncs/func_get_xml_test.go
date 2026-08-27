@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 )
@@ -99,16 +100,17 @@ func Test_GetXML(t *testing.T) {
 				ottl.FunctionContext{},
 				&GetXMLArguments[any]{
 					Target: ottl.StandardStringGetter[any]{
-						Getter: func(_ context.Context, _ any) (any, error) {
+						Getter: func(context.Context, any) (any, error) {
 							return tt.document, nil
 						},
 					},
 					XPath: tt.xPath,
-				})
-			assert.NoError(t, err)
+				},
+			)
+			require.NoError(t, err)
 
-			result, err := exprFunc(context.Background(), nil)
-			assert.NoError(t, err)
+			result, err := exprFunc(t.Context(), nil)
+			require.NoError(t, err)
 			assert.Equal(t, tt.want, result)
 		})
 	}
@@ -127,7 +129,8 @@ func TestCreateGetXMLFunc(t *testing.T) {
 	exprFunc, err = factory.CreateFunction(
 		fCtx, &GetXMLArguments[any]{
 			XPath: "!",
-		})
+		},
+	)
 	assert.Error(t, err)
 	assert.Nil(t, exprFunc)
 
@@ -136,9 +139,47 @@ func TestCreateGetXMLFunc(t *testing.T) {
 		fCtx, &GetXMLArguments[any]{
 			Target: invalidXMLGetter(),
 			XPath:  "/",
-		})
-	assert.NoError(t, err)
+		},
+	)
+	require.NoError(t, err)
 	assert.NotNil(t, exprFunc)
-	_, err = exprFunc(context.Background(), nil)
+	_, err = exprFunc(t.Context(), nil)
 	assert.Error(t, err)
+}
+
+func Test_GetXMLFactory(t *testing.T) {
+	t.Run("factory creation", func(t *testing.T) {
+		factory := NewGetXMLFactory[any]()
+		assert.Equal(t, "GetXML", factory.Name())
+	})
+
+	t.Run("default arguments", func(t *testing.T) {
+		factory := NewGetXMLFactory[any]()
+		args := factory.CreateDefaultArguments()
+
+		assert.IsType(t, &GetXMLArguments[any]{}, args)
+		assertArgumentFieldNames(t, args, []string{"Target", "XPath"})
+	})
+
+	t.Run("function creation", func(t *testing.T) {
+		factory := NewGetXMLFactory[any]()
+		args := factory.CreateDefaultArguments()
+		getXMLArgs, ok := args.(*GetXMLArguments[any])
+		require.True(t, ok)
+		getXMLArgs.Target = &ottl.StandardStringGetter[any]{
+			Getter: func(context.Context, any) (any, error) {
+				return "<a></a>", nil
+			},
+		}
+		getXMLArgs.XPath = "/a"
+
+		fn, err := factory.CreateFunction(ottl.FunctionContext{}, args)
+		require.NoError(t, err)
+		assert.NotNil(t, fn)
+	})
+
+	t.Run("invalid arguments type", func(t *testing.T) {
+		_, err := createGetXMLFunction[any](ottl.FunctionContext{}, "invalid args")
+		assert.ErrorContains(t, err, "GetXML args must be of type *GetXMLAguments[K]")
+	})
 }

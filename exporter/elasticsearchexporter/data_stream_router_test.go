@@ -4,6 +4,7 @@
 package elasticsearchexporter
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -17,8 +18,10 @@ type routeTestCase struct {
 	name        string
 	mode        MappingMode
 	scopeName   string
+	scopeAttrs  map[string]any
 	recordAttrs map[string]any
 	want        elasticsearch.Index
+	wantErr     string
 }
 
 func createRouteTests(dsType string) []routeTestCase {
@@ -41,30 +44,6 @@ func createRouteTests(dsType string) []routeTestCase {
 			want: renderWantRoute(dsType, defaultDataStreamDataset, defaultDataStreamNamespace, MappingOTel),
 		},
 		{
-			name:      "default with receiver scope name",
-			mode:      MappingNone,
-			scopeName: "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver/internal/scraper/cpuscraper",
-			want:      renderWantRoute(dsType, "hostmetricsreceiver", defaultDataStreamNamespace, MappingNone),
-		},
-		{
-			name:      "otel with receiver scope name",
-			mode:      MappingOTel,
-			scopeName: "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver/internal/scraper/cpuscraper",
-			want:      renderWantRoute(dsType, "hostmetricsreceiver", defaultDataStreamNamespace, MappingOTel),
-		},
-		{
-			name:      "default with non-receiver scope name",
-			mode:      MappingNone,
-			scopeName: "some_other_scope_name",
-			want:      renderWantRoute(dsType, defaultDataStreamDataset, defaultDataStreamNamespace, MappingNone),
-		},
-		{
-			name:      "otel with non-receiver scope name",
-			mode:      MappingOTel,
-			scopeName: "some_other_scope_name",
-			want:      renderWantRoute(dsType, defaultDataStreamDataset, defaultDataStreamNamespace, MappingOTel),
-		},
-		{
 			name:      "otel with elasticsearch.index",
 			mode:      MappingOTel,
 			scopeName: "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver/should/be/ignored",
@@ -73,6 +52,59 @@ func createRouteTests(dsType string) []routeTestCase {
 			},
 			want: elasticsearch.Index{
 				Index: "my-index",
+			},
+		},
+		{
+			name:      "otel with elasticsearch.index containing uppercase and disallowed chars",
+			mode:      MappingOTel,
+			scopeName: "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver/should/be/ignored",
+			recordAttrs: map[string]any{
+				"elasticsearch.index": "My/Index:Name",
+			},
+			want: elasticsearch.Index{
+				Index: "my_index_name",
+			},
+		},
+		{
+			name:      "otel with elasticsearch.index starting with disallowed chars",
+			mode:      MappingOTel,
+			scopeName: "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver/should/be/ignored",
+			recordAttrs: map[string]any{
+				"elasticsearch.index": "-+__my-index",
+			},
+			want: elasticsearch.Index{
+				Index: "my-index",
+			},
+		},
+		{
+			name:      "otel with elasticsearch.index starting with a dot (hidden index)",
+			mode:      MappingOTel,
+			scopeName: "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver/should/be/ignored",
+			recordAttrs: map[string]any{
+				"elasticsearch.index": ".my-index",
+			},
+			want: elasticsearch.Index{
+				Index: ".my-index",
+			},
+		},
+		{
+			name:      "otel with elasticsearch.index as dot or dot dot",
+			mode:      MappingOTel,
+			scopeName: "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver/should/be/ignored",
+			recordAttrs: map[string]any{
+				"elasticsearch.index": "..",
+			},
+			wantErr: `invalid index name: ".."`,
+		},
+		{
+			name:      "otel with elasticsearch.index exceeding 255 bytes limit",
+			mode:      MappingOTel,
+			scopeName: "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver/should/be/ignored",
+			recordAttrs: map[string]any{
+				"elasticsearch.index": strings.Repeat("a", 300),
+			},
+			want: elasticsearch.Index{
+				Index: strings.Repeat("a", 255),
 			},
 		},
 		{
@@ -85,6 +117,27 @@ func createRouteTests(dsType string) []routeTestCase {
 			},
 			want: renderWantRoute(dsType, "foo", "bar", MappingOTel),
 		},
+		{
+			name:      "default with scope-based routing for self-telemetry (sanity)",
+			mode:      MappingNone,
+			scopeName: "go.opentelemetry.io/collector/receiver/receiverhelper",
+			want:      renderWantRoute(dsType, collectorSelfTelemetryDataStreamDataset, defaultDataStreamNamespace, MappingNone),
+		},
+		{
+			name:      "otel with scope-based routing for encoding (sanity)",
+			mode:      MappingOTel,
+			scopeName: "github.com/open-telemetry/opentelemetry-collector-contrib/extension/encoding/awslogsencodingextension",
+			scopeAttrs: map[string]any{
+				"encoding.format": "aws.cloudtrail",
+			},
+			want: renderWantRoute(dsType, "aws.cloudtrail", defaultDataStreamNamespace, MappingOTel),
+		},
+		{
+			name:      "otel with scope-based routing for receivers (sanity)",
+			mode:      MappingOTel,
+			scopeName: "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver/internal/scraper/cpuscraper",
+			want:      renderWantRoute(dsType, "hostmetricsreceiver", defaultDataStreamNamespace, MappingOTel),
+		},
 	}
 }
 
@@ -96,11 +149,16 @@ func TestRouteLogRecord(t *testing.T) {
 			router := dynamicDocumentRouter{mode: tc.mode}
 			scope := pcommon.NewInstrumentationScope()
 			scope.SetName(tc.scopeName)
+			fillAttributeMap(scope.Attributes(), tc.scopeAttrs)
 
 			recordAttrMap := pcommon.NewMap()
 			fillAttributeMap(recordAttrMap, tc.recordAttrs)
 
 			ds, err := router.routeLogRecord(pcommon.NewResource(), scope, recordAttrMap)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, ds)
 		})
@@ -125,13 +183,24 @@ func TestRouteLogRecord(t *testing.T) {
 		assert.Equal(t, "logs", ds.Type) // should equal to logs
 	})
 
-	t.Run("test data_stream.type does not accept values other than logs/metrics", func(t *testing.T) {
+	t.Run("test data_stream.type accepts traces/profiles/synthetics for bodymap mode", func(t *testing.T) {
+		for _, dsType := range []string{"traces", "profiles", "synthetics"} {
+			router := dynamicDocumentRouter{mode: MappingBodyMap}
+			attrs := pcommon.NewMap()
+			attrs.PutStr("data_stream.type", dsType)
+			ds, err := router.routeLogRecord(pcommon.NewResource(), pcommon.NewInstrumentationScope(), attrs)
+			require.NoError(t, err)
+			assert.Equal(t, dsType, ds.Type)
+		}
+	})
+
+	t.Run("test data_stream.type does not accept arbitrary values", func(t *testing.T) {
 		dsType := "random"
 		router := dynamicDocumentRouter{mode: MappingBodyMap}
 		attrs := pcommon.NewMap()
 		attrs.PutStr("data_stream.type", dsType)
 		_, err := router.routeLogRecord(pcommon.NewResource(), pcommon.NewInstrumentationScope(), attrs)
-		require.Error(t, err, "data_stream.type cannot be other than logs or metrics")
+		require.EqualError(t, err, `data_stream.type "random" is not allowed for 'bodymap' mapping mode`)
 	})
 }
 
@@ -143,11 +212,16 @@ func TestRouteDataPoint(t *testing.T) {
 			router := dynamicDocumentRouter{mode: tc.mode}
 			scope := pcommon.NewInstrumentationScope()
 			scope.SetName(tc.scopeName)
+			fillAttributeMap(scope.Attributes(), tc.scopeAttrs)
 
 			recordAttrMap := pcommon.NewMap()
 			fillAttributeMap(recordAttrMap, tc.recordAttrs)
 
 			ds, err := router.routeDataPoint(pcommon.NewResource(), scope, recordAttrMap)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, ds)
 		})
@@ -162,13 +236,170 @@ func TestRouteSpan(t *testing.T) {
 			router := dynamicDocumentRouter{mode: tc.mode}
 			scope := pcommon.NewInstrumentationScope()
 			scope.SetName(tc.scopeName)
+			fillAttributeMap(scope.Attributes(), tc.scopeAttrs)
 
 			recordAttrMap := pcommon.NewMap()
 			fillAttributeMap(recordAttrMap, tc.recordAttrs)
 
 			ds, err := router.routeSpan(pcommon.NewResource(), scope, recordAttrMap)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, ds)
+		})
+	}
+}
+
+func TestApplyRouting(t *testing.T) {
+	tests := []struct {
+		name        string
+		scopeName   string
+		scopeAttrs  map[string]any
+		wantDataset string
+		wantFound   bool
+	}{
+		{
+			name:        "no routing applied for default scope",
+			scopeName:   "",
+			wantDataset: "",
+			wantFound:   false,
+		},
+		{
+			name:        "no routing applied for non-receiver scope name",
+			scopeName:   "some_other_scope_name",
+			wantDataset: "",
+			wantFound:   false,
+		},
+		{
+			name:        "receiver-based routing with hostmetricsreceiver",
+			scopeName:   "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver/internal/scraper/cpuscraper",
+			wantDataset: "hostmetricsreceiver",
+			wantFound:   true,
+		},
+		{
+			name:        "connector-based routing with spanmetricsconnector",
+			scopeName:   "github.com/open-telemetry/opentelemetry-collector-contrib/connector/spanmetricsconnector",
+			wantDataset: "spanmetricsconnector",
+			wantFound:   true,
+		},
+		{
+			name:        "receiver without a receiver name",
+			scopeName:   "some.scope.name/receiver/receiver/should/be/ignored",
+			wantDataset: "",
+			wantFound:   false,
+		},
+		{
+			name:        "connector without a connector name",
+			scopeName:   "some.scope.name/connector/connector/should/be/ignored",
+			wantDataset: "",
+			wantFound:   false,
+		},
+		{
+			name:        "otel collector self-telemetry for receivers",
+			scopeName:   "go.opentelemetry.io/collector/receiver/receiverhelper",
+			wantDataset: collectorSelfTelemetryDataStreamDataset,
+			wantFound:   true,
+		},
+		{
+			name:        "otel collector self-telemetry for scrapers",
+			scopeName:   "go.opentelemetry.io/collector/scraper/scraperhelper",
+			wantDataset: collectorSelfTelemetryDataStreamDataset,
+			wantFound:   true,
+		},
+		{
+			name:        "otel collector self-telemetry for processors",
+			scopeName:   "go.opentelemetry.io/collector/processor/processorhelper",
+			wantDataset: collectorSelfTelemetryDataStreamDataset,
+			wantFound:   true,
+		},
+		{
+			name:        "otel collector self-telemetry for exporters",
+			scopeName:   "go.opentelemetry.io/collector/exporter/exporterhelper",
+			wantDataset: collectorSelfTelemetryDataStreamDataset,
+			wantFound:   true,
+		},
+		{
+			name:        "otel collector self-telemetry for service",
+			scopeName:   "go.opentelemetry.io/collector/service",
+			wantDataset: collectorSelfTelemetryDataStreamDataset,
+			wantFound:   true,
+		},
+		{
+			name:      "encoding-based routing with aws.cloudtrail",
+			scopeName: "github.com/open-telemetry/opentelemetry-collector-contrib/extension/encoding/awslogsencodingextension",
+			scopeAttrs: map[string]any{
+				"encoding.format": "aws.cloudtrail",
+			},
+			wantDataset: "aws.cloudtrail",
+			wantFound:   true,
+		},
+		{
+			name:      "encoding-based routing with aws.vpcflow",
+			scopeName: "github.com/open-telemetry/opentelemetry-collector-contrib/extension/encoding/awslogsencodingextension",
+			scopeAttrs: map[string]any{
+				"encoding.format": "aws.vpcflow",
+			},
+			wantDataset: "aws.vpcflow",
+			wantFound:   true,
+		},
+		{
+			name:      "encoding-based routing takes precedence over receiver-based routing",
+			scopeName: "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver/internal/scraper/cpuscraper",
+			scopeAttrs: map[string]any{
+				"encoding.format": "aws.vpcflow",
+			},
+			wantDataset: "aws.vpcflow",
+			wantFound:   true,
+		},
+		{
+			name:      "self-telemetry takes precedence over encoding-based routing",
+			scopeName: "go.opentelemetry.io/collector/receiver/receiverhelper",
+			scopeAttrs: map[string]any{
+				"encoding.format": "aws.cloudtrail",
+			},
+			wantDataset: collectorSelfTelemetryDataStreamDataset,
+			wantFound:   true,
+		},
+		{
+			name:      "encoding format that is wrong type is ignored",
+			scopeName: "github.com/open-telemetry/opentelemetry-collector-contrib/extension/encoding/awslogsencodingextension",
+			scopeAttrs: map[string]any{
+				"encoding.format": true,
+			},
+			wantDataset: "",
+			wantFound:   false,
+		},
+		{
+			name:      "non-encoding scope attributes are ignored",
+			scopeName: "github.com/open-telemetry/opentelemetry-collector-contrib/extension/encoding/awslogsencodingextension",
+			scopeAttrs: map[string]any{
+				"some_other_attr": "should_be_ignored",
+			},
+			wantDataset: "",
+			wantFound:   false,
+		},
+		{
+			name:      "empty encoding.format scope attribute is ignored",
+			scopeName: "github.com/open-telemetry/opentelemetry-collector-contrib/extension/encoding/awslogsencodingextension",
+			scopeAttrs: map[string]any{
+				"encoding.format": "",
+			},
+			wantDataset: "",
+			wantFound:   false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			scope := pcommon.NewInstrumentationScope()
+			scope.SetName(tc.scopeName)
+			fillAttributeMap(scope.Attributes(), tc.scopeAttrs)
+
+			dataset, found := applyScopeRouting(scope)
+			assert.Equal(t, tc.wantDataset, dataset)
+			assert.Equal(t, tc.wantFound, found)
 		})
 	}
 }

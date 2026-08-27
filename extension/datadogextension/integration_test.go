@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build !aix
+
 package datadogextension
 
 import (
@@ -20,7 +22,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/confighttp"
+	"go.opentelemetry.io/collector/config/confignet"
 	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/provider/fileprovider"
 	"go.uber.org/zap"
@@ -53,14 +57,14 @@ func TestPopulateActiveComponentsIntegration(t *testing.T) {
 	resolver, err := confmap.NewResolver(resolverSettings)
 	require.NoError(t, err, "should be able to create resolver")
 
-	confMap, err := resolver.Resolve(context.Background())
+	confMap, err := resolver.Resolve(t.Context())
 	require.NoError(t, err, "should be able to load config file")
 
 	// Create a realistic ModuleInfoJSON that matches the components in sample-config.yaml
 	moduleInfoJSON := createModuleInfoFromSampleConfig()
 
 	// Test PopulateActiveComponents with the loaded configuration
-	activeComponents, err := componentchecker.PopulateActiveComponents(confMap, moduleInfoJSON)
+	activeComponents, err := componentchecker.PopulateActiveComponents(zap.NewNop(), confMap, moduleInfoJSON)
 	require.NoError(t, err, "PopulateActiveComponents should not return error")
 	require.NotNil(t, activeComponents, "activeComponents should not be nil")
 
@@ -71,12 +75,11 @@ func TestPopulateActiveComponentsIntegration(t *testing.T) {
 	// - otlp: 3 times (traces, metrics, logs)
 	// - hostmetrics: 1 time (metrics)
 	// - memory_limiter: 3 times (traces, metrics, logs)
-	// - batch: 3 times (traces, metrics, logs)
 	// - debug: 3 times (traces, metrics, logs)
-	// - otlphttp: 3 times (traces, metrics, logs)
+	// - otlp_http: 3 times (traces, metrics, logs)
 	// - datadog/connector: 2 times (traces exporter, metrics receiver)
-	// Total: 2 + 3 + 1 + 3 + 3 + 3 + 3 + 2 = 20
-	expectedComponentCount := 20
+	// Total: 2 + 3 + 1 + 3 + 3 + 3 + 2 = 17
+	expectedComponentCount := 17
 	assert.Len(t, *activeComponents, expectedComponentCount, "should have expected number of active components")
 
 	// Verify that extensions are present
@@ -86,7 +89,6 @@ func TestPopulateActiveComponentsIntegration(t *testing.T) {
 	// Verify that pipeline components are present
 	hasOtlp := false
 	hasHostmetrics := false
-	hasBatch := false
 	hasMemoryLimiter := false
 	hasDebug := false
 	hasOtlphttp := false
@@ -109,10 +111,6 @@ func TestPopulateActiveComponentsIntegration(t *testing.T) {
 			hasHostmetrics = true
 			assert.Equal(t, "receiver", component.Kind)
 			assert.Equal(t, "metrics", component.Pipeline)
-		case "batch":
-			hasBatch = true
-			assert.Equal(t, "processor", component.Kind)
-			assert.Contains(t, []string{"traces", "metrics", "logs"}, component.Pipeline)
 		case "memory_limiter":
 			hasMemoryLimiter = true
 			assert.Equal(t, "processor", component.Kind)
@@ -121,7 +119,7 @@ func TestPopulateActiveComponentsIntegration(t *testing.T) {
 			hasDebug = true
 			assert.Equal(t, "exporter", component.Kind)
 			assert.Contains(t, []string{"traces", "metrics", "logs"}, component.Pipeline)
-		case "otlphttp":
+		case "otlp_http":
 			hasOtlphttp = true
 			assert.Equal(t, "exporter", component.Kind)
 			assert.Contains(t, []string{"traces", "metrics", "logs"}, component.Pipeline)
@@ -140,10 +138,9 @@ func TestPopulateActiveComponentsIntegration(t *testing.T) {
 	assert.True(t, hasPprof, "should have pprof extension")
 	assert.True(t, hasOtlp, "should have otlp receiver")
 	assert.True(t, hasHostmetrics, "should have hostmetrics receiver")
-	assert.True(t, hasBatch, "should have batch processor")
 	assert.True(t, hasMemoryLimiter, "should have memory_limiter processor")
 	assert.True(t, hasDebug, "should have debug exporter")
-	assert.True(t, hasOtlphttp, "should have otlphttp exporter")
+	assert.True(t, hasOtlphttp, "should have otlp_http exporter")
 }
 
 func TestDataToFlattenedJSONStringIntegration(t *testing.T) {
@@ -162,7 +159,7 @@ func TestDataToFlattenedJSONStringIntegration(t *testing.T) {
 	resolver, err := confmap.NewResolver(resolverSettings)
 	require.NoError(t, err, "should be able to create resolver")
 
-	confMap, err := resolver.Resolve(context.Background())
+	confMap, err := resolver.Resolve(t.Context())
 	require.NoError(t, err, "should be able to load config file")
 
 	// Test DataToFlattenedJSONString with the loaded configuration
@@ -238,6 +235,9 @@ func TestFullOtelCollectorPayloadIntegration(t *testing.T) {
 
 	// Step 2: Create mock Datadog agent components
 
+	// Isolate from DD_API_KEY env var; nodetreemodel skips empty-string env vars.
+	t.Setenv("DD_API_KEY", "")
+
 	// Extract the backend URL to configure components to use our mock
 	backendURL := mockBackend.URL
 
@@ -287,7 +287,7 @@ func TestFullOtelCollectorPayloadIntegration(t *testing.T) {
 	// Step 5: Simulate sending payload (in a real scenario, this would use serializer.SendEvents or similar)
 	// For this test, we simulate the HTTP request that would be made
 	client := &http.Client{Timeout: 5 * time.Second}
-	req, err := http.NewRequest(http.MethodPost, backendURL+"/api/v1/otel_collector", nil)
+	req, err := http.NewRequest(http.MethodPost, backendURL+"/api/v1/otel_collector", http.NoBody)
 	require.NoError(t, err)
 
 	req.Header.Set("Content-Type", "application/json")
@@ -338,7 +338,7 @@ func createTestOtelCollectorPayload() *payload.OtelCollectorPayload {
 
 	// Create module info and populate active components
 	moduleInfoJSON := createModuleInfoFromSampleConfig()
-	activeComponents, _ := componentchecker.PopulateActiveComponents(confMap, moduleInfoJSON)
+	activeComponents, _ := componentchecker.PopulateActiveComponents(zap.NewNop(), confMap, moduleInfoJSON)
 
 	// Create build info
 	buildInfo := payload.CustomBuildInfo{
@@ -364,7 +364,12 @@ func createTestOtelCollectorPayload() *payload.OtelCollectorPayload {
 		version,
 		site,
 		fullConfig,
+		"unknown",
+		"",
 		buildInfo,
+		int64(payloadTTL),
+		"",
+		"",
 	)
 
 	// Populate with realistic component data
@@ -445,7 +450,7 @@ func createModuleInfoFromSampleConfig() *payload.ModuleInfoJSON {
 			Configured: true,
 		},
 		{
-			Type:       "otlphttp",
+			Type:       "otlp_http",
 			Kind:       "exporter",
 			Gomod:      "go.opentelemetry.io/collector/exporter/otlphttpexporter",
 			Version:    "v0.127.0",
@@ -548,12 +553,12 @@ func TestHTTPServerIntegration(t *testing.T) {
 	resolver, err := confmap.NewResolver(resolverSettings)
 	require.NoError(t, err)
 
-	confMap, err := resolver.Resolve(context.Background())
+	confMap, err := resolver.Resolve(t.Context())
 	require.NoError(t, err)
 
 	// Create module info and populate active components for realistic test data
 	moduleInfoJSON := createModuleInfoFromSampleConfig()
-	activeComponents, err := componentchecker.PopulateActiveComponents(confMap, moduleInfoJSON)
+	activeComponents, err := componentchecker.PopulateActiveComponents(zap.NewNop(), confMap, moduleInfoJSON)
 	require.NoError(t, err)
 
 	// Create OtelCollector metadata
@@ -570,7 +575,12 @@ func TestHTTPServerIntegration(t *testing.T) {
 		"0.127.0",
 		"datadoghq.com",
 		fullConfig,
+		"unknown",
+		"",
 		buildInfo,
+		int64(payloadTTL),
+		"",
+		"",
 	)
 	if activeComponents != nil {
 		otelMetadata.ActiveComponents = *activeComponents
@@ -607,11 +617,14 @@ func TestHTTPServerIntegration(t *testing.T) {
 	require.NotNil(t, serializer)
 
 	// Step 3: Create HTTP server configuration
+	httpServerConfig := confighttp.NewDefaultServerConfig()
+	httpServerConfig.NetAddr = confignet.AddrConfig{
+		Transport: confignet.TransportTypeTCP,
+		Endpoint:  "localhost:0",
+	}
 	serverConfig := &httpserver.Config{
-		ServerConfig: confighttp.ServerConfig{
-			Endpoint: "localhost:0", // Use any available port for testing
-		},
-		Path: "/otel/metadata",
+		ServerConfig: httpServerConfig,
+		Path:         "/otel/metadata",
 	}
 
 	// Step 4: Create and test the HTTP server
@@ -622,6 +635,7 @@ func TestHTTPServerIntegration(t *testing.T) {
 		testHostname,
 		testUUID,
 		otelMetadata,
+		telemetrySettings,
 	)
 	require.NotNil(t, server)
 
@@ -631,9 +645,9 @@ func TestHTTPServerIntegration(t *testing.T) {
 	defer serializer.Stop()
 
 	// Start the HTTP server
-	server.Start()
+	require.NoError(t, server.Start(t.Context(), componenttest.NewNopHost()))
 	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		defer cancel()
 		server.Stop(ctx)
 	}()
@@ -662,7 +676,7 @@ func TestHTTPServerIntegration(t *testing.T) {
 
 	// Step 6: Test HTTP endpoint functionality
 	// Test the handler directly since we're using port 0
-	req := httptest.NewRequest(http.MethodGet, serverConfig.Path, nil)
+	req := httptest.NewRequest(http.MethodGet, serverConfig.Path, http.NoBody)
 	recorder := httptest.NewRecorder()
 
 	server.HandleMetadata(recorder, req)
@@ -689,7 +703,7 @@ func TestHTTPServerIntegration(t *testing.T) {
 	assert.Contains(t, err.Error(), "forwarder is not started")
 
 	// Test HandleMetadata with nil ResponseWriter (should not panic)
-	server.HandleMetadata(nil, httptest.NewRequest(http.MethodGet, serverConfig.Path, nil))
+	server.HandleMetadata(nil, httptest.NewRequest(http.MethodGet, serverConfig.Path, http.NoBody))
 }
 
 // TestHTTPServerConfigIntegration tests different HTTP server configurations
@@ -728,10 +742,25 @@ func TestHTTPServerConfigIntegration(t *testing.T) {
 		"1.0.0",
 		"datadoghq.com",
 		"{}",
+		"unknown",
+		"",
 		buildInfo,
+		int64(payloadTTL),
+		"",
+		"",
 	)
 
 	// Test different server configurations
+	defaultServerConfig := confighttp.NewDefaultServerConfig()
+	defaultServerConfig.NetAddr = confignet.AddrConfig{
+		Transport: confignet.TransportTypeTCP,
+		Endpoint:  httpserver.DefaultServerEndpoint,
+	}
+	customServerConfig := confighttp.NewDefaultServerConfig()
+	customServerConfig.NetAddr = confignet.AddrConfig{
+		Transport: confignet.TransportTypeTCP,
+		Endpoint:  "localhost:9999",
+	}
 	testCases := []struct {
 		name   string
 		config *httpserver.Config
@@ -739,19 +768,15 @@ func TestHTTPServerConfigIntegration(t *testing.T) {
 		{
 			name: "default_config",
 			config: &httpserver.Config{
-				ServerConfig: confighttp.ServerConfig{
-					Endpoint: httpserver.DefaultServerEndpoint,
-				},
-				Path: "/metadata",
+				ServerConfig: defaultServerConfig,
+				Path:         "/metadata",
 			},
 		},
 		{
 			name: "custom_endpoint_and_path",
 			config: &httpserver.Config{
-				ServerConfig: confighttp.ServerConfig{
-					Endpoint: "localhost:9999",
-				},
-				Path: "/custom/otel/metadata",
+				ServerConfig: customServerConfig,
+				Path:         "/custom/otel/metadata",
 			},
 		},
 	}
@@ -766,14 +791,15 @@ func TestHTTPServerConfigIntegration(t *testing.T) {
 				"test-host-"+tc.name,
 				"test-uuid-"+tc.name,
 				otelMetadata,
+				telemetrySettings,
 			)
 			require.NotNil(t, server)
 
 			// Test server creation doesn't panic and can be started/stopped
-			server.Start()
+			require.NoError(t, server.Start(t.Context(), componenttest.NewNopHost()))
 			time.Sleep(50 * time.Millisecond) // Brief pause to allow server startup
 
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 			defer cancel()
 			server.Stop(ctx)
 		})
@@ -816,15 +842,23 @@ func TestHTTPServerConcurrentAccess(t *testing.T) {
 		"1.0.0",
 		"datadoghq.com",
 		"{}",
+		"unknown",
+		"",
 		buildInfo,
+		int64(payloadTTL),
+		"",
+		"",
 	)
 
 	// Create server
+	httpServerConfig := confighttp.NewDefaultServerConfig()
+	httpServerConfig.NetAddr = confignet.AddrConfig{
+		Transport: confignet.TransportTypeTCP,
+		Endpoint:  "localhost:0",
+	}
 	serverConfig := &httpserver.Config{
-		ServerConfig: confighttp.ServerConfig{
-			Endpoint: "localhost:0",
-		},
-		Path: "/concurrent/metadata",
+		ServerConfig: httpServerConfig,
+		Path:         "/concurrent/metadata",
 	}
 
 	server := httpserver.NewServer(
@@ -834,6 +868,7 @@ func TestHTTPServerConcurrentAccess(t *testing.T) {
 		"concurrent-test-host",
 		"concurrent-test-uuid",
 		otelMetadata,
+		telemetrySettings,
 	)
 
 	// Start serializer
@@ -847,12 +882,12 @@ func TestHTTPServerConcurrentAccess(t *testing.T) {
 	errors := make(chan error, numGoroutines)
 
 	wg.Add(numGoroutines)
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		go func(routineID int) {
 			defer wg.Done()
 
 			// Create test request
-			req := httptest.NewRequest(http.MethodGet, serverConfig.Path, nil)
+			req := httptest.NewRequest(http.MethodGet, serverConfig.Path, http.NoBody)
 			recorder := httptest.NewRecorder()
 
 			// Call HandleMetadata

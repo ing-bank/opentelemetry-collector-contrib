@@ -50,7 +50,6 @@ func newCwLogsPusher(ctx context.Context, expConfig *Config, params exp.Settings
 	if expConfig == nil {
 		return nil, errors.New("awscloudwatchlogs exporter config is nil")
 	}
-
 	expConfig.logger = params.Logger
 
 	awsConfig, err := awsutil.GetAWSConfig(ctx, params.Logger, &expConfig.AWSSessionSettings)
@@ -66,7 +65,11 @@ func newCwLogsPusher(ctx context.Context, expConfig *Config, params exp.Settings
 	}
 
 	logStreamManager := cwlogs.NewLogStreamManager(*svcStructuredLog)
-	multiStreamPusherFactory := cwlogs.NewMultiStreamPusherFactory(logStreamManager, *svcStructuredLog, params.Logger)
+	var pusherOpts []cwlogs.PusherOption
+	if expConfig.MaxEventPayloadBytes > 0 {
+		pusherOpts = append(pusherOpts, cwlogs.WithMaxEventPayloadBytes(expConfig.MaxEventPayloadBytes))
+	}
+	multiStreamPusherFactory := cwlogs.NewMultiStreamPusherFactory(logStreamManager, *svcStructuredLog, params.Logger, pusherOpts...)
 
 	logsExporter := &cwlExporter{
 		svcStructuredLog: svcStructuredLog,
@@ -113,7 +116,7 @@ func (e *cwlExporter) consumeLogs(ctx context.Context, ld plog.Logs) error {
 	return errs
 }
 
-func (e *cwlExporter) shutdown(_ context.Context) error {
+func (*cwlExporter) shutdown(context.Context) error {
 	return nil
 }
 

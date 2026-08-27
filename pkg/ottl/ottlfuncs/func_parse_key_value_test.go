@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
@@ -24,7 +25,7 @@ func Test_parseKeyValue(t *testing.T) {
 		{
 			name: "simple",
 			target: ottl.StandardStringGetter[any]{
-				Getter: func(_ context.Context, _ any) (any, error) {
+				Getter: func(context.Context, any) (any, error) {
 					return "name=ottl func=key_value", nil
 				},
 			},
@@ -38,7 +39,7 @@ func Test_parseKeyValue(t *testing.T) {
 		{
 			name: "large",
 			target: ottl.StandardStringGetter[any]{
-				Getter: func(_ context.Context, _ any) (any, error) {
+				Getter: func(context.Context, any) (any, error) {
 					return `name=ottl age=1 job="software engineering" location="grand rapids michigan" src="10.3.3.76" dst=172.217.0.10 protocol=udp sport=57112 port=443 translated_src_ip=96.63.176.3 translated_port=57112`, nil
 				},
 			},
@@ -61,7 +62,7 @@ func Test_parseKeyValue(t *testing.T) {
 		{
 			name: "embedded double quotes in single quoted value",
 			target: ottl.StandardStringGetter[any]{
-				Getter: func(_ context.Context, _ any) (any, error) {
+				Getter: func(context.Context, any) (any, error) {
 					return `a=b c='this is a "co ol" value'`, nil
 				},
 			},
@@ -75,7 +76,7 @@ func Test_parseKeyValue(t *testing.T) {
 		{
 			name: "double quotes",
 			target: ottl.StandardStringGetter[any]{
-				Getter: func(_ context.Context, _ any) (any, error) {
+				Getter: func(context.Context, any) (any, error) {
 					return `requestClientApplication="Mozilla/5.0 (Windows NT 6.1; WOW64; rv:40.0) Gecko/20100101 Firefox/40.0"`, nil
 				},
 			},
@@ -88,7 +89,7 @@ func Test_parseKeyValue(t *testing.T) {
 		{
 			name: "single quotes",
 			target: ottl.StandardStringGetter[any]{
-				Getter: func(_ context.Context, _ any) (any, error) {
+				Getter: func(context.Context, any) (any, error) {
 					return "requestClientApplication='Mozilla/5.0 (Windows NT 6.1; WOW64; rv:40.0) Gecko/20100101 Firefox/40.0'", nil
 				},
 			},
@@ -101,7 +102,7 @@ func Test_parseKeyValue(t *testing.T) {
 		{
 			name: "double quotes strip leading & trailing spaces",
 			target: ottl.StandardStringGetter[any]{
-				Getter: func(_ context.Context, _ any) (any, error) {
+				Getter: func(context.Context, any) (any, error) {
 					return `name="   ottl " func="  key_ value"`, nil
 				},
 			},
@@ -115,7 +116,7 @@ func Test_parseKeyValue(t *testing.T) {
 		{
 			name: "! delimiter && whitespace pair delimiter",
 			target: ottl.StandardStringGetter[any]{
-				Getter: func(_ context.Context, _ any) (any, error) {
+				Getter: func(context.Context, any) (any, error) {
 					return "   name!ottl     func!key_value hello!world  ", nil
 				},
 			},
@@ -130,7 +131,7 @@ func Test_parseKeyValue(t *testing.T) {
 		{
 			name: "!! delimiter && whitespace pair delimiter with newlines",
 			target: ottl.StandardStringGetter[any]{
-				Getter: func(_ context.Context, _ any) (any, error) {
+				Getter: func(context.Context, any) (any, error) {
 					return `   
 name!!ottl     
 func!!key_value                      hello!!world  `, nil
@@ -147,7 +148,7 @@ func!!key_value                      hello!!world  `, nil
 		{
 			name: "!! delimiter && newline pair delimiter",
 			target: ottl.StandardStringGetter[any]{
-				Getter: func(_ context.Context, _ any) (any, error) {
+				Getter: func(context.Context, any) (any, error) {
 					return `name!!ottl     
 func!!      key_value another!!pair
 hello!!world  `, nil
@@ -164,7 +165,7 @@ hello!!world  `, nil
 		{
 			name: "quoted value contains delimiter and pair delimiter",
 			target: ottl.StandardStringGetter[any]{
-				Getter: func(_ context.Context, _ any) (any, error) {
+				Getter: func(context.Context, any) (any, error) {
 					return `name="ottl="_func="=key_value"`, nil
 				},
 			},
@@ -178,7 +179,7 @@ hello!!world  `, nil
 		{
 			name: "complicated delimiters",
 			target: ottl.StandardStringGetter[any]{
-				Getter: func(_ context.Context, _ any) (any, error) {
+				Getter: func(context.Context, any) (any, error) {
 					return `k1@*v1_!_k2@**v2_!__k3@@*v3__`, nil
 				},
 			},
@@ -193,7 +194,7 @@ hello!!world  `, nil
 		{
 			name: "leading and trailing pair delimiter",
 			target: ottl.StandardStringGetter[any]{
-				Getter: func(_ context.Context, _ any) (any, error) {
+				Getter: func(context.Context, any) (any, error) {
 					return "   k1=v1   k2==v2       k3=v3= ", nil
 				},
 			},
@@ -208,7 +209,7 @@ hello!!world  `, nil
 		{
 			name: "embedded double quotes end single quoted value",
 			target: ottl.StandardStringGetter[any]{
-				Getter: func(_ context.Context, _ any) (any, error) {
+				Getter: func(context.Context, any) (any, error) {
 					return `a=b c='this is a "co ol"'`, nil
 				},
 			},
@@ -222,7 +223,7 @@ hello!!world  `, nil
 		{
 			name: "more quotes",
 			target: ottl.StandardStringGetter[any]{
-				Getter: func(_ context.Context, _ any) (any, error) {
+				Getter: func(context.Context, any) (any, error) {
 					return "a=b c=d'='", nil
 				},
 			},
@@ -237,7 +238,7 @@ hello!!world  `, nil
 		{
 			name: "long pair delimiter",
 			target: ottl.StandardStringGetter[any]{
-				Getter: func(_ context.Context, _ any) (any, error) {
+				Getter: func(context.Context, any) (any, error) {
 					return "a=b c=d", nil
 				},
 			},
@@ -252,16 +253,16 @@ hello!!world  `, nil
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			exprFunc, err := parseKeyValue[any](tt.target, tt.delimiter, tt.pairDelimiter)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 
-			result, err := exprFunc(context.Background(), nil)
-			assert.NoError(t, err)
+			result, err := exprFunc(t.Context(), nil)
+			require.NoError(t, err)
 
 			actual, ok := result.(pcommon.Map)
 			assert.True(t, ok)
 
 			expected := pcommon.NewMap()
-			assert.NoError(t, expected.FromRaw(tt.expected))
+			require.NoError(t, expected.FromRaw(tt.expected))
 
 			assert.Equal(t, expected.Len(), actual.Len())
 			for k := range expected.All() {
@@ -276,7 +277,7 @@ hello!!world  `, nil
 
 func Test_parseKeyValue_equal_delimiters(t *testing.T) {
 	target := ottl.StandardStringGetter[any]{
-		Getter: func(_ context.Context, _ any) (any, error) {
+		Getter: func(context.Context, any) (any, error) {
 			return "", nil
 		},
 	}
@@ -292,61 +293,61 @@ func Test_parseKeyValue_equal_delimiters(t *testing.T) {
 
 func Test_parseKeyValue_bad_target(t *testing.T) {
 	target := ottl.StandardStringGetter[any]{
-		Getter: func(_ context.Context, _ any) (any, error) {
+		Getter: func(context.Context, any) (any, error) {
 			return 1, nil
 		},
 	}
 	delimiter := ottl.NewTestingOptional[string]("=")
 	pairDelimiter := ottl.NewTestingOptional[string]("!")
 	exprFunc, err := parseKeyValue[any](target, delimiter, pairDelimiter)
-	assert.NoError(t, err)
-	_, err = exprFunc(context.Background(), nil)
+	require.NoError(t, err)
+	_, err = exprFunc(t.Context(), nil)
 	assert.Error(t, err)
 }
 
 func Test_parseKeyValue_empty_target(t *testing.T) {
 	target := ottl.StandardStringGetter[any]{
-		Getter: func(_ context.Context, _ any) (any, error) {
+		Getter: func(context.Context, any) (any, error) {
 			return "", nil
 		},
 	}
 	delimiter := ottl.NewTestingOptional[string]("=")
 	pairDelimiter := ottl.NewTestingOptional[string]("!")
 	exprFunc, err := parseKeyValue[any](target, delimiter, pairDelimiter)
-	assert.NoError(t, err)
-	_, err = exprFunc(context.Background(), nil)
+	require.NoError(t, err)
+	_, err = exprFunc(t.Context(), nil)
 	assert.Error(t, err)
 }
 
 func Test_parseKeyValue_bad_split(t *testing.T) {
 	target := ottl.StandardStringGetter[any]{
-		Getter: func(_ context.Context, _ any) (any, error) {
+		Getter: func(context.Context, any) (any, error) {
 			return "name=ottl!hello_world", nil
 		},
 	}
 	delimiter := ottl.NewTestingOptional[string]("=")
 	pairDelimiter := ottl.NewTestingOptional[string]("!")
 	exprFunc, err := parseKeyValue[any](target, delimiter, pairDelimiter)
-	assert.NoError(t, err)
-	_, err = exprFunc(context.Background(), nil)
+	require.NoError(t, err)
+	_, err = exprFunc(t.Context(), nil)
 	assert.ErrorContains(t, err, "failed to split pairs into key-values: cannot split \"hello_world\" into 2 items, got 1 item(s)")
 }
 
 func Test_parseKeyValue_mismatch_quotes(t *testing.T) {
 	target := ottl.StandardStringGetter[any]{
-		Getter: func(_ context.Context, _ any) (any, error) {
+		Getter: func(context.Context, any) (any, error) {
 			return `k1=v1 k2='v2"`, nil
 		},
 	}
 	exprFunc, err := parseKeyValue[any](target, ottl.Optional[string]{}, ottl.Optional[string]{})
-	assert.NoError(t, err)
-	_, err = exprFunc(context.Background(), nil)
+	require.NoError(t, err)
+	_, err = exprFunc(t.Context(), nil)
 	assert.Error(t, err)
 }
 
 func Test_parseKeyValue_bad_delimiter(t *testing.T) {
 	target := ottl.StandardStringGetter[any]{
-		Getter: func(_ context.Context, _ any) (any, error) {
+		Getter: func(context.Context, any) (any, error) {
 			return "a=b c=d", nil
 		},
 	}
@@ -354,14 +355,14 @@ func Test_parseKeyValue_bad_delimiter(t *testing.T) {
 	// covers too long of a delimiter && delimiter not found
 	delimiter := ottl.NewTestingOptional[string]("=============")
 	exprFunc, err := parseKeyValue[any](target, delimiter, ottl.Optional[string]{})
-	assert.NoError(t, err)
-	_, err = exprFunc(context.Background(), nil)
+	require.NoError(t, err)
+	_, err = exprFunc(t.Context(), nil)
 	assert.ErrorContains(t, err, "failed to split pairs into key-values: cannot split \"a=b\" into 2 items, got 1 item(s)")
 }
 
 func Test_parseKeyValue_empty_delimiters(t *testing.T) {
 	target := ottl.StandardStringGetter[any]{
-		Getter: func(_ context.Context, _ any) (any, error) {
+		Getter: func(context.Context, any) (any, error) {
 			return "a=b c=d", nil
 		},
 	}
@@ -372,4 +373,40 @@ func Test_parseKeyValue_empty_delimiters(t *testing.T) {
 
 	_, err = parseKeyValue[any](target, ottl.Optional[string]{}, delimiter)
 	assert.ErrorContains(t, err, "pair delimiter cannot be set to an empty string")
+}
+
+func Test_ParseKeyValueFactory(t *testing.T) {
+	t.Run("factory creation", func(t *testing.T) {
+		factory := NewParseKeyValueFactory[any]()
+		assert.Equal(t, "ParseKeyValue", factory.Name())
+	})
+
+	t.Run("default arguments", func(t *testing.T) {
+		factory := NewParseKeyValueFactory[any]()
+		args := factory.CreateDefaultArguments()
+
+		assert.IsType(t, &ParseKeyValueArguments[any]{}, args)
+		assertArgumentFieldNames(t, args, []string{"Target", "Delimiter", "PairDelimiter"})
+	})
+
+	t.Run("function creation", func(t *testing.T) {
+		factory := NewParseKeyValueFactory[any]()
+		args := factory.CreateDefaultArguments()
+		kvArgs, ok := args.(*ParseKeyValueArguments[any])
+		require.True(t, ok)
+		kvArgs.Target = ottl.StandardStringGetter[any]{
+			Getter: func(context.Context, any) (any, error) {
+				return "key=value", nil
+			},
+		}
+
+		fn, err := factory.CreateFunction(ottl.FunctionContext{}, args)
+		require.NoError(t, err)
+		assert.NotNil(t, fn)
+	})
+
+	t.Run("invalid arguments type", func(t *testing.T) {
+		_, err := createParseKeyValueFunction[any](ottl.FunctionContext{}, "invalid args")
+		assert.ErrorContains(t, err, "ParseKeyValueFactory args must be of type *ParseKeyValueArguments[K]")
+	})
 }

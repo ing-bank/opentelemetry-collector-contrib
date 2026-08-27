@@ -6,7 +6,6 @@
 package windowsperfcountersreceiver
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -38,12 +37,12 @@ type mockPerfCounter struct {
 }
 
 // ScrapeRawValue implements winperfcounters.PerfCounterWatcher.
-func (w *mockPerfCounter) ScrapeRawValue(_ *int64) (bool, error) {
+func (*mockPerfCounter) ScrapeRawValue(*int64) (bool, error) {
 	panic("unimplemented")
 }
 
 // ScrapeRawValues implements winperfcounters.PerfCounterWatcher.
-func (w *mockPerfCounter) ScrapeRawValues() ([]winperfcounters.RawCounterValue, error) {
+func (*mockPerfCounter) ScrapeRawValues() ([]winperfcounters.RawCounterValue, error) {
 	panic("unimplemented")
 }
 
@@ -66,7 +65,7 @@ func (w *mockPerfCounter) Close() error {
 func mockPerfCounterFactoryInvocations(mpcs ...mockPerfCounter) newWatcherFunc {
 	invocationNum := 0
 
-	return func(string, string, string) (winperfcounters.PerfCounterWatcher, error) {
+	return func(string, string, string, ...winperfcounters.WatcherOption) (winperfcounters.PerfCounterWatcher, error) {
 		if invocationNum == len(mpcs) {
 			return nil, fmt.Errorf("invoked watcher %d times but only %d were setup", invocationNum+1, len(mpcs))
 		}
@@ -222,7 +221,7 @@ func Test_WindowsPerfCounterScraper(t *testing.T) {
 			settings.Logger = logger
 			scraper := newScraper(cfg, settings)
 
-			err := scraper.start(context.Background(), componenttest.NewNopHost())
+			err := scraper.start(t.Context(), componenttest.NewNopHost())
 			if test.startErr != "" {
 				require.Equal(t, 1, obs.Len())
 				log := obs.All()[0]
@@ -235,10 +234,13 @@ func Test_WindowsPerfCounterScraper(t *testing.T) {
 			require.Equal(t, 0, obs.Len())
 			require.NoError(t, err)
 
-			actualMetrics, err := scraper.scrape(context.Background())
-			require.NoError(t, err)
+			var actualMetrics pmetric.Metrics
+			require.EventuallyWithT(t, func(c *assert.CollectT) {
+				actualMetrics, err = scraper.scrape(t.Context())
+				assert.NoError(c, err)
+			}, 20*time.Second, 1*time.Second)
 
-			err = scraper.shutdown(context.Background())
+			err = scraper.shutdown(t.Context())
 
 			require.NoError(t, err)
 			expectedMetrics, err := golden.ReadMetrics(test.expectedMetricPath)
@@ -249,6 +251,7 @@ func Test_WindowsPerfCounterScraper(t *testing.T) {
 				// The check only takes the first instance of multi-instance counters and assumes that the other instances would be included.
 				pmetrictest.IgnoreSubsequentDataPoints("cpu.idle"),
 				pmetrictest.IgnoreSubsequentDataPoints("processor.time"),
+				pmetrictest.IgnoreMetricAttributeValue("instance", "processor.time"),
 				pmetrictest.IgnoreMetricsOrder(),
 				pmetrictest.IgnoreScopeMetricsOrder(),
 				pmetrictest.IgnoreResourceMetricsOrder(),
@@ -350,6 +353,85 @@ func TestInitWatchers(t *testing.T) {
 	}
 }
 
+func TestInitWatchersWithIncludedAggregation(t *testing.T) {
+	requestedInstance := ""
+	s := &windowsPerfCountersScraper{
+		cfg: &Config{PerfCounters: []ObjectConfig{
+			{
+				Object:    "Processor",
+				Instances: []string{"*", defaultAggregationName},
+				Counters:  []CounterConfig{{Name: "% Processor Time"}},
+			},
+		}},
+		newWatcher: func(_, instance, _ string, _ ...winperfcounters.WatcherOption) (winperfcounters.PerfCounterWatcher, error) {
+			requestedInstance = instance
+			return &mockPerfCounter{path: `\Processor(*)\% Processor Time`}, nil
+		},
+	}
+
+	watchers, err := s.initWatchers()
+	require.NoError(t, err)
+	require.Len(t, watchers, 1)
+	assert.Equal(t, "*", requestedInstance)
+}
+
+func TestScraperIncludesAggregationInstance(t *testing.T) {
+	cfg := &Config{
+		MetricMetaData: map[string]MetricConfig{
+			"processor.time": {
+				Unit:  "%",
+				Gauge: GaugeMetric{},
+			},
+		},
+		PerfCounters: []ObjectConfig{
+			{
+				Object:    "Processor",
+				Instances: []string{"*", defaultAggregationName},
+				Counters: []CounterConfig{
+					{Name: "% Processor Time", MetricRep: MetricRep{Name: "processor.time"}},
+				},
+			},
+		},
+	}
+
+	scraper := newScraper(cfg, componenttest.NewNopTelemetrySettings())
+	require.NoError(t, scraper.start(t.Context(), componenttest.NewNopHost()))
+	t.Cleanup(func() {
+		require.NoError(t, scraper.shutdown(t.Context()))
+	})
+
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		metrics, err := scraper.scrape(t.Context())
+		if !assert.NoError(c, err) {
+			return
+		}
+
+		foundAggregationInstance := false
+		resourceMetrics := metrics.ResourceMetrics()
+		for i := 0; i < resourceMetrics.Len(); i++ {
+			scopeMetrics := resourceMetrics.At(i).ScopeMetrics()
+			for j := 0; j < scopeMetrics.Len(); j++ {
+				metricSlice := scopeMetrics.At(j).Metrics()
+				for k := 0; k < metricSlice.Len(); k++ {
+					metric := metricSlice.At(k)
+					if metric.Name() != "processor.time" {
+						continue
+					}
+					dataPoints := metric.Gauge().DataPoints()
+					for l := 0; l < dataPoints.Len(); l++ {
+						instance, ok := dataPoints.At(l).Attributes().Get(instanceLabelName)
+						if ok && instance.Str() == defaultAggregationName {
+							foundAggregationInstance = true
+						}
+					}
+				}
+			}
+		}
+
+		assert.True(c, foundAggregationInstance)
+	}, 20*time.Second, time.Second)
+}
+
 func TestWatcherResetFailure(t *testing.T) {
 	const errMsg string = "failed to reset watcher"
 	mpc := mockPerfCounter{
@@ -381,10 +463,10 @@ func TestWatcherResetFailure(t *testing.T) {
 	settings.Logger = logger
 
 	s := &windowsPerfCountersScraper{cfg: &cfg, settings: settings, newWatcher: mockPerfCounterFactoryInvocations(mpc)}
-	errs := s.start(context.Background(), componenttest.NewNopHost())
+	errs := s.start(t.Context(), componenttest.NewNopHost())
 	require.NoError(t, errs)
 
-	vals, err := s.scrape(context.Background())
+	vals, err := s.scrape(t.Context())
 
 	if assert.Error(t, err) {
 		assert.Equal(t, errMsg, err.Error())
@@ -507,7 +589,7 @@ func TestScrape(t *testing.T) {
 			mpcs := test.mockPerfCounters
 			testConfig := test.cfg
 			s := &windowsPerfCountersScraper{cfg: &testConfig, newWatcher: mockPerfCounterFactoryInvocations(mpcs...)}
-			errs := s.start(context.Background(), componenttest.NewNopHost())
+			errs := s.start(t.Context(), componenttest.NewNopHost())
 			require.NoError(t, errs)
 
 			var expectedErrors []error
@@ -517,7 +599,7 @@ func TestScrape(t *testing.T) {
 				}
 			}
 
-			m, err := s.scrape(context.Background())
+			m, err := s.scrape(t.Context())
 			if len(expectedErrors) != 0 {
 				var partialErr scrapererror.PartialScrapeError
 				require.ErrorAs(t, err, &partialErr)
@@ -558,7 +640,7 @@ func TestScrape(t *testing.T) {
 					assert.Equal(t, len(counterValues), dps.Len())
 					for dpIdx, val := range counterValues {
 						assert.Equal(t, val.Value, dps.At(dpIdx).DoubleValue())
-						expectedAttributeLen := len(counterCfg.Attributes)
+						expectedAttributeLen := len(counterCfg.MetricRep.Attributes)
 						if val.InstanceName != "" {
 							expectedAttributeLen++
 						}
@@ -568,7 +650,7 @@ func TestScrape(t *testing.T) {
 								assert.Equal(t, val.InstanceName, v.Str())
 								continue
 							}
-							assert.Equal(t, counterCfg.Attributes[k], v.Str())
+							assert.Equal(t, counterCfg.MetricRep.Attributes[k], v.Str())
 						}
 					}
 					curMetricsNum++

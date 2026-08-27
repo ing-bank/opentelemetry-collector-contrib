@@ -4,7 +4,6 @@
 package faroexporter
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,7 +24,7 @@ func TestCreateDefaultConfig(t *testing.T) {
 func TestCreateExporter(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
-	cfg.Endpoint = "https://faro.example.com/collect"
+	cfg.ClientConfig.Endpoint = "https://faro.example.com/collect"
 
 	set := exporter.Settings{
 		TelemetrySettings: componenttest.NewNopTelemetrySettings(),
@@ -33,7 +32,7 @@ func TestCreateExporter(t *testing.T) {
 		ID:                component.NewID(metadata.Type),
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	te, err := factory.CreateTraces(ctx, set, cfg)
 	assert.NoError(t, err)
 	assert.NotNil(t, te, "failed to create trace exporter")

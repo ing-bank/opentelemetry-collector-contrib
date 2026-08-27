@@ -8,53 +8,59 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/goccy/go-yaml"
 	commonconfig "github.com/prometheus/common/config"
 	promconfig "github.com/prometheus/prometheus/config"
+	"github.com/prometheus/prometheus/discovery"
 	"github.com/prometheus/prometheus/discovery/kubernetes"
-	"go.opentelemetry.io/collector/config/confighttp"
+	"github.com/prometheus/prometheus/discovery/targetgroup"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/confmap"
-	"gopkg.in/yaml.v3"
 
-	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver/targetallocator"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver/internal/apiserver"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver/internal/targetallocator"
 )
 
 // Config defines configuration for Prometheus receiver.
 type Config struct {
 	PrometheusConfig   *PromConfig `mapstructure:"config"`
 	TrimMetricSuffixes bool        `mapstructure:"trim_metric_suffixes"`
-	// UseStartTimeMetric enables retrieving the start time of all counter metrics
-	// from the process_start_time_seconds metric. This is only correct if all counters on that endpoint
-	// started after the process start time, and the process is the only actor exporting the metric after
-	// the process started. It should not be used in "exporters" which export counters that may have
-	// started before the process itself. Use only if you know what you are doing, as this may result
-	// in incorrect rate calculations.
-	UseStartTimeMetric   bool   `mapstructure:"use_start_time_metric"`
-	StartTimeMetricRegex string `mapstructure:"start_time_metric_regex"`
 
-	// ReportExtraScrapeMetrics - enables reporting of additional metrics for Prometheus client like scrape_body_size_bytes
-	ReportExtraScrapeMetrics bool `mapstructure:"report_extra_scrape_metrics"`
-
-	TargetAllocator *targetallocator.Config `mapstructure:"target_allocator"`
+	TargetAllocator configoptional.Optional[targetallocator.Config] `mapstructure:"target_allocator"`
 
 	//  APIServer has the settings to enable the receiver to host the Prometheus API
 	// server in agent mode. This allows the user to call the endpoint to get
 	// the config, service discovery, and targets for debugging purposes.
-	APIServer *APIServer `mapstructure:"api_server"`
+	APIServer apiserver.Config `mapstructure:"api_server"`
+
+	// ScrapeOnShutdown enables a final scrape before the receiver closes.
+	//
+	// NOTE: This final scrape ignores the configured scrape interval.
+	ScrapeOnShutdown bool `mapstructure:"scrape_on_shutdown"`
+
+	// DiscoveryReloadOnStartup enables discovering targets immediately on start up as opposed
+	// to waiting for the configured interval before initializing the scrape pools.
+	DiscoveryReloadOnStartup bool `mapstructure:"discovery_reload_on_startup"`
+
+	// InitialScrapeOffset adds a fixed delay before the initial scrape of targets.
+	// This duration is applied on top of the receiver's internal load balancing offset.
+	// It avoids readiness races and backend rate limits immediately after startup.
+	InitialScrapeOffset time.Duration `mapstructure:"initial_scrape_offset"`
+
+	// For testing only.
+	ignoreMetadata bool
+	skipOffsetting bool
 }
 
 // Validate checks the receiver configuration is valid.
 func (cfg *Config) Validate() error {
-	if !cfg.PrometheusConfig.ContainsScrapeConfigs() && cfg.TargetAllocator == nil {
+	if !cfg.PrometheusConfig.ContainsScrapeConfigs() && !cfg.TargetAllocator.HasValue() {
 		return errors.New("no Prometheus scrape_configs or target_allocator set")
-	}
-
-	if cfg.APIServer != nil {
-		if err := cfg.APIServer.Validate(); err != nil {
-			return fmt.Errorf("invalid API server configuration settings: %w", err)
-		}
 	}
 
 	return nil
@@ -144,15 +150,56 @@ func (cfg *PromConfig) Validate() error {
 	return nil
 }
 
+// copyStaticConfig copies static service discovery configs from src to dst to assure that labels in StaticConfig are retained.
+func copyStaticConfig(dst *PromConfig, src any) {
+	// only deal with PromConfig
+	srcCfg, ok := src.(*PromConfig)
+	if !ok {
+		return
+	}
+
+	// Job name -> static config list
+	// The static configs are grouped by job name, so that we can
+	// copy them over to the destination config.
+	srcCfgMap := make(map[string][]*targetgroup.Group, len(srcCfg.ScrapeConfigs))
+	for _, srcSC := range srcCfg.ScrapeConfigs {
+		for _, srcSDC := range srcSC.ServiceDiscoveryConfigs {
+			if sc, ok := srcSDC.(discovery.StaticConfig); ok {
+				srcCfgMap[srcSC.JobName] = append(srcCfgMap[srcSC.JobName], sc...)
+			}
+		}
+	}
+
+	for _, dstSC := range dst.ScrapeConfigs {
+		if len(srcCfgMap[dstSC.JobName]) == 0 {
+			continue
+		}
+
+		dstSC.ServiceDiscoveryConfigs = slices.DeleteFunc(dstSC.ServiceDiscoveryConfigs, func(cfg discovery.Config) bool {
+			// Remove all static configs for this job name.
+			_, ok := cfg.(discovery.StaticConfig)
+			return ok
+		})
+		dstSC.ServiceDiscoveryConfigs = append(dstSC.ServiceDiscoveryConfigs, discovery.StaticConfig(srcCfgMap[dstSC.JobName]))
+	}
+}
+
 func reloadPromConfig(dst *PromConfig, src any) error {
-	yamlOut, err := yaml.Marshal(src)
+	yamlOut, err := yaml.MarshalWithOptions(
+		src,
+		yaml.CustomMarshaler(func(s commonconfig.Secret) ([]byte, error) {
+			return yaml.Marshal(string(s))
+		}),
+	)
 	if err != nil {
 		return fmt.Errorf("prometheus receiver: failed to marshal config to yaml: %w", err)
 	}
+
 	newCfg, err := promconfig.Load(string(yamlOut), slog.Default())
 	if err != nil {
 		return fmt.Errorf("prometheus receiver: failed to unmarshal yaml to prometheus config object: %w", err)
 	}
+	copyStaticConfig((*PromConfig)(newCfg), src)
 	*dst = PromConfig(*newCfg)
 	return nil
 }
@@ -186,22 +233,5 @@ func checkTLSConfig(tlsConfig commonconfig.TLSConfig) error {
 	if err := checkFile(tlsConfig.KeyFile); err != nil {
 		return fmt.Errorf("error checking client key file %q: %w", tlsConfig.KeyFile, err)
 	}
-	return nil
-}
-
-type APIServer struct {
-	Enabled      bool                    `mapstructure:"enabled"`
-	ServerConfig confighttp.ServerConfig `mapstructure:"server_config"`
-}
-
-func (cfg *APIServer) Validate() error {
-	if !cfg.Enabled {
-		return nil
-	}
-
-	if cfg.ServerConfig.Endpoint == "" {
-		return errors.New("if api_server is enabled, it requires a non-empty server_config endpoint")
-	}
-
 	return nil
 }

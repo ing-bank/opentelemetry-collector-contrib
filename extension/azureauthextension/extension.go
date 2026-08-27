@@ -16,15 +16,44 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	"github.com/coreos/go-oidc/v3/oidc"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/extension"
 	"go.opentelemetry.io/collector/extension/extensionauth"
 	"go.uber.org/zap"
+	"golang.org/x/oauth2"
 )
+
+var errServerAuthConfigRequired = errors.New("azure_auth server authentication requires server.issuer_url and server.audience")
+
+type configServer struct {
+	issuerURL string
+	audience  string
+}
+
+type tokenVerifier interface {
+	Verify(context.Context, string) error
+}
+
+type oidcTokenVerifier struct {
+	verifier *oidc.IDTokenVerifier
+}
+
+func (v *oidcTokenVerifier) Verify(ctx context.Context, rawToken string) error {
+	_, err := v.verifier.Verify(ctx, rawToken)
+	return err
+}
 
 type authenticator struct {
 	credential azcore.TokenCredential
 	logger     *zap.Logger
+	scopes     []string
+	server     configServer
+	verifier   tokenVerifier
+}
+
+type tokenSource interface {
+	Token(context.Context) (*oauth2.Token, error)
 }
 
 var (
@@ -32,6 +61,7 @@ var (
 	_ extensionauth.HTTPClient = (*authenticator)(nil)
 	_ extensionauth.Server     = (*authenticator)(nil)
 	_ azcore.TokenCredential   = (*authenticator)(nil)
+	_ tokenSource              = (*authenticator)(nil)
 )
 
 func newAzureAuthenticator(cfg *Config, logger *zap.Logger) (*authenticator, error) {
@@ -45,18 +75,20 @@ func newAzureAuthenticator(cfg *Config, logger *zap.Logger) (*authenticator, err
 		}
 	}
 
-	if cfg.Workload != nil {
+	if cfg.Workload.HasValue() {
+		workload := cfg.Workload.Get()
 		if credential, err = azidentity.NewWorkloadIdentityCredential(&azidentity.WorkloadIdentityCredentialOptions{
-			ClientID:      cfg.Workload.ClientID,
-			TenantID:      cfg.Workload.TenantID,
-			TokenFilePath: cfg.Workload.FederatedTokenFile,
+			ClientID:      workload.ClientID,
+			TenantID:      workload.TenantID,
+			TokenFilePath: workload.FederatedTokenFile,
 		}); err != nil {
 			return nil, fmt.Errorf("%s workload identity: %w", failMsg, err)
 		}
 	}
 
-	if cfg.Managed != nil {
-		clientID := cfg.Managed.ClientID
+	if cfg.Managed.HasValue() {
+		managed := cfg.Managed.Get()
+		clientID := managed.ClientID
 		var options *azidentity.ManagedIdentityCredentialOptions
 		if clientID != "" {
 			options = &azidentity.ManagedIdentityCredentialOptions{
@@ -68,16 +100,17 @@ func newAzureAuthenticator(cfg *Config, logger *zap.Logger) (*authenticator, err
 		}
 	}
 
-	if cfg.ServicePrincipal != nil {
-		if cfg.ServicePrincipal.ClientCertificatePath != "" {
-			cert, privateKey, errParse := getCertificateAndKey(cfg.ServicePrincipal.ClientCertificatePath)
+	if cfg.ServicePrincipal.HasValue() {
+		servicePrincipal := cfg.ServicePrincipal.Get()
+		if servicePrincipal.ClientCertificatePath != "" {
+			cert, privateKey, errParse := getCertificateAndKey(servicePrincipal.ClientCertificatePath)
 			if errParse != nil {
 				return nil, fmt.Errorf("%s service principal with certificate: %w", failMsg, errParse)
 			}
 
 			if credential, err = azidentity.NewClientCertificateCredential(
-				cfg.ServicePrincipal.TenantID,
-				cfg.ServicePrincipal.ClientID,
+				servicePrincipal.TenantID,
+				servicePrincipal.ClientID,
 				[]*x509.Certificate{cert},
 				privateKey,
 				nil,
@@ -85,11 +118,11 @@ func newAzureAuthenticator(cfg *Config, logger *zap.Logger) (*authenticator, err
 				return nil, fmt.Errorf("%s service principal with certificate: %w", failMsg, err)
 			}
 		}
-		if cfg.ServicePrincipal.ClientSecret != "" {
+		if servicePrincipal.ClientSecret != "" {
 			if credential, err = azidentity.NewClientSecretCredential(
-				cfg.ServicePrincipal.TenantID,
-				cfg.ServicePrincipal.ClientID,
-				cfg.ServicePrincipal.ClientSecret,
+				servicePrincipal.TenantID,
+				servicePrincipal.ClientID,
+				servicePrincipal.ClientSecret,
 				nil,
 			); err != nil {
 				return nil, fmt.Errorf("%s service principal with secret: %w", failMsg, err)
@@ -97,9 +130,20 @@ func newAzureAuthenticator(cfg *Config, logger *zap.Logger) (*authenticator, err
 		}
 	}
 
+	serverCfg := configServer{}
+	if cfg.Server.HasValue() {
+		s := cfg.Server.Get()
+		serverCfg = configServer{
+			issuerURL: s.IssuerURL,
+			audience:  s.Audience,
+		}
+	}
+
 	return &authenticator{
 		credential: credential,
 		logger:     logger,
+		scopes:     cfg.Scopes,
+		server:     serverCfg,
 	}, nil
 }
 
@@ -118,16 +162,29 @@ func getCertificateAndKey(filename string) (*x509.Certificate, crypto.PrivateKey
 	return certs[0], privateKey, nil
 }
 
-func (a *authenticator) Start(_ context.Context, _ component.Host) error {
+func (a *authenticator) Start(ctx context.Context, _ component.Host) error {
+	if a.server.issuerURL == "" || a.server.audience == "" {
+		return nil
+	}
+
+	provider, err := oidc.NewProvider(ctx, a.server.issuerURL)
+	if err != nil {
+		return fmt.Errorf("azure_auth: failed to initialize OIDC provider for %q: %w", a.server.issuerURL, err)
+	}
+	a.verifier = &oidcTokenVerifier{
+		verifier: provider.Verifier(&oidc.Config{
+			ClientID: a.server.audience,
+		}),
+	}
 	return nil
 }
 
-func (a *authenticator) Shutdown(_ context.Context) error {
+func (*authenticator) Shutdown(context.Context) error {
 	return nil
 }
 
-// GetToken returns an access token with a
-// valid token for authorization
+// GetToken returns an access token with a valid token for authorization.
+// Implements tokenSource interface.
 func (a *authenticator) GetToken(ctx context.Context, options policy.TokenRequestOptions) (azcore.AccessToken, error) {
 	if a.credential == nil {
 		// This is not expected, since creating a new authenticator
@@ -137,6 +194,23 @@ func (a *authenticator) GetToken(ctx context.Context, options policy.TokenReques
 		return azcore.AccessToken{}, errors.New("unexpected: credentials were not initialized")
 	}
 	return a.credential.GetToken(ctx, options)
+}
+
+// Token returns an access token with a valid token for authorization.
+// Implements oauth2.TokenSource interface.
+func (a *authenticator) Token(ctx context.Context) (*oauth2.Token, error) {
+	opts := policy.TokenRequestOptions{
+		Scopes: a.scopes,
+	}
+	token, err := a.credential.GetToken(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	return &oauth2.Token{
+		AccessToken: token.Token,
+		Expiry:      token.ExpiresOn,
+		TokenType:   "Bearer",
+	}, nil
 }
 
 func getHeaderValue(header string, headers map[string][]string) (string, error) {
@@ -157,15 +231,20 @@ func getHeaderValue(header string, headers map[string][]string) (string, error) 
 // computed from the host value. It will return the token value
 // or an error if request failed.
 func (a *authenticator) getTokenForHost(ctx context.Context, host string) (string, error) {
-	token, err := a.credential.GetToken(ctx, policy.TokenRequestOptions{
-		// TODO Cache the tokens
+	options := policy.TokenRequestOptions{
 		Scopes: []string{
 			// Example: if host is "management.azure.com", then the scope to get the
 			// token will be "https://management.azure.com/.default".
 			// See default scope: https://learn.microsoft.com/en-us/entra/identity-platform/scopes-oidc#the-default-scope.
 			fmt.Sprintf("https://%s/.default", host),
 		},
-	})
+	}
+
+	if len(a.scopes) > 0 {
+		options.Scopes = a.scopes
+	}
+
+	token, err := a.credential.GetToken(ctx, options)
 	if err != nil {
 		return "", err
 	}
@@ -178,10 +257,6 @@ func (a *authenticator) Authenticate(ctx context.Context, headers map[string][]s
 	if err != nil {
 		return ctx, err
 	}
-	host, err := getHeaderValue("Host", headers)
-	if err != nil {
-		return ctx, err
-	}
 
 	authFormat := strings.Split(auth, " ")
 	if len(authFormat) != 2 {
@@ -190,14 +265,14 @@ func (a *authenticator) Authenticate(ctx context.Context, headers map[string][]s
 	if authFormat[0] != "Bearer" {
 		return ctx, fmt.Errorf(`expected "Bearer" as schema, got %q`, authFormat[0])
 	}
+	if a.verifier == nil {
+		return ctx, errServerAuthConfigRequired
+	}
 
-	token, err := a.getTokenForHost(ctx, host)
-	if err != nil {
-		return ctx, err
+	if err = a.verifier.Verify(ctx, authFormat[1]); err != nil {
+		return ctx, fmt.Errorf("unauthorized: invalid token: %w", err)
 	}
-	if authFormat[1] != token {
-		return ctx, errors.New("unauthorized: invalid token")
-	}
+
 	return ctx, nil
 }
 
@@ -231,7 +306,7 @@ func (r *roundTripper) RoundTrip(request *http.Request) (*http.Response, error) 
 
 	token, err := r.auth.getTokenForHost(req.Context(), host)
 	if err != nil {
-		return nil, fmt.Errorf("azureauth: failed to get token: %w", err)
+		return nil, fmt.Errorf("azure_auth: failed to get token: %w", err)
 	}
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 

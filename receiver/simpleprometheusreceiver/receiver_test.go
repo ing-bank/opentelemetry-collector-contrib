@@ -4,7 +4,6 @@
 package simpleprometheusreceiver
 
 import (
-	"context"
 	"net/url"
 	"testing"
 	"time"
@@ -43,11 +42,11 @@ func TestReceiver(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := (f.CreateDefaultConfig()).(*Config)
+			cfg := f.CreateDefaultConfig().(*Config)
 			cfg.UseServiceAccount = tt.useServiceAccount
 
 			r, err := f.CreateMetrics(
-				context.Background(),
+				t.Context(),
 				receivertest.NewNopSettings(metadata.Type),
 				cfg,
 				consumertest.NewNop(),
@@ -57,12 +56,12 @@ func TestReceiver(t *testing.T) {
 				require.NoError(t, err)
 				require.NotNil(t, r)
 
-				require.NoError(t, r.Start(context.Background(), componenttest.NewNopHost()))
-				require.NoError(t, r.Shutdown(context.Background()))
+				require.NoError(t, r.Start(t.Context(), componenttest.NewNopHost()))
+				require.NoError(t, r.Shutdown(t.Context()))
 				return
 			}
 
-			require.Error(t, r.Start(context.Background(), componenttest.NewNopHost()))
+			require.Error(t, r.Start(t.Context(), componenttest.NewNopHost()))
 		})
 	}
 }
@@ -85,6 +84,9 @@ func TestGetPrometheusConfig(t *testing.T) {
 
 	clientConfig := confighttp.NewDefaultClientConfig()
 	clientConfig.Endpoint = "localhost:1234"
+
+	clientConfigJobName := confighttp.NewDefaultClientConfig()
+	clientConfigJobName.Endpoint = "localhost:1234"
 
 	tests := []struct {
 		name   string
@@ -129,9 +131,7 @@ func TestGetPrometheusConfig(t *testing.T) {
 		{
 			name: "Test with job name",
 			config: &Config{
-				ClientConfig: confighttp.ClientConfig{
-					Endpoint: "localhost:1234",
-				},
+				ClientConfig:       clientConfigJobName,
 				CollectionInterval: 10 * time.Second,
 				MetricsPath:        "/metric",
 				JobName:            "job123",

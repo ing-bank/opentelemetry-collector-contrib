@@ -28,12 +28,13 @@ func AssertContainsTaggedFloat(
 				return
 			}
 		} else {
-			assert.Fail(t, fmt.Sprintf("Field \"%s\" does not have type float64", field))
+			assert.Fail(t, fmt.Sprintf("Field %q does not have type float64", field))
 		}
 	}
 	msg := fmt.Sprintf(
-		"Could not find field \"%s\" with requested tags within %f of %f, Actual: %f",
-		field, delta, expectedValue, actualValue)
+		"Could not find field %q with requested tags within %f of %f, Actual: %f",
+		field, delta, expectedValue, actualValue,
+	)
 	assert.Fail(t, msg)
 }
 
@@ -52,8 +53,9 @@ func AssertContainsTaggedInt(
 		}
 	}
 	msg := fmt.Sprintf(
-		"Could not find field \"%s\" with requested tags with value: %v, Actual: %v",
-		field, expectedValue, actualValue)
+		"Could not find field %q with requested tags with value: %v, Actual: %v",
+		field, expectedValue, actualValue,
+	)
 	assert.Fail(t, msg)
 }
 
@@ -72,8 +74,9 @@ func AssertContainsTaggedUint(
 		}
 	}
 	msg := fmt.Sprintf(
-		"Could not find field \"%s\" with requested tags with value: %v, Actual: %v",
-		field, expectedValue, actualValue)
+		"Could not find field %q with requested tags with value: %v, Actual: %v",
+		field, expectedValue, actualValue,
+	)
 	assert.Fail(t, msg)
 }
 

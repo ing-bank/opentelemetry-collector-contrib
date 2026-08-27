@@ -9,7 +9,8 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
-permissions: read-all
+permissions:
+  contents: read
 
 jobs:
   changedfiles:
@@ -21,32 +22,34 @@ jobs:
     outputs:
       files: ${{ steps.changes.outputs.files }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Get changed files
         id: changes
         run: |
-          files=$(git diff --name-only --diff-filter=ACMRTUXB $(git merge-base origin/main $PR_HEAD) $PR_HEAD | grep .md$ | xargs)
+          files="$(git diff --name-only --diff-filter=ACMRTUXB "$(git merge-base origin/main "$PR_HEAD")" "$PR_HEAD" | grep .md$ | xargs)"
 
-          if [ -z "$files" ] && git diff --name-only $(git merge-base origin/main $PR_HEAD) $PR_HEAD | grep -q "package.json"; then
+          if [ -z "$files" ] && git diff --name-only "$(git merge-base origin/main "$PR_HEAD")" "$PR_HEAD" | grep -q "package.json"; then
             files="**/*.md"
           fi
 
-          echo "files=$files" >> $GITHUB_OUTPUT
+          echo "files=$files" >> "$GITHUB_OUTPUT"
 
   check-links:
     runs-on: ubuntu-24.04
     needs: changedfiles
     if: ${{needs.changedfiles.outputs.files}}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Link Checker
         id: lychee
-        uses: lycheeverse/lychee-action@f613c4a64e50d792e0b31ec34bbcbba12263c6a6 # v2.3.0
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
           args: "--verbose --no-progress ${{needs.changedfiles.outputs.files}} --config .github/lychee.toml"
           failIfEmpty: false

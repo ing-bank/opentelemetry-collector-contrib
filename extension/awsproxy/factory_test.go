@@ -4,7 +4,6 @@
 package awsproxy
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -61,7 +60,7 @@ func TestFactory_Create(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "fakeAccessKeyID")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "fakeSecretAccessKey")
 
-	ctx := context.Background()
+	ctx := t.Context()
 	cs := extensiontest.NewNopSettings(extensiontest.NopType)
 	ext, err := createExtension(ctx, cs, cfg)
 	assert.NoError(t, err)
@@ -81,7 +80,8 @@ func TestFactory_Create(t *testing.T) {
 		resp, err = http.Post(
 			"http://"+address+"/GetSamplingRules",
 			"application/json",
-			strings.NewReader(`{"NextToken": null}`))
+			strings.NewReader(`{"NextToken": null}`),
+		)
 		return err == nil
 	}, 3*time.Second, 10*time.Millisecond)
 
@@ -100,7 +100,7 @@ type nopHost struct {
 	reportFunc func(event *componentstatus.Event)
 }
 
-func (nh *nopHost) GetExtensions() map[component.ID]component.Component {
+func (*nopHost) GetExtensions() map[component.ID]component.Component {
 	return nil
 }
 

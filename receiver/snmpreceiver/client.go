@@ -61,7 +61,7 @@ var _ client = (*snmpClient)(nil)
 func newClient(cfg *Config, logger *zap.Logger) (client, error) {
 	// Create goSNMP client
 	goSNMP := newGoSNMPWrapper()
-	goSNMP.SetTimeout(cfg.Timeout)
+	goSNMP.SetTimeout(cfg.ControllerConfig.Timeout)
 
 	// Set goSNMP version based on config
 	switch cfg.Version {
@@ -305,11 +305,7 @@ func chunkArray(initArray []string, chunkSize int) [][]string {
 	var chunkedArrays [][]string
 
 	for i := 0; i < len(initArray); i += chunkSize {
-		end := i + chunkSize
-
-		if end > len(initArray) {
-			end = len(initArray)
-		}
+		end := min(i+chunkSize, len(initArray))
 
 		chunkedArrays = append(chunkedArrays, initArray[i:end])
 	}
@@ -372,7 +368,7 @@ func (c *snmpClient) convertSnmpPDUToSnmpData(pdu gosnmp.SnmpPDU) snmpData {
 // This is a convenience function to make working with SnmpPDU's easier - it
 // reduces the need for type assertions. A int64 is convenient, as SNMP can
 // return int32, uint32, and int64.
-func (c *snmpClient) toInt64(name string, value any) (int64, error) {
+func (*snmpClient) toInt64(name string, value any) (int64, error) {
 	switch value := value.(type) { // shadow
 	case uint:
 		return int64(value), nil
@@ -405,7 +401,7 @@ func (c *snmpClient) toInt64(name string, value any) (int64, error) {
 // This is a convenience function to make working with SnmpPDU's easier - it
 // reduces the need for type assertions. A float64 is convenient, as SNMP can
 // return float32 and float64.
-func (c *snmpClient) toFloat64(name string, value any) (float64, error) {
+func (*snmpClient) toFloat64(name string, value any) (float64, error) {
 	switch value := value.(type) { // shadow
 	case float32:
 		return float64(value), nil

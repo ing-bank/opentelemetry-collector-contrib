@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build !aix
+
 package pulsarreceiver // import "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/pulsarreceiver"
 
 import (
@@ -45,7 +47,7 @@ func newTracesReceiver(config Config, set receiver.Settings, unmarshalers map[st
 		return nil, err
 	}
 	unmarshaler := unmarshalers[config.Encoding]
-	if nil == unmarshaler {
+	if unmarshaler == nil {
 		return nil, errUnrecognizedEncoding
 	}
 
@@ -79,9 +81,8 @@ func (c *pulsarTracesConsumer) Start(context.Context, component.Host) error {
 	if err == nil {
 		c.consumer = _consumer
 		go func() {
-			if e := consumerTracesLoop(ctx, c); e != nil {
-				c.settings.Logger.Error("consume traces loop occurs an error", zap.Error(e))
-			}
+			e := consumerTracesLoop(ctx, c)
+			c.settings.Logger.Error("consume traces loop occurs an error", zap.Error(e))
 		}()
 	}
 
@@ -158,7 +159,7 @@ func newMetricsReceiver(config Config, set receiver.Settings, unmarshalers map[s
 		return nil, err
 	}
 	unmarshaler := unmarshalers[config.Encoding]
-	if nil == unmarshaler {
+	if unmarshaler == nil {
 		return nil, errUnrecognizedEncoding
 	}
 
@@ -193,9 +194,8 @@ func (c *pulsarMetricsConsumer) Start(context.Context, component.Host) error {
 		c.consumer = _consumer
 
 		go func() {
-			if e := consumeMetricsLoop(ctx, c); e != nil {
-				c.settings.Logger.Error("consume metrics loop occurs an error", zap.Error(e))
-			}
+			e := consumeMetricsLoop(ctx, c)
+			c.settings.Logger.Error("consume metrics loop occurs an error", zap.Error(e))
 		}()
 	}
 
@@ -274,7 +274,7 @@ func newLogsReceiver(config Config, set receiver.Settings, unmarshalers map[stri
 		return nil, err
 	}
 	unmarshaler := unmarshalers[config.Encoding]
-	if nil == unmarshaler {
+	if unmarshaler == nil {
 		return nil, errUnrecognizedEncoding
 	}
 
@@ -309,9 +309,8 @@ func (c *pulsarLogsConsumer) Start(context.Context, component.Host) error {
 	if err == nil {
 		c.consumer = _consumer
 		go func() {
-			if e := consumeLogsLoop(ctx, c); e != nil {
-				c.settings.Logger.Error("consume logs loop occurs an error", zap.Error(e))
-			}
+			e := consumeLogsLoop(ctx, c)
+			c.settings.Logger.Error("consume logs loop occurs an error", zap.Error(e))
 		}()
 	}
 

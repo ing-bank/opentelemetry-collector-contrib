@@ -4,7 +4,6 @@
 package prometheusremotewriteexporter
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -28,9 +27,9 @@ func Test_createDefaultConfig(t *testing.T) {
 // Tests whether or not a correct Metrics Exporter from the default Config parameters
 func Test_createMetricsExporter(t *testing.T) {
 	invalidConfig := createDefaultConfig().(*Config)
-	invalidConfig.ClientConfig = confighttp.NewDefaultClientConfig()
+	invalidConfig.HTTP = confighttp.NewDefaultClientConfig()
 	invalidTLSConfig := createDefaultConfig().(*Config)
-	invalidTLSConfig.ClientConfig.TLS = configtls.ClientConfig{
+	invalidTLSConfig.HTTP.TLS = configtls.ClientConfig{
 		Config: configtls.Config{
 			CAFile:   "nonexistent file",
 			CertFile: "",
@@ -78,20 +77,20 @@ func Test_createMetricsExporter(t *testing.T) {
 	// run tests
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			exp, err := createMetricsExporter(context.Background(), tt.set, tt.cfg)
+			exp, err := createMetricsExporter(t.Context(), tt.set, tt.cfg)
 			if tt.returnErrorOnCreate {
 				assert.Error(t, err)
 				return
 			}
 			assert.NoError(t, err)
 			assert.NotNil(t, exp)
-			err = exp.Start(context.Background(), componenttest.NewNopHost())
+			err = exp.Start(t.Context(), componenttest.NewNopHost())
 			if tt.returnErrorOnStart {
 				assert.Error(t, err)
 				return
 			}
 			assert.NoError(t, err)
-			assert.NoError(t, exp.Shutdown(context.Background()))
+			assert.NoError(t, exp.Shutdown(t.Context()))
 		})
 	}
 }

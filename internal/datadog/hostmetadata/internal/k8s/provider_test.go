@@ -8,7 +8,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/DataDog/opentelemetry-mapping-go/pkg/otlp/attributes/source"
+	"github.com/DataDog/datadog-agent/pkg/opentelemetry-mapping-go/otlp/attributes/source"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
 
@@ -33,7 +33,8 @@ var (
 type ErrorProvider string
 
 func (p ErrorProvider) ClusterName(context.Context) (string, error) { return "", errors.New(string(p)) }
-func (p ErrorProvider) NodeName(context.Context) (string, error)    { return "", errors.New(string(p)) }
+
+func (p ErrorProvider) NodeName(context.Context) (string, error) { return "", errors.New(string(p)) }
 
 func TestProvider(t *testing.T) {
 	tests := []struct {
@@ -73,7 +74,7 @@ func TestProvider(t *testing.T) {
 				clusterNameProvider: testInstance.clusterNameProvider,
 			}
 
-			src, err := provider.Source(context.Background())
+			src, err := provider.Source(t.Context())
 			if err != nil || testInstance.err != "" {
 				assert.EqualError(t, err, testInstance.err)
 			} else {

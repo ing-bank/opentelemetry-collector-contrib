@@ -4,17 +4,19 @@
 package routingconnector // import "github.com/open-telemetry/opentelemetry-collector-contrib/connector/routingconnector"
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/connector"
 	"go.opentelemetry.io/collector/connector/connectortest"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumertest"
+	"go.opentelemetry.io/collector/featuregate"
 	"go.opentelemetry.io/collector/pipeline"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/routingconnector/internal/metadata"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 )
 
 func TestConnectorCreatedWithValidConfiguration(t *testing.T) {
@@ -33,7 +35,7 @@ func TestConnectorCreatedWithValidConfiguration(t *testing.T) {
 	})
 
 	factory := NewFactory()
-	conn, err := factory.CreateTracesToTraces(context.Background(),
+	conn, err := factory.CreateTracesToTraces(t.Context(),
 		connectortest.NewNopSettings(metadata.Type), cfg, router.(consumer.Traces))
 
 	assert.NoError(t, err)
@@ -55,9 +57,26 @@ func TestCreationFailsWithIncorrectConsumer(t *testing.T) {
 	consumer := &consumertest.TracesSink{}
 
 	factory := NewFactory()
-	conn, err := factory.CreateTracesToTraces(context.Background(),
+	conn, err := factory.CreateTracesToTraces(t.Context(),
 		connectortest.NewNopSettings(metadata.Type), cfg, consumer)
 
 	assert.ErrorIs(t, err, errUnexpectedConsumer)
 	assert.Nil(t, conn)
+}
+
+func TestDefaultErrorModeWithFeatureGate(t *testing.T) {
+	factory := NewFactory()
+	cfg := factory.CreateDefaultConfig()
+
+	assert.Equal(t, ottl.IgnoreError, cfg.(*Config).ErrorMode)
+
+	t.Cleanup(func() {
+		_ = featuregate.GlobalRegistry().Set(metadata.ConnectorRoutingDefaultErrorModeIgnoreFeatureGate.ID(), true)
+	})
+
+	err := featuregate.GlobalRegistry().Set(metadata.ConnectorRoutingDefaultErrorModeIgnoreFeatureGate.ID(), false)
+	require.NoError(t, err)
+
+	cfg = factory.CreateDefaultConfig()
+	assert.Equal(t, ottl.PropagateError, cfg.(*Config).ErrorMode)
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 )
@@ -36,7 +37,7 @@ func Test_Format(t *testing.T) {
 			name:         "padded int",
 			formatString: "test-%04d",
 			formatArgs: []ottl.Getter[any]{
-				getterFunc[any](func(_ context.Context, _ any) (any, error) {
+				getterFunc[any](func(context.Context, any) (any, error) {
 					return 2, nil
 				}),
 			},
@@ -46,10 +47,10 @@ func Test_Format(t *testing.T) {
 			name:         "multiple-args",
 			formatString: "test-%04d-%4s",
 			formatArgs: []ottl.Getter[any]{
-				getterFunc[any](func(_ context.Context, _ any) (any, error) {
+				getterFunc[any](func(context.Context, any) (any, error) {
 					return 2, nil
 				}),
-				getterFunc[any](func(_ context.Context, _ any) (any, error) {
+				getterFunc[any](func(context.Context, any) (any, error) {
 					return "te", nil
 				}),
 			},
@@ -61,18 +62,57 @@ func Test_Format(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			exprFunc := format(tt.formatString, tt.formatArgs)
 			result, err := exprFunc(nil, nil)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
 
 func TestFormat_error(t *testing.T) {
-	target := getterFunc[any](func(_ context.Context, _ any) (any, error) {
+	target := getterFunc[any](func(context.Context, any) (any, error) {
 		return nil, errors.New("failed to get")
 	})
 
 	exprFunc := format[any]("test-%d", []ottl.Getter[any]{target})
-	_, err := exprFunc(context.Background(), nil)
+	_, err := exprFunc(t.Context(), nil)
 	assert.Error(t, err)
+}
+
+func Test_FormatFactory(t *testing.T) {
+	t.Run("factory creation", func(t *testing.T) {
+		factory := NewFormatFactory[any]()
+		assert.Equal(t, "Format", factory.Name())
+	})
+
+	t.Run("default arguments", func(t *testing.T) {
+		factory := NewFormatFactory[any]()
+		args := factory.CreateDefaultArguments()
+
+		assert.IsType(t, &FormatArguments[any]{}, args)
+		assertArgumentFieldNames(t, args, []string{"Format", "Vals"})
+	})
+
+	t.Run("function creation", func(t *testing.T) {
+		factory := NewFormatFactory[any]()
+		args := factory.CreateDefaultArguments()
+		formatArgs, ok := args.(*FormatArguments[any])
+		require.True(t, ok)
+		formatArgs.Format = "%s"
+		formatArgs.Vals = []ottl.Getter[any]{
+			&ottl.StandardGetSetter[any]{
+				Getter: func(context.Context, any) (any, error) {
+					return "value", nil
+				},
+			},
+		}
+
+		fn, err := factory.CreateFunction(ottl.FunctionContext{}, args)
+		require.NoError(t, err)
+		assert.NotNil(t, fn)
+	})
+
+	t.Run("invalid arguments type", func(t *testing.T) {
+		_, err := createFormatFunction[any](ottl.FunctionContext{}, "invalid args")
+		assert.ErrorContains(t, err, "FormatFactory args must be of type *FormatArguments[K]")
+	})
 }

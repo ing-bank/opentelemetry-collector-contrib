@@ -2,13 +2,10 @@ receivers:
   fluentforward:
     endpoint: 0.0.0.0:24224
 
-processors:
-  batch:
-
 exporters:
   debug:
     verbosity: detailed
-  loadbalancing:
+  load_balancing:
     protocol:
       otlp:
         timeout: 1s
@@ -31,5 +28,4 @@ service:
   pipelines:
     logs:
       receivers: [fluentforward]
-      processors: [batch]
-      exporters: [loadbalancing, debug]
+      exporters: [load_balancing, debug]

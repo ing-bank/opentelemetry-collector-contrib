@@ -4,7 +4,6 @@
 package expvarreceiver
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -35,14 +34,14 @@ func TestCreateMetrics(t *testing.T) {
 	clientConfig := confighttp.NewDefaultClientConfig()
 	clientConfig.Endpoint = defaultEndpoint
 	metricsReceiver, err := factory.CreateMetrics(
-		context.Background(),
+		t.Context(),
 		receivertest.NewNopSettings(metadata.Type),
 		&Config{
 			ControllerConfig: scraperhelper.ControllerConfig{
 				CollectionInterval: 10 * time.Second,
 			},
 			ClientConfig:         clientConfig,
-			MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig(),
+			MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig(),
 		},
 		consumertest.NewNop(),
 	)

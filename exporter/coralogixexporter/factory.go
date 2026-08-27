@@ -1,17 +1,18 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//go:generate mdatagen metadata.yaml
+//go:generate make mdatagen
 
 package coralogixexporter // import "github.com/open-telemetry/opentelemetry-collector-contrib/exporter/coralogixexporter"
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/config/configcompression"
 	"go.opentelemetry.io/collector/config/configgrpc"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configretry"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/exporter"
@@ -35,39 +36,42 @@ func NewFactory() exporter.Factory {
 }
 
 func createDefaultConfig() component.Config {
-	return &Config{
-		QueueSettings:   exporterhelper.NewDefaultQueueConfig(),
+	cfg := &Config{
+		QueueSettings:   configoptional.Some(exporterhelper.NewDefaultQueueConfig()),
 		BackOffConfig:   configretry.NewDefaultBackOffConfig(),
 		TimeoutSettings: exporterhelper.NewDefaultTimeoutConfig(),
-		DomainSettings: configgrpc.ClientConfig{
-			Compression: configcompression.TypeGzip,
-		},
-		ClientConfig: configgrpc.ClientConfig{
-			Endpoint: "https://",
-		},
+		DomainSettings:  TransportConfig{},
 		// Traces GRPC client
-		Traces: configgrpc.ClientConfig{
-			Endpoint:    "https://",
-			Compression: configcompression.TypeGzip,
+		Traces: TransportConfig{
+			ClientConfig: configgrpc.ClientConfig{
+				Endpoint: "https://",
+			},
 		},
-		Metrics: configgrpc.ClientConfig{
-			Endpoint: "https://",
-			// Default to gzip compression
-			Compression:     configcompression.TypeGzip,
-			WriteBufferSize: 512 * 1024,
+		Metrics: TransportConfig{
+			ClientConfig: configgrpc.ClientConfig{
+				Endpoint:        "https://",
+				WriteBufferSize: 512 * 1024,
+			},
 		},
-		Logs: configgrpc.ClientConfig{
-			Endpoint:    "https://",
-			Compression: configcompression.TypeGzip,
+		Logs: TransportConfig{
+			ClientConfig: configgrpc.ClientConfig{
+				Endpoint: "https://",
+			},
 		},
 		PrivateKey: "",
 		AppName:    "",
 		RateLimiter: RateLimiterConfig{
-			Enabled:   false,
+			Enabled:   true,
 			Threshold: 10,
 			Duration:  time.Minute,
 		},
+		Protocol: grpcProtocol,
 	}
+	applyTransportDefaults(&cfg.DomainSettings)
+	applyTransportDefaults(&cfg.Traces)
+	applyTransportDefaults(&cfg.Metrics)
+	applyTransportDefaults(&cfg.Logs)
+	return cfg
 }
 
 func createTraceExporter(
@@ -155,12 +159,17 @@ func createProfilesExporter(
 ) (xexporter.Profiles, error) {
 	cfg := config.(*Config)
 
+	// Validate that HTTP protocol is not used with profiles
+	if cfg.Protocol == "http" {
+		return nil, errors.New("profiles signal is not supported with HTTP protocol, use gRPC protocol (default) instead")
+	}
+
 	oce, err := newProfilesExporter(cfg, set)
 	if err != nil {
 		return nil, err
 	}
 
-	return xexporterhelper.NewProfilesExporter(
+	return xexporterhelper.NewProfiles(
 		ctx,
 		set,
 		cfg,

@@ -4,7 +4,6 @@
 package zookeeperscraper
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -20,9 +19,9 @@ func TestFactory(t *testing.T) {
 
 	cfg := f.CreateDefaultConfig()
 	// Assert defaults.
-	assert.Equal(t, "localhost:2181", cfg.(*Config).Endpoint)
+	assert.Equal(t, "localhost:2181", cfg.(*Config).TCPAddrConfig.Endpoint)
 
-	r, err := f.CreateMetrics(context.Background(), scrapertest.NewNopSettings(metadata.Type), cfg)
+	r, err := f.CreateMetrics(t.Context(), scrapertest.NewNopSettings(metadata.Type), cfg)
 
 	require.NoError(t, err)
 	require.NotNil(t, r)

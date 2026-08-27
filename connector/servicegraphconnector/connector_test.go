@@ -19,13 +19,11 @@ import (
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/exporter"
-	"go.opentelemetry.io/collector/featuregate"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
-	semconv "go.opentelemetry.io/otel/semconv/v1.25.0"
 	"go.uber.org/zap/zaptest"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/servicegraphconnector/internal/metadata"
@@ -40,13 +38,13 @@ func TestConnectorStart(t *testing.T) {
 	cfg := factory.CreateDefaultConfig().(*Config)
 
 	procCreationParams := connectortest.NewNopSettings(metadata.Type)
-	traceConnector, err := factory.CreateTracesToMetrics(context.Background(), procCreationParams, cfg, consumertest.NewNop())
+	traceConnector, err := factory.CreateTracesToMetrics(t.Context(), procCreationParams, cfg, consumertest.NewNop())
 	require.NoError(t, err)
 
 	// Test
 	smp := traceConnector.(*serviceGraphConnector)
-	err = smp.Start(context.Background(), componenttest.NewNopHost())
-	defer require.NoError(t, smp.Shutdown(context.Background()))
+	err = smp.Start(t.Context(), componenttest.NewNopHost())
+	defer require.NoError(t, smp.Shutdown(t.Context()))
 
 	// Verify
 	assert.NoError(t, err)
@@ -63,14 +61,13 @@ func TestConnectorShutdown(t *testing.T) {
 	set.Logger = zaptest.NewLogger(t)
 	p, err := newConnector(set, cfg, next)
 	require.NoError(t, err)
-	assert.NoError(t, p.Shutdown(context.Background()))
+	assert.NoError(t, p.Shutdown(t.Context()))
 }
 
 func TestConnectorConsume(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		cfg           *Config
-		gates         []*featuregate.Gate
 		sampleTraces  ptrace.Traces
 		verifyMetrics func(t *testing.T, md pmetric.Metrics)
 	}{
@@ -155,35 +152,17 @@ func TestConnectorConsume(t *testing.T) {
 				assert.Equal(t, 0, md.MetricCount())
 			},
 		},
-		{
-			name: "complete traces with legacy latency metrics",
-			cfg: &Config{
-				Dimensions: []string{"some-attribute", "non-existing-attribute"},
-				Store: StoreConfig{
-					MaxItems: 10,
-					TTL:      time.Nanosecond,
-				},
-			},
-			sampleTraces:  buildSampleTrace(t, "val"),
-			gates:         []*featuregate.Gate{legacyLatencyUnitMsFeatureGate},
-			verifyMetrics: verifyHappyCaseLatencyMetrics(),
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// Set feature gates
-			for _, gate := range tc.gates {
-				require.NoError(t, featuregate.GlobalRegistry().Set(gate.ID(), true))
-			}
-
 			// Prepare
 			set := componenttest.NewNopTelemetrySettings()
 			set.Logger = zaptest.NewLogger(t)
 			conn, err := newConnector(set, tc.cfg, newMockMetricsExporter())
 			require.NoError(t, err)
-			assert.NoError(t, conn.Start(context.Background(), componenttest.NewNopHost()))
+			assert.NoError(t, conn.Start(t.Context(), componenttest.NewNopHost()))
 
 			// Send spans to the connector
-			assert.NoError(t, conn.ConsumeTraces(context.Background(), tc.sampleTraces))
+			assert.NoError(t, conn.ConsumeTraces(t.Context(), tc.sampleTraces))
 
 			// Force collection
 			if runtime.GOOS == "windows" {
@@ -196,12 +175,7 @@ func TestConnectorConsume(t *testing.T) {
 			tc.verifyMetrics(t, md)
 
 			// Shutdown the connector
-			assert.NoError(t, conn.Shutdown(context.Background()))
-
-			// Unset feature gates
-			for _, gate := range tc.gates {
-				require.NoError(t, featuregate.GlobalRegistry().Set(gate.ID(), false))
-			}
+			assert.NoError(t, conn.Shutdown(t.Context()))
 		})
 	}
 }
@@ -235,13 +209,6 @@ func verifyHappyCaseMetricsWithDuration(serverDurationSum, clientDurationSum flo
 		mClientDuration := ms.At(2)
 		assert.Equal(t, "traces_service_graph_request_client", mClientDuration.Name())
 		verifyDuration(t, mClientDuration, clientDurationSum, []uint64{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0})
-	}
-}
-
-func verifyHappyCaseLatencyMetrics() func(t *testing.T, md pmetric.Metrics) {
-	return func(t *testing.T, md pmetric.Metrics) {
-		verifyHappyCaseMetricsWithDuration(2000, 1000)(t, md)
-		verifyUnit(t, md.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics().At(1).Unit(), millisecondsUnit)
 	}
 }
 
@@ -291,10 +258,6 @@ func verifyAttr(t *testing.T, attrs pcommon.Map, k, expected string) {
 	assert.Equal(t, expected, v.AsString())
 }
 
-func verifyUnit(t *testing.T, expected, actual string) {
-	assert.Equal(t, expected, actual)
-}
-
 func buildSampleTrace(t *testing.T, attrValue string) ptrace.Traces {
 	tStart := time.Date(2022, 1, 2, 3, 4, 5, 6, time.UTC)
 	// client: 1s
@@ -305,7 +268,7 @@ func buildSampleTrace(t *testing.T, attrValue string) ptrace.Traces {
 	traces := ptrace.NewTraces()
 
 	resourceSpans := traces.ResourceSpans().AppendEmpty()
-	resourceSpans.Resource().Attributes().PutStr(string(semconv.ServiceNameKey), "some-service")
+	resourceSpans.Resource().Attributes().PutStr("service.name", "some-service")
 
 	scopeSpans := resourceSpans.ScopeSpans().AppendEmpty()
 
@@ -346,7 +309,7 @@ func incompleteClientTraces() ptrace.Traces {
 	traces := ptrace.NewTraces()
 
 	resourceSpans := traces.ResourceSpans().AppendEmpty()
-	resourceSpans.Resource().Attributes().PutStr(string(semconv.ServiceNameKey), "some-client-service")
+	resourceSpans.Resource().Attributes().PutStr("service.name", "some-client-service")
 
 	scopeSpans := resourceSpans.ScopeSpans().AppendEmpty()
 	anotherTraceID := pcommon.TraceID([16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
@@ -358,7 +321,7 @@ func incompleteClientTraces() ptrace.Traces {
 	clientSpanNoServerSpan.SetKind(ptrace.SpanKindClient)
 	clientSpanNoServerSpan.SetStartTimestamp(pcommon.NewTimestampFromTime(tStart))
 	clientSpanNoServerSpan.SetEndTimestamp(pcommon.NewTimestampFromTime(tEnd))
-	clientSpanNoServerSpan.Attributes().PutStr(string(semconv.PeerServiceKey), "AuthTokenCache") // Attribute selected as dimension for metrics
+	clientSpanNoServerSpan.Attributes().PutStr("peer.service", "AuthTokenCache") // Attribute selected as dimension for metrics
 
 	return traces
 }
@@ -370,7 +333,7 @@ func incompleteServerTraces(withParentSpan bool) ptrace.Traces {
 	traces := ptrace.NewTraces()
 
 	resourceSpans := traces.ResourceSpans().AppendEmpty()
-	resourceSpans.Resource().Attributes().PutStr(string(semconv.ServiceNameKey), "some-server-service")
+	resourceSpans.Resource().Attributes().PutStr("service.name", "some-server-service")
 	scopeSpans := resourceSpans.ScopeSpans().AppendEmpty()
 	anotherTraceID := pcommon.TraceID([16]byte{1, 2, 3, 4, 5, 6, 7, 8, 8, 7, 6, 5, 4, 3, 2, 1})
 	serverSpanNoClientSpan := scopeSpans.Spans().AppendEmpty()
@@ -397,11 +360,11 @@ type mockMetricsExporter struct {
 	md  []pmetric.Metrics
 }
 
-func (m *mockMetricsExporter) Start(context.Context, component.Host) error { return nil }
+func (*mockMetricsExporter) Start(context.Context, component.Host) error { return nil }
 
-func (m *mockMetricsExporter) Shutdown(context.Context) error { return nil }
+func (*mockMetricsExporter) Shutdown(context.Context) error { return nil }
 
-func (m *mockMetricsExporter) Capabilities() consumer.Capabilities { return consumer.Capabilities{} }
+func (*mockMetricsExporter) Capabilities() consumer.Capabilities { return consumer.Capabilities{} }
 
 func (m *mockMetricsExporter) ConsumeMetrics(_ context.Context, md pmetric.Metrics) error {
 	m.mtx.Lock()
@@ -458,7 +421,7 @@ func TestUpdateDurationMetrics(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		t.Run(tc.caseStr, func(_ *testing.T) {
+		t.Run(tc.caseStr, func(*testing.T) {
 			p.updateDurationMetrics(metricKey, tc.duration, tc.duration)
 		})
 	}
@@ -473,33 +436,66 @@ func TestStaleSeriesCleanup(t *testing.T) {
 			TTL:      time.Second,
 		},
 	}
-
-	mockMetricsExporter := newMockMetricsExporter()
-
 	set := componenttest.NewNopTelemetrySettings()
 	set.Logger = zaptest.NewLogger(t)
-	p, err := newConnector(set, cfg, mockMetricsExporter)
-	require.NoError(t, err)
-	assert.NoError(t, p.Start(context.Background(), componenttest.NewNopHost()))
+	mockMetricsExporter := newMockMetricsExporter()
 
-	// ConsumeTraces
-	td := buildSampleTrace(t, "first")
-	assert.NoError(t, p.ConsumeTraces(context.Background(), td))
-
-	// Make series stale and force a cache cleanup
-	for key, metric := range p.keyToMetric {
-		metric.lastUpdated = 0
-		p.keyToMetric[key] = metric
+	verifyCacheEmpty := func(t *testing.T, p *serviceGraphConnector) {
+		assert.Empty(t, p.keyToMetric)
+		assert.Empty(t, p.reqTotal)
+		assert.Empty(t, p.reqFailedTotal)
+		assert.Empty(t, p.reqClientDurationSecondsCount)
+		assert.Empty(t, p.reqClientDurationSecondsSum)
+		assert.Empty(t, p.reqClientDurationSecondsBucketCounts)
+		assert.Empty(t, p.reqServerDurationSecondsCount)
+		assert.Empty(t, p.reqServerDurationSecondsBucketCounts)
+		assert.Empty(t, p.reqServerDurationSecondsSum)
+		assert.Empty(t, p.reqServerDurationExpHistogram)
+		assert.Empty(t, p.reqClientDurationExpHistogram)
 	}
-	p.cleanCache()
-	assert.Empty(t, p.keyToMetric)
 
-	// ConsumeTraces with a trace with different attribute value
-	td = buildSampleTrace(t, "second")
-	assert.NoError(t, p.ConsumeTraces(context.Background(), td))
+	t.Run("use explicit histogram", func(t *testing.T) {
+		p, err := newConnector(set, cfg, mockMetricsExporter)
+		require.NoError(t, err)
+		assert.NoError(t, p.Start(t.Context(), componenttest.NewNopHost()))
 
-	// Shutdown the connector
-	assert.NoError(t, p.Shutdown(context.Background()))
+		// ConsumeTraces
+		td := buildSampleTrace(t, "first")
+		assert.NoError(t, p.ConsumeTraces(t.Context(), td))
+
+		// Make series stale and force a cache cleanup
+		for key, metric := range p.keyToMetric {
+			metric.lastUpdated = 0
+			p.keyToMetric[key] = metric
+		}
+		p.cleanCache()
+		verifyCacheEmpty(t, p)
+
+		// Shutdown the connector
+		assert.NoError(t, p.Shutdown(t.Context()))
+	})
+	t.Run("use exponential histogram", func(t *testing.T) {
+		cfg2 := cfg
+		cfg.ExponentialHistogramMaxSize = 160
+		p, err := newConnector(set, cfg2, mockMetricsExporter)
+		require.NoError(t, err)
+		assert.NoError(t, p.Start(t.Context(), componenttest.NewNopHost()))
+
+		// ConsumeTraces
+		td := buildSampleTrace(t, "first")
+		assert.NoError(t, p.ConsumeTraces(t.Context(), td))
+
+		// Make series stale and force a cache cleanup
+		for key, metric := range p.keyToMetric {
+			metric.lastUpdated = 0
+			p.keyToMetric[key] = metric
+		}
+		p.cleanCache()
+		verifyCacheEmpty(t, p)
+
+		// Shutdown the connector
+		assert.NoError(t, p.Shutdown(t.Context()))
+	})
 }
 
 func TestMapsAreConsistentDuringCleanup(t *testing.T) {
@@ -518,11 +514,11 @@ func TestMapsAreConsistentDuringCleanup(t *testing.T) {
 	set.Logger = zaptest.NewLogger(t)
 	p, err := newConnector(set, cfg, mockMetricsExporter)
 	require.NoError(t, err)
-	assert.NoError(t, p.Start(context.Background(), componenttest.NewNopHost()))
+	assert.NoError(t, p.Start(t.Context(), componenttest.NewNopHost()))
 
 	// ConsumeTraces
 	td := buildSampleTrace(t, "first")
-	assert.NoError(t, p.ConsumeTraces(context.Background(), td))
+	assert.NoError(t, p.ConsumeTraces(t.Context(), td))
 
 	// Make series stale and force a cache cleanup
 	for key, metric := range p.keyToMetric {
@@ -559,7 +555,7 @@ func TestMapsAreConsistentDuringCleanup(t *testing.T) {
 	p.seriesMutex.Unlock()
 
 	// Shutdown the connector
-	assert.NoError(t, p.Shutdown(context.Background()))
+	assert.NoError(t, p.Shutdown(t.Context()))
 }
 
 func TestValidateOwnTelemetry(t *testing.T) {
@@ -575,11 +571,11 @@ func TestValidateOwnTelemetry(t *testing.T) {
 	tel := componenttest.NewTelemetry()
 	p, err := newConnector(tel.NewTelemetrySettings(), cfg, mockMetricsExporter)
 	require.NoError(t, err)
-	assert.NoError(t, p.Start(context.Background(), componenttest.NewNopHost()))
+	assert.NoError(t, p.Start(t.Context(), componenttest.NewNopHost()))
 
 	// ConsumeTraces
 	td := buildSampleTrace(t, "first")
-	assert.NoError(t, p.ConsumeTraces(context.Background(), td))
+	assert.NoError(t, p.ConsumeTraces(t.Context(), td))
 
 	// Make series stale and force a cache cleanup
 	for key, metric := range p.keyToMetric {
@@ -591,14 +587,14 @@ func TestValidateOwnTelemetry(t *testing.T) {
 
 	// ConsumeTraces with a trace with different attribute value
 	td = buildSampleTrace(t, "second")
-	assert.NoError(t, p.ConsumeTraces(context.Background(), td))
+	assert.NoError(t, p.ConsumeTraces(t.Context(), td))
 
 	// Shutdown the connector
-	assert.NoError(t, p.Shutdown(context.Background()))
+	assert.NoError(t, p.Shutdown(t.Context()))
 	metadatatest.AssertEqualConnectorServicegraphTotalEdges(t, tel, []metricdata.DataPoint[int64]{
 		{Value: 2},
 	}, metricdatatest.IgnoreTimestamp())
-	require.NoError(t, tel.Shutdown(context.Background()))
+	require.NoError(t, tel.Shutdown(t.Context()))
 }
 
 func TestExtraDimensionsLabels(t *testing.T) {
@@ -616,12 +612,12 @@ func TestExtraDimensionsLabels(t *testing.T) {
 	conn, err := newConnector(set, cfg, newMockMetricsExporter())
 	assert.NoError(t, err)
 
-	assert.NoError(t, conn.Start(context.Background(), componenttest.NewNopHost()))
-	defer require.NoError(t, conn.Shutdown(context.Background()))
+	assert.NoError(t, conn.Start(t.Context(), componenttest.NewNopHost()))
+	defer require.NoError(t, conn.Shutdown(t.Context()))
 
 	td, err := golden.ReadTraces("testdata/extra-dimensions-queue-db-trace.yaml")
 	assert.NoError(t, err)
-	assert.NoError(t, conn.ConsumeTraces(context.Background(), td))
+	assert.NoError(t, conn.ConsumeTraces(t.Context(), td))
 
 	conn.store.Expire()
 
@@ -657,11 +653,11 @@ func TestVirtualNodeServerLabels(t *testing.T) {
 
 	conn, err := newConnector(set, cfg, newMockMetricsExporter())
 	assert.NoError(t, err)
-	assert.NoError(t, conn.Start(context.Background(), componenttest.NewNopHost()))
+	assert.NoError(t, conn.Start(t.Context(), componenttest.NewNopHost()))
 
 	td, err := golden.ReadTraces(trace)
 	assert.NoError(t, err)
-	assert.NoError(t, conn.ConsumeTraces(context.Background(), td))
+	assert.NoError(t, conn.ConsumeTraces(t.Context(), td))
 
 	conn.store.Expire()
 	// Wait for metrics to be generated with timeout
@@ -672,7 +668,7 @@ func TestVirtualNodeServerLabels(t *testing.T) {
 	}, 5*time.Second, 10*time.Millisecond)
 
 	require.NotEmpty(t, metrics, "no metrics generated within timeout")
-	require.NoError(t, conn.Shutdown(context.Background()))
+	require.NoError(t, conn.Shutdown(t.Context()))
 
 	expectedMetrics, err := golden.ReadMetrics(expected)
 	assert.NoError(t, err)
@@ -706,11 +702,11 @@ func TestVirtualNodeClientLabels(t *testing.T) {
 
 	conn, err := newConnector(set, cfg, newMockMetricsExporter())
 	assert.NoError(t, err)
-	assert.NoError(t, conn.Start(context.Background(), componenttest.NewNopHost()))
+	assert.NoError(t, conn.Start(t.Context(), componenttest.NewNopHost()))
 
 	td, err := golden.ReadTraces(trace)
 	assert.NoError(t, err)
-	assert.NoError(t, conn.ConsumeTraces(context.Background(), td))
+	assert.NoError(t, conn.ConsumeTraces(t.Context(), td))
 
 	conn.store.Expire()
 	// Wait for metrics to be generated with timeout
@@ -721,7 +717,7 @@ func TestVirtualNodeClientLabels(t *testing.T) {
 	}, 5*time.Second, 10*time.Millisecond)
 
 	require.NotEmpty(t, metrics, "no metrics generated within timeout")
-	require.NoError(t, conn.Shutdown(context.Background()))
+	require.NoError(t, conn.Shutdown(t.Context()))
 
 	expectedMetrics, err := golden.ReadMetrics(expected)
 	assert.NoError(t, err)
@@ -733,7 +729,103 @@ func TestVirtualNodeClientLabels(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestExponentialHistogram(t *testing.T) {
+	// Prepare
+	set := componenttest.NewNopTelemetrySettings()
+	set.Logger = zaptest.NewLogger(t)
+
+	cfg := &Config{
+		Dimensions: []string{"some-attribute", "non-existing-attribute"},
+		Store: StoreConfig{
+			MaxItems: 10,
+			TTL:      time.Nanosecond,
+		},
+		ExponentialHistogramMaxSize: 4,
+	}
+	conn, err := newConnector(set, cfg, newMockMetricsExporter())
+	require.NoError(t, err)
+	assert.NoError(t, conn.Start(t.Context(), componenttest.NewNopHost()))
+
+	// Send spans to the connector
+	assert.NoError(t, conn.ConsumeTraces(t.Context(), buildSampleTrace(t, "val")))
+
+	// Force collection
+	if runtime.GOOS == "windows" {
+		// On Windows timing doesn't tick forward quickly for the store data to expire, force a wait before expiring.
+		time.Sleep(time.Second)
+	}
+	conn.store.Expire()
+	md, err := conn.buildMetrics()
+	assert.NoError(t, err)
+
+	assert.Equal(t, 3, md.MetricCount())
+
+	rms := md.ResourceMetrics()
+	assert.Equal(t, 1, rms.Len())
+
+	sms := rms.At(0).ScopeMetrics()
+	assert.Equal(t, 1, sms.Len())
+
+	ms := sms.At(0).Metrics()
+	assert.Equal(t, 3, ms.Len())
+
+	mCount := ms.At(0)
+	verifyCount(t, mCount)
+
+	expectAttributes := pcommon.NewMap()
+	expectAttributes.PutStr("client", "some-service")
+	expectAttributes.PutStr("server", "some-service")
+	expectAttributes.PutStr("connection_type", "")
+	expectAttributes.PutBool("failed", false)
+	expectAttributes.PutStr("client_some-attribute", "val")
+
+	mServerDuration := ms.At(1)
+	assert.Equal(t, "traces_service_graph_request_server", mServerDuration.Name())
+	expectServerDp := pmetric.NewExponentialHistogramDataPoint()
+	expectServerDp.SetCount(1)
+	expectServerDp.SetSum(2)
+	expectServerDp.SetMin(2)
+	expectServerDp.SetMax(2)
+	expectServerDp.SetZeroCount(0)
+	expectServerDp.SetScale(20)
+	expectServerDp.Positive().SetOffset(1048575)
+	expectServerDp.Positive().BucketCounts().FromRaw([]uint64{1})
+	expectAttributes.CopyTo(expectServerDp.Attributes())
+	verifyExpDuration(t, mServerDuration, expectServerDp)
+
+	mClientDuration := ms.At(2)
+	assert.Equal(t, "traces_service_graph_request_client", mClientDuration.Name())
+	expectClientDp := pmetric.NewExponentialHistogramDataPoint()
+	expectClientDp.SetCount(1)
+	expectClientDp.SetSum(1)
+	expectClientDp.SetMin(1)
+	expectClientDp.SetMax(1)
+	expectClientDp.SetZeroCount(0)
+	expectClientDp.SetScale(20)
+	expectClientDp.Positive().SetOffset(-1)
+	expectClientDp.Positive().BucketCounts().FromRaw([]uint64{1})
+	expectAttributes.CopyTo(expectClientDp.Attributes())
+	verifyExpDuration(t, mClientDuration, expectClientDp)
+
+	assert.NoError(t, conn.Shutdown(t.Context()))
+}
+
+func verifyExpDuration(t *testing.T, m pmetric.Metric, expectedDp pmetric.ExponentialHistogramDataPoint) {
+	assert.Equal(t, pmetric.MetricTypeExponentialHistogram, m.Type())
+	dps := m.ExponentialHistogram().DataPoints()
+	assert.Equal(t, 1, dps.Len())
+	dp := dps.At(0)
+
+	assert.NotZero(t, dp.Timestamp(), "timestamp must be set")
+	assert.NotZero(t, dp.StartTimestamp(), "start timestamp must be set")
+
+	// ignore time
+	dp.SetTimestamp(pcommon.Timestamp(0))
+	dp.SetStartTimestamp(pcommon.Timestamp(0))
+	assert.Equal(t, expectedDp, dp)
+}
+
 // ptr returns a pointer to the given value.
 func ptr[T any](value T) *T {
-	return &value
+	return new(value)
 }

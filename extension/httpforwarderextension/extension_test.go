@@ -4,7 +4,6 @@
 package httpforwarderextension
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/confighttp"
+	"go.opentelemetry.io/collector/config/confignet"
 	"go.opentelemetry.io/collector/config/configopaque"
 	"go.opentelemetry.io/collector/config/configtls"
 
@@ -31,123 +31,209 @@ type clientRequestArgs struct {
 }
 
 func TestExtension(t *testing.T) {
-	listenAt := testutil.GetAvailableLocalAddress(t)
 	tests := []struct {
 		name                        string
-		config                      *Config
+		config                      func(listenAt string) *Config
 		expectedbackendStatusCode   int
 		expectedBackendResponseBody []byte
 		expectedHeaders             map[string]configopaque.String
 		httpErrorFromBackend        bool
 		requestErrorAtForwarder     bool
-		clientRequestArgs           clientRequestArgs
+		clientRequestArgs           func(listenAt string) clientRequestArgs
 		startUpError                bool
 		startUpErrorMessage         string
 	}{
 		{
 			name: "No additional headers",
-			config: &Config{
-				Ingress: confighttp.ServerConfig{
-					Endpoint: listenAt,
-				},
+			config: func(listenAt string) *Config {
+				ingressConfig := confighttp.NewDefaultServerConfig()
+				// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+				ingressConfig.WriteTimeout = 0
+				ingressConfig.ReadHeaderTimeout = 0
+				ingressConfig.IdleTimeout = 0           //nolint:staticcheck // SA1019: see TODO above
+				ingressConfig.KeepAlivesEnabled = false //nolint:staticcheck // SA1019: see TODO above
+				ingressConfig.NetAddr = confignet.AddrConfig{
+					Transport: "tcp",
+					Endpoint:  listenAt,
+				}
+				return &Config{
+					Ingress: ingressConfig,
+				}
 			},
 			expectedbackendStatusCode:   http.StatusAccepted,
 			expectedBackendResponseBody: []byte("hello world"),
 			expectedHeaders: map[string]configopaque.String{
 				"header": "value",
 			},
-			clientRequestArgs: clientRequestArgs{
-				method: http.MethodGet,
-				url:    fmt.Sprintf("http://%s/api/dosomething", listenAt),
-				headers: map[string]string{
-					"client_header": "val1",
-				},
-				body: "client_body",
+			clientRequestArgs: func(listenAt string) clientRequestArgs {
+				return clientRequestArgs{
+					method: http.MethodGet,
+					url:    fmt.Sprintf("http://%s/api/dosomething", listenAt),
+					headers: map[string]string{
+						"client_header": "val1",
+					},
+					body: "client_body",
+				}
 			},
 		},
 		{
 			name: "With additional headers",
-			config: &Config{
-				Ingress: confighttp.ServerConfig{
-					Endpoint: listenAt,
-				},
-				Egress: confighttp.ClientConfig{
-					Headers: map[string]configopaque.String{
-						"key": "value",
-					},
-				},
+			config: func(listenAt string) *Config {
+				ingressConfig := confighttp.NewDefaultServerConfig()
+				// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+				ingressConfig.WriteTimeout = 0
+				ingressConfig.ReadHeaderTimeout = 0
+				ingressConfig.IdleTimeout = 0           //nolint:staticcheck // SA1019: see TODO above
+				ingressConfig.KeepAlivesEnabled = false //nolint:staticcheck // SA1019: see TODO above
+				ingressConfig.NetAddr = confignet.AddrConfig{
+					Transport: "tcp",
+					Endpoint:  listenAt,
+				}
+				egressConfig := confighttp.NewDefaultClientConfig()
+				// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+				egressConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+				egressConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+				egressConfig.ForceAttemptHTTP2 = false
+				egressConfig.Headers = configopaque.MapList{
+					{Name: "key", Value: "value"},
+				}
+				return &Config{
+					Ingress: ingressConfig,
+					Egress:  egressConfig,
+				}
 			},
 			expectedbackendStatusCode:   http.StatusAccepted,
 			expectedBackendResponseBody: []byte("hello world with additional headers"),
 			expectedHeaders: map[string]configopaque.String{
 				"header": "value",
 			},
-			clientRequestArgs: clientRequestArgs{
-				method: http.MethodPut,
-				url:    fmt.Sprintf("http://%s/api/dosomething", listenAt),
+			clientRequestArgs: func(listenAt string) clientRequestArgs {
+				return clientRequestArgs{
+					method: http.MethodPut,
+					url:    fmt.Sprintf("http://%s/api/dosomething", listenAt),
+				}
 			},
 		},
 		{
 			name: "Error code from backend",
-			config: &Config{
-				Ingress: confighttp.ServerConfig{
-					Endpoint: listenAt,
-				},
-				Egress: confighttp.ClientConfig{
-					Headers: map[string]configopaque.String{
-						"key": "value",
-					},
-				},
+			config: func(listenAt string) *Config {
+				ingressConfig := confighttp.NewDefaultServerConfig()
+				// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+				ingressConfig.WriteTimeout = 0
+				ingressConfig.ReadHeaderTimeout = 0
+				ingressConfig.IdleTimeout = 0           //nolint:staticcheck // SA1019: see TODO above
+				ingressConfig.KeepAlivesEnabled = false //nolint:staticcheck // SA1019: see TODO above
+				ingressConfig.NetAddr = confignet.AddrConfig{
+					Transport: "tcp",
+					Endpoint:  listenAt,
+				}
+				egressConfig := confighttp.NewDefaultClientConfig()
+				// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+				egressConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+				egressConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+				egressConfig.ForceAttemptHTTP2 = false
+				egressConfig.Headers = configopaque.MapList{
+					{Name: "key", Value: "value"},
+				}
+				return &Config{
+					Ingress: ingressConfig,
+					Egress:  egressConfig,
+				}
 			},
 			expectedbackendStatusCode:   http.StatusInternalServerError,
 			expectedBackendResponseBody: []byte("\n"),
 			httpErrorFromBackend:        true,
-			clientRequestArgs: clientRequestArgs{
-				method: "PATCH",
-				url:    fmt.Sprintf("http://%s/api/dosomething", listenAt),
+			clientRequestArgs: func(listenAt string) clientRequestArgs {
+				return clientRequestArgs{
+					method: "PATCH",
+					url:    fmt.Sprintf("http://%s/api/dosomething", listenAt),
+				}
 			},
 		},
 		{
 			name: "Error making request at forwarder",
-			config: &Config{
-				Ingress: confighttp.ServerConfig{
-					Endpoint: listenAt,
-				},
-				Egress: confighttp.ClientConfig{
-					Headers: map[string]configopaque.String{
-						"key": "value",
-					},
-				},
+			config: func(listenAt string) *Config {
+				ingressConfig := confighttp.NewDefaultServerConfig()
+				// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+				ingressConfig.WriteTimeout = 0
+				ingressConfig.ReadHeaderTimeout = 0
+				ingressConfig.IdleTimeout = 0           //nolint:staticcheck // SA1019: see TODO above
+				ingressConfig.KeepAlivesEnabled = false //nolint:staticcheck // SA1019: see TODO above
+				ingressConfig.NetAddr = confignet.AddrConfig{
+					Transport: "tcp",
+					Endpoint:  listenAt,
+				}
+				egressConfig := confighttp.NewDefaultClientConfig()
+				// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+				egressConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+				egressConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+				egressConfig.ForceAttemptHTTP2 = false
+				egressConfig.Headers = configopaque.MapList{
+					{Name: "key", Value: "value"},
+				}
+				return &Config{
+					Ingress: ingressConfig,
+					Egress:  egressConfig,
+				}
 			},
 			expectedbackendStatusCode:   http.StatusBadGateway,
 			expectedBackendResponseBody: []byte("\n"),
 			requestErrorAtForwarder:     true,
-			clientRequestArgs: clientRequestArgs{
-				method: http.MethodGet,
-				url:    fmt.Sprintf("http://%s/api/dosomething", listenAt),
+			clientRequestArgs: func(listenAt string) clientRequestArgs {
+				return clientRequestArgs{
+					method: http.MethodGet,
+					url:    fmt.Sprintf("http://%s/api/dosomething", listenAt),
+				}
 			},
 		},
 		{
 			name: "Invalid config - HTTP Client creation fails",
-			config: &Config{
-				Egress: confighttp.ClientConfig{
-					Endpoint: "localhost:9090",
-					TLS: configtls.ClientConfig{
-						Config: configtls.Config{
-							CAFile: "/non/existent",
-						},
+			config: func(listenAt string) *Config {
+				ingressConfig := confighttp.NewDefaultServerConfig()
+				// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+				ingressConfig.WriteTimeout = 0
+				ingressConfig.ReadHeaderTimeout = 0
+				ingressConfig.IdleTimeout = 0           //nolint:staticcheck // SA1019: see TODO above
+				ingressConfig.KeepAlivesEnabled = false //nolint:staticcheck // SA1019: see TODO above
+				ingressConfig.NetAddr = confignet.AddrConfig{
+					Transport: "tcp",
+					Endpoint:  listenAt,
+				}
+				egressConfig := confighttp.NewDefaultClientConfig()
+				// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+				egressConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+				egressConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+				egressConfig.ForceAttemptHTTP2 = false
+				egressConfig.Endpoint = "localhost:9090"
+				egressConfig.TLS = configtls.ClientConfig{
+					Config: configtls.Config{
+						CAFile: "/non/existent",
 					},
-				},
+				}
+				return &Config{
+					Ingress: ingressConfig,
+					Egress:  egressConfig,
+				}
 			},
 			startUpError:        true,
 			startUpErrorMessage: "failed to create HTTP Client: ",
 		},
 		{
 			name: "Error on Startup",
-			config: &Config{
-				Ingress: confighttp.ServerConfig{
-					Endpoint: "invalid", // to mock error setting up listener.
-				},
+			config: func(_ string) *Config {
+				ingressConfig := confighttp.NewDefaultServerConfig()
+				// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+				ingressConfig.WriteTimeout = 0
+				ingressConfig.ReadHeaderTimeout = 0
+				ingressConfig.IdleTimeout = 0           //nolint:staticcheck // SA1019: see TODO above
+				ingressConfig.KeepAlivesEnabled = false //nolint:staticcheck // SA1019: see TODO above
+				ingressConfig.NetAddr = confignet.AddrConfig{
+					Transport: "tcp",
+					Endpoint:  "invalid", // to mock error setting up listener.
+				}
+				return &Config{
+					Ingress: ingressConfig,
+				}
 			},
 			startUpError: true,
 		},
@@ -155,24 +241,30 @@ func TestExtension(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			listenAt := testutil.GetAvailableLocalAddress(t)
+			cfg := test.config(listenAt)
+			var cra clientRequestArgs
+			if test.clientRequestArgs != nil {
+				cra = test.clientRequestArgs(listenAt)
+			}
 			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if test.httpErrorFromBackend {
 					http.Error(w, "", http.StatusInternalServerError)
 					return
 				}
 
-				assert.Equal(t, getParsedURL(t, test.clientRequestArgs.url).RequestURI(), r.RequestURI)
-				assert.Equal(t, test.clientRequestArgs.method, r.Method)
-				assert.Equal(t, test.clientRequestArgs.body, string(readBody(r.Body)))
+				assert.Equal(t, getParsedURL(t, cra.url).RequestURI(), r.RequestURI)
+				assert.Equal(t, cra.method, r.Method)
+				assert.Equal(t, cra.body, string(readBody(r.Body)))
 
 				// Assert headers originating from client.
-				for k, v := range test.clientRequestArgs.headers {
+				for k, v := range cra.headers {
 					got := r.Header.Get(k)
 					assert.Equal(t, v, got)
 				}
 
 				// Assert additional headers added by forwarder.
-				for k, v := range test.config.Egress.Headers {
+				for k, v := range cfg.Egress.Headers.Iter {
 					got := r.Header.Get(k)
 					assert.Equal(t, string(v), got)
 				}
@@ -191,17 +283,17 @@ func TestExtension(t *testing.T) {
 
 			// Fill in final destination URL.
 			backendURL, _ := url.Parse(backend.URL)
-			test.config.Egress.Endpoint = backendURL.String()
+			cfg.Egress.Endpoint = backendURL.String()
 
 			// Setup forwarder with wrong final address to mock failures.
 			if test.requestErrorAtForwarder {
-				test.config.Egress.Endpoint = "http://" + testutil.GetAvailableLocalAddress(t)
+				cfg.Egress.Endpoint = "http://" + testutil.GetAvailableLocalAddress(t)
 			}
 
-			hf, err := newHTTPForwarder(test.config, componenttest.NewNopTelemetrySettings())
+			hf, err := newHTTPForwarder(cfg, componenttest.NewNopTelemetrySettings())
 			require.NoError(t, err)
 
-			ctx := context.Background()
+			ctx := t.Context()
 			if test.startUpError {
 				err = hf.Start(ctx, componenttest.NewNopHost())
 				if test.startUpErrorMessage != "" {
@@ -217,7 +309,7 @@ func TestExtension(t *testing.T) {
 			httpClient := http.Client{}
 
 			// Assert responses received by client.
-			response, err := httpClient.Do(httpRequest(t, test.clientRequestArgs))
+			response, err := httpClient.Do(httpRequest(t, cra))
 			require.NoError(t, err)
 			require.NotNil(t, response)
 			defer response.Body.Close()

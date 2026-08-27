@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configtls"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
 )
@@ -22,7 +23,7 @@ func TestConfig(t *testing.T) {
 			name: "endpoint",
 			expectedConfig: func() *Config {
 				cfg := createDefaultConfig().(*Config)
-				cfg.NetAddr.Endpoint = "0.0.0.0:3456"
+				cfg.ServerConfig.NetAddr.Endpoint = "0.0.0.0:3456"
 				return cfg
 			}(),
 		},
@@ -31,8 +32,8 @@ func TestConfig(t *testing.T) {
 			expectedConfig: func() *Config {
 				cfg := createDefaultConfig().(*Config)
 				tls := configtls.NewDefaultServerConfig()
-				cfg.TLS = &tls
-				cfg.TLS.KeyFile = "server.key"
+				cfg.ServerConfig.TLS = configoptional.Some(tls)
+				cfg.ServerConfig.TLS.Get().KeyFile = "server.key"
 				return cfg
 			}(),
 		},

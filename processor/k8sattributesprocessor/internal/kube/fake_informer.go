@@ -4,14 +4,32 @@
 package kube // import "github.com/open-telemetry/opentelemetry-collector-contrib/processor/k8sattributesprocessor/internal/kube"
 
 import (
+	"context"
 	"sync"
 	"time"
 
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
+	clientmeta "k8s.io/client-go/metadata"
 	"k8s.io/client-go/tools/cache"
 )
+
+// alreadyDone is a cache.DoneChecker whose Done channel is always closed,
+// matching the fakes' HasSynced() always returning true.
+var alreadyDone = doneChecker{}
+
+type doneChecker struct{}
+
+func (doneChecker) Name() string {
+	return "fakeInformer"
+}
+
+func (doneChecker) Done() <-chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}
 
 type FakeInformer struct {
 	*FakeController
@@ -43,19 +61,23 @@ func (f *FakeInformer) AddEventHandlerWithResyncPeriod(_ cache.ResourceEventHand
 	return f, nil
 }
 
-func (f *FakeInformer) RemoveEventHandler(_ cache.ResourceEventHandlerRegistration) error {
+func (f *FakeInformer) AddEventHandlerWithOptions(cache.ResourceEventHandler, cache.HandlerOptions) (cache.ResourceEventHandlerRegistration, error) {
+	return f, nil
+}
+
+func (*FakeInformer) RemoveEventHandler(cache.ResourceEventHandlerRegistration) error {
 	return nil
 }
 
-func (f *FakeInformer) IsStopped() bool {
+func (*FakeInformer) IsStopped() bool {
 	return false
 }
 
-func (f *FakeInformer) SetTransform(_ cache.TransformFunc) error {
+func (*FakeInformer) SetTransform(cache.TransformFunc) error {
 	return nil
 }
 
-func (f *FakeInformer) GetStore() cache.Store {
+func (*FakeInformer) GetStore() cache.Store {
 	return cache.NewStore(func(_ any) (string, error) { return "", nil })
 }
 
@@ -68,20 +90,20 @@ type FakeNamespaceInformer struct {
 }
 
 func NewFakeNamespaceInformer(
-	_ kubernetes.Interface,
+	_ clientmeta.Interface,
 ) cache.SharedInformer {
 	return &FakeInformer{
 		FakeController: &FakeController{},
 	}
 }
 
-func (f *FakeNamespaceInformer) AddEventHandler(_ cache.ResourceEventHandler) {}
+func (*FakeNamespaceInformer) AddEventHandler(cache.ResourceEventHandler) {}
 
-func (f *FakeNamespaceInformer) AddEventHandlerWithResyncPeriod(_ cache.ResourceEventHandler, _ time.Duration) {
+func (*FakeNamespaceInformer) AddEventHandlerWithResyncPeriod(cache.ResourceEventHandler, time.Duration) {
 }
 
-func (f *FakeNamespaceInformer) GetStore() cache.Store {
-	return cache.NewStore(func(_ any) (string, error) { return "", nil })
+func (*FakeNamespaceInformer) GetStore() cache.Store {
+	return cache.NewStore(func(any) (string, error) { return "", nil })
 }
 
 func (f *FakeNamespaceInformer) GetController() cache.Controller {
@@ -93,7 +115,7 @@ type FakeReplicaSetInformer struct {
 }
 
 func NewFakeReplicaSetInformer(
-	_ kubernetes.Interface,
+	_ clientmeta.Interface,
 	_ string,
 ) cache.SharedInformer {
 	return &FakeInformer{
@@ -101,17 +123,17 @@ func NewFakeReplicaSetInformer(
 	}
 }
 
-func (f *FakeReplicaSetInformer) AddEventHandler(_ cache.ResourceEventHandler) {}
+func (*FakeReplicaSetInformer) AddEventHandler(cache.ResourceEventHandler) {}
 
-func (f *FakeReplicaSetInformer) AddEventHandlerWithResyncPeriod(_ cache.ResourceEventHandler, _ time.Duration) {
+func (*FakeReplicaSetInformer) AddEventHandlerWithResyncPeriod(cache.ResourceEventHandler, time.Duration) {
 }
 
-func (f *FakeReplicaSetInformer) SetTransform(_ cache.TransformFunc) error {
+func (*FakeReplicaSetInformer) SetTransform(cache.TransformFunc) error {
 	return nil
 }
 
-func (f *FakeReplicaSetInformer) GetStore() cache.Store {
-	return cache.NewStore(func(_ any) (string, error) { return "", nil })
+func (*FakeReplicaSetInformer) GetStore() cache.Store {
+	return cache.NewStore(func(any) (string, error) { return "", nil })
 }
 
 func (f *FakeReplicaSetInformer) GetController() cache.Controller {
@@ -123,7 +145,7 @@ type FakeController struct {
 	stopped bool
 }
 
-func (c *FakeController) HasSynced() bool {
+func (*FakeController) HasSynced() bool {
 	return true
 }
 
@@ -134,17 +156,29 @@ func (c *FakeController) Run(stopCh <-chan struct{}) {
 	c.Unlock()
 }
 
+func (c *FakeController) RunWithContext(ctx context.Context) {
+	c.Run(ctx.Done())
+}
+
 func (c *FakeController) HasStopped() bool {
 	c.Lock()
 	defer c.Unlock()
 	return c.stopped
 }
 
-func (c *FakeController) LastSyncResourceVersion() string {
+func (*FakeController) LastSyncResourceVersion() string {
 	return ""
 }
 
-func (f *FakeInformer) SetWatchErrorHandler(cache.WatchErrorHandler) error {
+func (*FakeController) HasSyncedChecker() cache.DoneChecker {
+	return alreadyDone
+}
+
+func (*FakeInformer) SetWatchErrorHandler(cache.WatchErrorHandler) error {
+	return nil
+}
+
+func (*FakeInformer) SetWatchErrorHandlerWithContext(cache.WatchErrorHandlerWithContext) error {
 	return nil
 }
 
@@ -153,16 +187,7 @@ type NoOpInformer struct {
 }
 
 func NewNoOpInformer(
-	_ kubernetes.Interface,
-) cache.SharedInformer {
-	return &NoOpInformer{
-		NoOpController: &NoOpController{},
-	}
-}
-
-func NewNoOpWorkloadInformer(
-	_ kubernetes.Interface,
-	_ string,
+	_ clientmeta.Interface,
 ) cache.SharedInformer {
 	return &NoOpInformer{
 		NoOpController: &NoOpController{},
@@ -173,20 +198,24 @@ func (f *NoOpInformer) AddEventHandler(handler cache.ResourceEventHandler) (cach
 	return f.AddEventHandlerWithResyncPeriod(handler, time.Second)
 }
 
-func (f *NoOpInformer) AddEventHandlerWithResyncPeriod(_ cache.ResourceEventHandler, _ time.Duration) (cache.ResourceEventHandlerRegistration, error) {
+func (f *NoOpInformer) AddEventHandlerWithResyncPeriod(cache.ResourceEventHandler, time.Duration) (cache.ResourceEventHandlerRegistration, error) {
 	return f, nil
 }
 
-func (f *NoOpInformer) RemoveEventHandler(_ cache.ResourceEventHandlerRegistration) error {
+func (f *NoOpInformer) AddEventHandlerWithOptions(cache.ResourceEventHandler, cache.HandlerOptions) (cache.ResourceEventHandlerRegistration, error) {
+	return f, nil
+}
+
+func (*NoOpInformer) RemoveEventHandler(cache.ResourceEventHandlerRegistration) error {
 	return nil
 }
 
-func (f *NoOpInformer) SetTransform(_ cache.TransformFunc) error {
+func (*NoOpInformer) SetTransform(cache.TransformFunc) error {
 	return nil
 }
 
-func (f *NoOpInformer) GetStore() cache.Store {
-	return cache.NewStore(func(_ any) (string, error) { return "", nil })
+func (*NoOpInformer) GetStore() cache.Store {
+	return cache.NewStore(func(any) (string, error) { return "", nil })
 }
 
 func (f *NoOpInformer) GetController() cache.Controller {
@@ -204,18 +233,30 @@ func (c *NoOpController) Run(stopCh <-chan struct{}) {
 	}()
 }
 
+func (c *NoOpController) RunWithContext(ctx context.Context) {
+	c.Run(ctx.Done())
+}
+
 func (c *NoOpController) IsStopped() bool {
 	return c.hasStopped
 }
 
-func (c *NoOpController) HasSynced() bool {
+func (*NoOpController) HasSynced() bool {
 	return true
 }
 
-func (c *NoOpController) LastSyncResourceVersion() string {
+func (*NoOpController) LastSyncResourceVersion() string {
 	return ""
 }
 
-func (c *NoOpController) SetWatchErrorHandler(cache.WatchErrorHandler) error {
+func (*NoOpController) HasSyncedChecker() cache.DoneChecker {
+	return alreadyDone
+}
+
+func (*NoOpController) SetWatchErrorHandler(cache.WatchErrorHandler) error {
+	return nil
+}
+
+func (*NoOpController) SetWatchErrorHandlerWithContext(cache.WatchErrorHandlerWithContext) error {
 	return nil
 }

@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/common/testutil"
-	"github.com/open-telemetry/opentelemetry-collector-contrib/testbed/datareceivers"
-	"github.com/open-telemetry/opentelemetry-collector-contrib/testbed/datasenders"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/testbed/datareceivers/signalfxdatareceiver" //nolint:staticcheck // SA1019
+	"github.com/open-telemetry/opentelemetry-collector-contrib/testbed/datasenders/signalfxdatasender"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/testbed/testbed"
 	scenarios "github.com/open-telemetry/opentelemetry-collector-contrib/testbed/tests"
 )
@@ -30,45 +30,11 @@ func TestStabilityMetricsOTLP(t *testing.T) {
 	)
 }
 
-func TestStabilityMetricsOpenCensus(t *testing.T) {
-	scenarios.Scenario10kItemsPerSecond(
-		t,
-		datasenders.NewOCMetricDataSender(testbed.DefaultHost, testutil.GetAvailablePort(t)),
-		datareceivers.NewOCDataReceiver(testutil.GetAvailablePort(t)),
-		testbed.ResourceSpec{
-			ExpectedMaxCPU:      85,
-			ExpectedMaxRAM:      86,
-			ResourceCheckPeriod: resourceCheckPeriod,
-		},
-		contribPerfResultsSummary,
-		nil,
-		nil,
-		nil,
-	)
-}
-
-func TestStabilityMetricsCarbon(t *testing.T) {
-	scenarios.Scenario10kItemsPerSecond(
-		t,
-		datasenders.NewCarbonDataSender(testutil.GetAvailablePort(t)),
-		datareceivers.NewCarbonDataReceiver(testutil.GetAvailablePort(t)),
-		testbed.ResourceSpec{
-			ExpectedMaxCPU:      237,
-			ExpectedMaxRAM:      120,
-			ResourceCheckPeriod: resourceCheckPeriod,
-		},
-		contribPerfResultsSummary,
-		nil,
-		nil,
-		nil,
-	)
-}
-
 func TestStabilityMetricsSignalFx(t *testing.T) {
 	scenarios.Scenario10kItemsPerSecond(
 		t,
-		datasenders.NewSFxMetricDataSender(testutil.GetAvailablePort(t)),
-		datareceivers.NewSFxMetricsDataReceiver(testutil.GetAvailablePort(t)),
+		signalfxdatasender.NewSFxMetricDataSender(testutil.GetAvailablePort(t)),
+		signalfxdatareceiver.NewSFxMetricsDataReceiver(testutil.GetAvailablePort(t)), //nolint:staticcheck // SA1019
 		testbed.ResourceSpec{
 			ExpectedMaxCPU:      120,
 			ExpectedMaxRAM:      95,

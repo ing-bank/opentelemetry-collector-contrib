@@ -39,28 +39,38 @@ func TestScrape(t *testing.T) {
 		config       *Config
 	}
 
+	mockLoadFunc := func(_ context.Context) (*load.AvgStat, error) {
+		return &load.AvgStat{
+			Load1:  1.0,
+			Load5:  5.0,
+			Load15: 15.0,
+		}, nil
+	}
+
 	testCases := []testCase{
 		{
 			name:        testStandard,
 			saveMetrics: true,
 			config: &Config{
-				MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig(),
+				MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig(),
 			},
+			loadFunc: mockLoadFunc,
 		},
 		{
 			name:        testAverage,
 			saveMetrics: true,
 			config: &Config{
-				MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig(),
+				MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig(),
 				CPUAverage:           true,
 			},
 			bootTimeFunc: func(context.Context) (uint64, error) { return bootTime, nil },
+			loadFunc:     mockLoadFunc,
 		},
 		{
 			name:     "Load Error",
 			loadFunc: func(context.Context) (*load.AvgStat, error) { return nil, errors.New("err1") },
 			config: &Config{
-				MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig(),
+				MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig(),
 			},
 			expectedErr: "err1",
 		},
@@ -75,7 +85,7 @@ func TestScrape(t *testing.T) {
 		// wait for measurement to start
 		<-startChan
 
-		scraper := newLoadScraper(context.Background(), scrapertest.NewNopSettings(metadata.Type), test.config)
+		scraper := newLoadScraper(t.Context(), scrapertest.NewNopSettings(metadata.Type), test.config)
 		if test.loadFunc != nil {
 			scraper.load = test.loadFunc
 		}
@@ -83,15 +93,15 @@ func TestScrape(t *testing.T) {
 			scraper.bootTime = test.bootTimeFunc
 		}
 
-		err := scraper.start(context.Background(), componenttest.NewNopHost())
+		err := scraper.start(t.Context(), componenttest.NewNopHost())
 		require.NoError(t, err, "Failed to initialize load scraper: %v", err)
-		defer func() { assert.NoError(t, scraper.shutdown(context.Background())) }()
+		defer func() { assert.NoError(t, scraper.shutdown(t.Context())) }()
 		if runtime.GOOS == "windows" {
 			// let it sample
 			<-time.After(3 * time.Second)
 		}
 
-		md, err := scraper.scrape(context.Background())
+		md, err := scraper.scrape(t.Context())
 		if test.expectedErr != "" {
 			assert.EqualError(t, err, test.expectedErr)
 
@@ -108,7 +118,7 @@ func TestScrape(t *testing.T) {
 		require.NoError(t, err, "Failed to scrape metrics: %v", err)
 
 		if test.bootTimeFunc != nil {
-			actualBootTime, err := scraper.bootTime(context.Background())
+			actualBootTime, err := scraper.bootTime(t.Context())
 			assert.NoError(t, err)
 			assert.Equal(t, uint64(bootTime), actualBootTime)
 		}
@@ -168,7 +178,7 @@ func assertMetricHasSingleDatapoint(t *testing.T, metric pmetric.Metric, expecte
 	assert.Equal(t, 1, metric.Gauge().DataPoints().Len())
 }
 
-func assertCompareAveragePerCPU(t *testing.T, average pmetric.Metric, standard pmetric.Metric, numCPU int) {
+func assertCompareAveragePerCPU(t *testing.T, average, standard pmetric.Metric, numCPU int) {
 	valAverage := average.Gauge().DataPoints().At(0).DoubleValue()
 	valStandard := standard.Gauge().DataPoints().At(0).DoubleValue()
 	if valAverage == 0 && valStandard == 0 {

@@ -4,12 +4,13 @@
 package sqlqueryreceiver
 
 import (
-	"context"
 	"database/sql"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/component/componentstatus"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/receiver/receivertest"
@@ -22,7 +23,7 @@ import (
 
 func TestCreateLogs(t *testing.T) {
 	createReceiver := createLogsReceiverFunc(fakeDBConnect, mkFakeClient)
-	ctx := context.Background()
+	ctx := t.Context()
 	receiver, err := createReceiver(
 		ctx,
 		receivertest.NewNopSettings(metadata.Type),
@@ -31,7 +32,7 @@ func TestCreateLogs(t *testing.T) {
 				ControllerConfig: scraperhelper.ControllerConfig{
 					CollectionInterval: 10 * time.Second,
 				},
-				Driver:     "mydriver",
+				Driver:     "postgres",
 				DataSource: "my-datasource",
 				Queries: []sqlquery.Query{{
 					SQL: "select * from foo",
@@ -51,7 +52,7 @@ func TestCreateLogs(t *testing.T) {
 
 func TestCreateMetrics(t *testing.T) {
 	createReceiver := createMetricsReceiverFunc(fakeDBConnect, mkFakeClient)
-	ctx := context.Background()
+	ctx := t.Context()
 	receiver, err := createReceiver(
 		ctx,
 		receivertest.NewNopSettings(metadata.Type),
@@ -61,7 +62,7 @@ func TestCreateMetrics(t *testing.T) {
 					CollectionInterval: 10 * time.Second,
 					InitialDelay:       time.Second,
 				},
-				Driver:     "mydriver",
+				Driver:     "postgres",
 				DataSource: "my-datasource",
 				Queries: []sqlquery.Query{{
 					SQL: "select * from foo",
@@ -78,6 +79,167 @@ func TestCreateMetrics(t *testing.T) {
 	err = receiver.Start(ctx, componenttest.NewNopHost())
 	require.NoError(t, err)
 	require.NoError(t, receiver.Shutdown(ctx))
+}
+
+func TestCreateLogsDatasourceFields(t *testing.T) {
+	createReceiver := createLogsReceiverFunc(fakeDBConnect, mkFakeClient)
+	ctx := t.Context()
+	receiver, err := createReceiver(
+		ctx,
+		receivertest.NewNopSettings(metadata.Type),
+		&Config{
+			Config: sqlquery.Config{
+				ControllerConfig: scraperhelper.ControllerConfig{
+					CollectionInterval: 10 * time.Second,
+				},
+				Driver:   "postgres",
+				Host:     "localhost",
+				Port:     5432,
+				Database: "my-datasource",
+				Username: "user",
+				Password: "pass",
+				Queries: []sqlquery.Query{{
+					SQL: "select * from foo",
+					Logs: []sqlquery.LogsCfg{
+						{},
+					},
+				}},
+			},
+		},
+		consumertest.NewNop(),
+	)
+	require.NoError(t, err)
+	err = receiver.Start(ctx, componenttest.NewNopHost())
+	require.NoError(t, err)
+	require.NoError(t, receiver.Shutdown(ctx))
+}
+
+func TestCreateMetricsDatasourceFields(t *testing.T) {
+	createReceiver := createMetricsReceiverFunc(fakeDBConnect, mkFakeClient)
+	ctx := t.Context()
+	receiver, err := createReceiver(
+		ctx,
+		receivertest.NewNopSettings(metadata.Type),
+		&Config{
+			Config: sqlquery.Config{
+				ControllerConfig: scraperhelper.ControllerConfig{
+					CollectionInterval: 10 * time.Second,
+					InitialDelay:       time.Second,
+				},
+				Driver:   "mysql",
+				Host:     "localhost",
+				Port:     3306,
+				Database: "my-datasource",
+				Username: "user",
+				Password: "pass",
+				Queries: []sqlquery.Query{{
+					SQL: "select * from foo",
+					Metrics: []sqlquery.MetricCfg{{
+						MetricName:  "my-metric",
+						ValueColumn: "my-column",
+					}},
+				}},
+			},
+		},
+		consumertest.NewNop(),
+	)
+	require.NoError(t, err)
+	err = receiver.Start(ctx, componenttest.NewNopHost())
+	require.NoError(t, err)
+	require.NoError(t, receiver.Shutdown(ctx))
+}
+
+func TestCreateMetricsBothDatasourceFields(t *testing.T) {
+	createReceiver := createMetricsReceiverFunc(fakeDBConnect, mkFakeClient)
+	ctx := t.Context()
+	receiver, err := createReceiver(
+		ctx,
+		receivertest.NewNopSettings(metadata.Type),
+		&Config{
+			Config: sqlquery.Config{
+				ControllerConfig: scraperhelper.ControllerConfig{
+					CollectionInterval: 10 * time.Second,
+					InitialDelay:       time.Second,
+				},
+				Driver:     "mysql",
+				DataSource: "my-datasource", // This should be used
+				Host:       "localhost",
+				Port:       3306,
+				Database:   "ignored-database",
+				Username:   "ignored-user",
+				Password:   "ignored-pass",
+				Queries: []sqlquery.Query{{
+					SQL: "select * from foo",
+					Metrics: []sqlquery.MetricCfg{{
+						MetricName:  "my-metric",
+						ValueColumn: "my-column",
+					}},
+				}},
+			},
+		},
+		consumertest.NewNop(),
+	)
+	require.NoError(t, err)
+	err = receiver.Start(ctx, componenttest.NewNopHost())
+	require.NoError(t, err)
+	require.NoError(t, receiver.Shutdown(ctx))
+}
+
+func TestStatusReportingMetrics(t *testing.T) {
+	createReceiver := createMetricsReceiverFunc(fakeDBConnect, mkFakeClient)
+	ctx := t.Context()
+
+	statusEvents := make(chan *componentstatus.Event, 10)
+	host := &statusReporterHost{
+		Host: componenttest.NewNopHost(),
+		report: func(event *componentstatus.Event) {
+			statusEvents <- event
+		},
+	}
+
+	receiver, err := createReceiver(
+		ctx,
+		receivertest.NewNopSettings(metadata.Type),
+		&Config{
+			Config: sqlquery.Config{
+				ControllerConfig: scraperhelper.ControllerConfig{
+					CollectionInterval: 10 * time.Millisecond,
+				},
+				Driver:     "postgres",
+				DataSource: "my-datasource",
+				Queries: []sqlquery.Query{{
+					SQL: "select * from foo",
+					Metrics: []sqlquery.MetricCfg{{
+						MetricName:  "my-metric",
+						ValueColumn: "foo",
+					}},
+				}},
+			},
+		},
+		consumertest.NewNop(),
+	)
+	require.NoError(t, err)
+	require.NoError(t, receiver.Start(ctx, host))
+
+	select {
+	case event := <-statusEvents:
+		require.Equal(t, componentstatus.StatusOK, event.Status())
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for status event")
+	}
+
+	require.NoError(t, receiver.Shutdown(ctx))
+}
+
+type statusReporterHost struct {
+	component.Host
+	report func(*componentstatus.Event)
+}
+
+func (h *statusReporterHost) Report(event *componentstatus.Event) {
+	if h.report != nil {
+		h.report(event)
+	}
 }
 
 func fakeDBConnect(string, string) (*sql.DB, error) {

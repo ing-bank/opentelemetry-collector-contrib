@@ -4,17 +4,18 @@
 package filestorage
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/bbolt"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/extension"
@@ -25,7 +26,7 @@ import (
 )
 
 func TestExtensionIntegrity(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	se := newTestExtension(t)
 
 	type mockComponent struct {
@@ -62,28 +63,28 @@ func TestExtensionIntegrity(t *testing.T) {
 		myBytes := []byte(n.Name())
 
 		// Set my values
-		for i := 0; i < len(keys); i++ {
+		for i := range keys {
 			err := c.Set(ctx, keys[i], myBytes)
 			require.NoError(t, err)
 		}
 
 		// Repeatedly thrash client
-		for j := 0; j < 100; j++ {
+		for range 100 {
 			// Make sure my values are still mine
-			for i := 0; i < len(keys); i++ {
+			for i := range keys {
 				v, err := c.Get(ctx, keys[i])
 				require.NoError(t, err)
 				require.Equal(t, myBytes, v)
 			}
 
 			// Delete my values
-			for i := 0; i < len(keys); i++ {
+			for i := range keys {
 				err := c.Delete(ctx, keys[i])
 				require.NoError(t, err)
 			}
 
 			// Reset my values
-			for i := 0; i < len(keys); i++ {
+			for i := range keys {
 				err := c.Set(ctx, keys[i], myBytes)
 				require.NoError(t, err)
 			}
@@ -101,7 +102,7 @@ func TestExtensionIntegrity(t *testing.T) {
 }
 
 func TestClientHandlesSimpleCases(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	se := newTestExtension(t)
 
 	client, err := se.GetClient(
@@ -145,7 +146,7 @@ func TestClientHandlesSimpleCases(t *testing.T) {
 }
 
 func TestTwoClientsWithDifferentNames(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	se := newTestExtension(t)
 
 	client1, err := se.GetClient(
@@ -232,14 +233,14 @@ func TestComponentNameWithUnsafeCharacters(t *testing.T) {
 	cfg := f.CreateDefaultConfig().(*Config)
 	cfg.Directory = tempDir
 
-	extension, err := f.Create(context.Background(), extensiontest.NewNopSettings(f.Type()), cfg)
+	extension, err := f.Create(t.Context(), extensiontest.NewNopSettings(f.Type()), cfg)
 	require.NoError(t, err)
 
 	se, ok := extension.(storage.Extension)
 	require.True(t, ok)
 
 	client, err := se.GetClient(
-		context.Background(),
+		t.Context(),
 		component.KindReceiver,
 		newTestEntity("my/slashed/component*"),
 		"",
@@ -248,11 +249,11 @@ func TestComponentNameWithUnsafeCharacters(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, client)
 
-	client.Close(context.Background())
+	client.Close(t.Context())
 }
 
 func TestGetClientErrorsOnDeletedDirectory(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	tempDir := t.TempDir()
 
@@ -260,7 +261,7 @@ func TestGetClientErrorsOnDeletedDirectory(t *testing.T) {
 	cfg := f.CreateDefaultConfig().(*Config)
 	cfg.Directory = tempDir
 
-	extension, err := f.Create(context.Background(), extensiontest.NewNopSettings(f.Type()), cfg)
+	extension, err := f.Create(t.Context(), extensiontest.NewNopSettings(f.Type()), cfg)
 	require.NoError(t, err)
 
 	se, ok := extension.(storage.Extension)
@@ -286,7 +287,7 @@ func newTestExtension(t *testing.T) storage.Extension {
 	cfg := f.CreateDefaultConfig().(*Config)
 	cfg.Directory = t.TempDir()
 
-	extension, err := f.Create(context.Background(), extensiontest.NewNopSettings(f.Type()), cfg)
+	extension, err := f.Create(t.Context(), extensiontest.NewNopSettings(f.Type()), cfg)
 	require.NoError(t, err)
 
 	se, ok := extension.(storage.Extension)
@@ -300,7 +301,7 @@ func newTestEntity(name string) component.ID {
 }
 
 func TestCompaction(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	tempDir := t.TempDir()
 
@@ -308,7 +309,7 @@ func TestCompaction(t *testing.T) {
 	cfg := f.CreateDefaultConfig().(*Config)
 	cfg.Directory = tempDir
 
-	extension, err := f.Create(context.Background(), extensiontest.NewNopSettings(f.Type()), cfg)
+	extension, err := f.Create(t.Context(), extensiontest.NewNopSettings(f.Type()), cfg)
 	require.NoError(t, err)
 
 	se, ok := extension.(storage.Extension)
@@ -365,7 +366,7 @@ func TestCompaction(t *testing.T) {
 	require.Less(t, stats.Size(), newStats.Size())
 
 	// remove data from database
-	for i = 0; i < numEntries; i++ {
+	for i = range numEntries {
 		key = fmt.Sprintf("key_%d", i)
 		err = c.Delete(ctx, key)
 		require.NoError(t, err)
@@ -390,7 +391,7 @@ func TestCompaction(t *testing.T) {
 // TestCompactionRemoveTemp validates if temporary db used for compaction is removed afterwards
 // test is performed for both: the same and different than storage directories
 func TestCompactionRemoveTemp(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	tempDir := t.TempDir()
 
@@ -398,7 +399,7 @@ func TestCompactionRemoveTemp(t *testing.T) {
 	cfg := f.CreateDefaultConfig().(*Config)
 	cfg.Directory = tempDir
 
-	extension, err := f.Create(context.Background(), extensiontest.NewNopSettings(f.Type()), cfg)
+	extension, err := f.Create(t.Context(), extensiontest.NewNopSettings(f.Type()), cfg)
 	require.NoError(t, err)
 
 	se, ok := extension.(storage.Extension)
@@ -454,7 +455,7 @@ func TestCompactionRemoveTemp(t *testing.T) {
 }
 
 func TestCleanupOnStart(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	tempDir := t.TempDir()
 	// simulate left temporary compaction file from killed process
@@ -466,7 +467,7 @@ func TestCleanupOnStart(t *testing.T) {
 	cfg.Directory = tempDir
 	cfg.Compaction.Directory = tempDir
 	cfg.Compaction.CleanupOnStart = true
-	extension, err := f.Create(context.Background(), extensiontest.NewNopSettings(f.Type()), cfg)
+	extension, err := f.Create(t.Context(), extensiontest.NewNopSettings(f.Type()), cfg)
 	require.NoError(t, err)
 
 	se, ok := extension.(storage.Extension)
@@ -490,7 +491,7 @@ func TestCleanupOnStart(t *testing.T) {
 }
 
 func TestCompactionOnStart(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	f := NewFactory()
 
 	logCore, logObserver := observer.New(zap.DebugLevel)
@@ -506,7 +507,7 @@ func TestCompactionOnStart(t *testing.T) {
 	cfg.Directory = tempDir
 	cfg.Compaction.Directory = tempDir
 	cfg.Compaction.OnStart = true
-	extension, err := f.Create(context.Background(), set, cfg)
+	extension, err := f.Create(t.Context(), set, cfg)
 	require.NoError(t, err)
 
 	se, ok := extension.(storage.Extension)
@@ -523,7 +524,7 @@ func TestCompactionOnStart(t *testing.T) {
 	t.Cleanup(func() {
 		// At least one compaction should have happened on start
 		require.GreaterOrEqual(t, len(logObserver.FilterMessage("finished compaction").All()), 1)
-		require.NoError(t, client.Close(context.TODO()))
+		require.NoError(t, client.Close(t.Context()))
 	})
 }
 
@@ -604,11 +605,239 @@ func TestDirectoryCreation(t *testing.T) {
 			f := NewFactory()
 			config := tt.config(t, f)
 			if config != nil {
-				ext, err := f.Create(context.Background(), extensiontest.NewNopSettings(f.Type()), config)
+				ext, err := f.Create(t.Context(), extensiontest.NewNopSettings(f.Type()), config)
 				require.NoError(t, err)
 				require.NotNil(t, ext)
 				tt.validate(t, config)
 			}
+		})
+	}
+}
+
+func TestRecreate(t *testing.T) {
+	ctx := t.Context()
+	temp := t.TempDir()
+	f := NewFactory()
+
+	config := f.CreateDefaultConfig().(*Config)
+	config.Directory = temp
+
+	// step 1: create an extension with default config and write some data
+	{
+		ext, err := f.Create(ctx, extensiontest.NewNopSettings(f.Type()), config)
+		require.NoError(t, err)
+		require.NotNil(t, ext)
+
+		se, ok := ext.(storage.Extension)
+		require.True(t, ok)
+
+		client, err := se.GetClient(ctx, component.KindReceiver, component.MustNewID("file_log"), "")
+		require.NoError(t, err)
+		require.NotNil(t, client)
+
+		// write the data and make sure it is set in the subsequent get.
+		require.NoError(t, client.Set(ctx, "key", []byte("val")))
+		val, err := client.Get(ctx, "key")
+		require.Equal(t, val, []byte("val"))
+		require.NoError(t, err)
+
+		// close the extension
+		require.NoError(t, client.Close(ctx))
+		require.NoError(t, ext.Shutdown(ctx))
+	}
+
+	// step 2: re-create the extension to make sure that the data is therw
+	{
+		ext, err := f.Create(ctx, extensiontest.NewNopSettings(f.Type()), config)
+		require.NoError(t, err)
+		require.NotNil(t, ext)
+		se, ok := ext.(storage.Extension)
+		require.True(t, ok)
+
+		client, err := se.GetClient(ctx, component.KindReceiver, component.MustNewID("file_log"), "")
+		require.NoError(t, err)
+		require.NotNil(t, client)
+
+		// make sure that the data exists from the previous pass.
+		val, err := client.Get(ctx, "key")
+		require.Equal(t, val, []byte("val"))
+		require.NoError(t, err)
+
+		// close the extension
+		require.NoError(t, client.Close(ctx))
+		require.NoError(t, ext.Shutdown(ctx))
+	}
+
+	// step 3: re-create the extension, but with Recreate=true and make sure that the data still exists
+	// (since recreate now only happens on panic, not always when recreate=true)
+	{
+		config.Recreate = true
+		ext, err := f.Create(ctx, extensiontest.NewNopSettings(f.Type()), config)
+		require.NoError(t, err)
+		require.NotNil(t, ext)
+		se, ok := ext.(storage.Extension)
+		require.True(t, ok)
+
+		client, err := se.GetClient(ctx, component.KindReceiver, component.MustNewID("file_log"), "")
+		require.NoError(t, err)
+		require.NotNil(t, client)
+
+		// The data should still exist since no panic occurred
+		val, err := client.Get(ctx, "key")
+		require.Equal(t, val, []byte("val"))
+		require.NoError(t, err)
+
+		// close the extension
+		require.NoError(t, client.Close(ctx))
+		require.NoError(t, ext.Shutdown(ctx))
+	}
+}
+
+func TestHashing(t *testing.T) {
+	longNameErr := "file name too long"
+	if runtime.GOOS == "windows" {
+		longNameErr = "The filename, directory name, or volume label syntax is incorrect"
+	}
+	tests := []struct {
+		name        string
+		input       string
+		expectedErr string
+	}{
+		{
+			name:  "short name",
+			input: "short_filename.txt",
+		},
+		{
+			name:  "exactly max length",
+			input: strings.Repeat("a", 255),
+		},
+		{
+			name:        "exceeds max length",
+			input:       strings.Repeat("b", 1000),
+			expectedErr: longNameErr,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			file, err := os.OpenFile(filepath.Join(tempDir, tt.input), os.O_RDWR|os.O_CREATE, 0o644)
+			if tt.expectedErr != "" {
+				if !strings.Contains(err.Error(), tt.expectedErr) {
+					require.ErrorContains(t, err, tt.expectedErr)
+				}
+				require.Nil(t, file)
+				truncated := hash(tt.input)
+				file, err = os.OpenFile(filepath.Join(tempDir, truncated), os.O_RDWR|os.O_CREATE, 0o644)
+				require.NoError(t, err)
+				require.NotNil(t, file)
+				require.NoError(t, file.Close())
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, file)
+				require.NoError(t, file.Close())
+			}
+		})
+	}
+}
+
+func TestCompactionOnStartWithCorruption(t *testing.T) {
+	testCases := []struct {
+		name         string
+		recreate     bool
+		expectBackup bool
+		expectError  bool
+	}{
+		{
+			name:         "recreate enabled - backup and recreate on compaction panic",
+			recreate:     true,
+			expectBackup: true,
+		},
+		{
+			name:        "recreate disabled - error on compaction panic",
+			expectError: true,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx := t.Context()
+			f := NewFactory()
+			logCore, logObserver := observer.New(zap.DebugLevel)
+			set := extensiontest.NewNopSettings(f.Type())
+			set.Logger = zap.New(logCore)
+			tempDir := t.TempDir()
+
+			cfg := f.CreateDefaultConfig().(*Config)
+			cfg.Directory = tempDir
+			cfg.Compaction.Directory = tempDir
+			cfg.Compaction.OnStart = false // Initial creation: don't compact yet
+			cfg.Recreate = testCase.recreate
+
+			ext, err := f.Create(ctx, set, cfg)
+			require.NoError(t, err)
+			se, ok := ext.(storage.Extension)
+			require.True(t, ok)
+			require.NoError(t, se.Start(ctx, componenttest.NewNopHost()))
+
+			client, err := se.GetClient(ctx, component.KindReceiver, newTestEntity("my_component"), "")
+			require.NoError(t, err)
+			require.NoError(t, client.Set(ctx, "key1", []byte("value1")))
+			require.NoError(t, client.Close(ctx))
+			require.NoError(t, se.Shutdown(ctx))
+
+			cfg.Compaction.OnStart = true
+			ext, err = f.Create(ctx, set, cfg)
+			require.NoError(t, err)
+			se, ok = ext.(storage.Extension)
+			require.True(t, ok)
+			lfs, ok := se.(*localFileStorage)
+			require.True(t, ok)
+
+			client, err = se.GetClient(ctx, component.KindReceiver, newTestEntity("my_component"), "")
+			require.NoError(t, err)
+			fileClient, ok := client.(*fileStorageClient)
+			require.True(t, ok)
+			absoluteName := fileClient.db.Path()
+			fileClient.compactFunc = func(*bbolt.DB, *bbolt.DB, int64) error {
+				panic("simulated compaction panic due to corruption")
+			}
+
+			client, err = lfs.compactOnStart(ctx, fileClient, absoluteName)
+			require.NotEmpty(t, logObserver.FilterMessage("panic during on_start compaction, database may be corrupted").All())
+
+			if testCase.expectError {
+				require.ErrorContains(t, err, "compaction failed due to panic")
+				require.Nil(t, client)
+				require.NoError(t, se.Shutdown(ctx))
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, client)
+			if testCase.expectBackup {
+				files, readErr := os.ReadDir(tempDir)
+				require.NoError(t, readErr)
+				require.Condition(t, func() bool {
+					for _, file := range files {
+						if strings.Contains(file.Name(), ".backup") {
+							return true
+						}
+					}
+					return false
+				}, "backup file should be created after compaction panic")
+				require.NotEmpty(t, logObserver.FilterMessage("Corrupted database file renamed").All())
+			}
+
+			value, err := client.Get(ctx, "key1")
+			require.NoError(t, err)
+			require.Nil(t, value, "new database should be empty after recreation")
+			require.NoError(t, client.Set(ctx, "key2", []byte("value2")))
+			value, err = client.Get(ctx, "key2")
+			require.NoError(t, err)
+			require.Equal(t, []byte("value2"), value)
+			require.NoError(t, client.Close(ctx))
+			require.NoError(t, se.Shutdown(ctx))
 		})
 	}
 }

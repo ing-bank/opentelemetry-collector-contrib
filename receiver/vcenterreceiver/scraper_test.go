@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/featuregate"
 	"go.opentelemetry.io/collector/receiver/receivertest"
 	"go.uber.org/zap"
@@ -20,12 +21,13 @@ import (
 )
 
 func TestScrape(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
+	setResourcePoolMemoryUsageAttrFeatureGate(t, false)
 	mockServer := mock.MockServer(t, false)
 	defer mockServer.Close()
 
 	cfg := &Config{
-		MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig(),
+		MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig(),
 		Endpoint:             mockServer.URL,
 		Username:             mock.MockUsername,
 		Password:             mock.MockPassword,
@@ -35,17 +37,16 @@ func TestScrape(t *testing.T) {
 }
 
 func TestScrapeConfigsEnabled(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	mockServer := mock.MockServer(t, false)
 	defer mockServer.Close()
 
-	optConfigs := metadata.DefaultMetricsBuilderConfig()
+	optConfigs := metadata.NewDefaultMetricsBuilderConfig()
 	optConfigs.Metrics.VcenterHostMemoryCapacity.Enabled = true
 	optConfigs.Metrics.VcenterVMMemoryGranted.Enabled = true
 	optConfigs.Metrics.VcenterVMNetworkBroadcastPacketRate.Enabled = true
 	optConfigs.Metrics.VcenterVMNetworkMulticastPacketRate.Enabled = true
 	optConfigs.Metrics.VcenterVMCPUTime.Enabled = true
-	setResourcePoolMemoryUsageAttrFeatureGate(t, true)
 
 	cfg := &Config{
 		MetricsBuilderConfig: optConfigs,
@@ -58,19 +59,21 @@ func TestScrapeConfigsEnabled(t *testing.T) {
 }
 
 func TestScrape_TLS(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	mockServer := mock.MockServer(t, true)
 	defer mockServer.Close()
 
+	setResourcePoolMemoryUsageAttrFeatureGate(t, false)
+
 	cfg := &Config{
-		MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig(),
+		MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig(),
 		Endpoint:             mockServer.URL,
 		Username:             mock.MockUsername,
 		Password:             mock.MockPassword,
 	}
 
-	cfg.Insecure = true
-	cfg.InsecureSkipVerify = true
+	cfg.ClientConfig.Insecure = true
+	cfg.ClientConfig.InsecureSkipVerify = true
 
 	testScrape(ctx, t, cfg, "expected.yaml")
 }
@@ -96,16 +99,16 @@ func testScrape(ctx context.Context, t *testing.T, cfg *Config, fileName string)
 }
 
 func setResourcePoolMemoryUsageAttrFeatureGate(t *testing.T, val bool) {
-	wasEnabled := enableResourcePoolMemoryUsageAttr.IsEnabled()
+	wasEnabled := metadata.ReceiverVcenterResourcePoolMemoryUsageAttributeFeatureGate.IsEnabled()
 	err := featuregate.GlobalRegistry().Set(
-		enableResourcePoolMemoryUsageAttr.ID(),
+		metadata.ReceiverVcenterResourcePoolMemoryUsageAttributeFeatureGate.ID(),
 		val,
 	)
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
 		err := featuregate.GlobalRegistry().Set(
-			enableResourcePoolMemoryUsageAttr.ID(),
+			metadata.ReceiverVcenterResourcePoolMemoryUsageAttributeFeatureGate.ID(),
 			wasEnabled,
 		)
 		require.NoError(t, err)
@@ -113,13 +116,13 @@ func setResourcePoolMemoryUsageAttrFeatureGate(t *testing.T, val bool) {
 }
 
 func TestScrape_NoClient(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	scraper := &vcenterMetricScraper{
 		client: nil,
 		config: &Config{
 			Endpoint: "http://vcsa.localnet",
 		},
-		mb:     metadata.NewMetricsBuilder(metadata.DefaultMetricsBuilderConfig(), receivertest.NewNopSettings(metadata.Type)),
+		mb:     metadata.NewMetricsBuilder(metadata.NewDefaultMetricsBuilderConfig(), receivertest.NewNopSettings(metadata.Type)),
 		logger: zap.NewNop(),
 	}
 	metrics, err := scraper.scrape(ctx)
@@ -148,10 +151,10 @@ func TestStartFailures_Metrics(t *testing.T) {
 		},
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	for _, tc := range cases {
 		scraper := newVmwareVcenterScraper(zap.NewNop(), tc.cfg, receivertest.NewNopSettings(metadata.Type))
-		err := scraper.Start(ctx, nil)
+		err := scraper.Start(ctx, componenttest.NewNopHost())
 		if tc.err != nil {
 			require.ErrorContains(t, err, tc.err.Error())
 		} else {

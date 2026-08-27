@@ -13,7 +13,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component/componenttest"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/internal/metadata"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/ottltest"
 )
 
@@ -28,6 +30,11 @@ func Test_NewFunctionCall_invalid(t *testing.T) {
 			"testing_pmapgetsetter",
 			&pMapGetSetterArguments{},
 			functionWithPMapGetSetter,
+		),
+		createFactory[any](
+			"testing_pslicegetsetter",
+			&pSliceGetSetterArguments{},
+			functionWithPSliceGetSetter,
 		),
 		createFactory[any](
 			"testing_getsetter",
@@ -84,6 +91,11 @@ func Test_NewFunctionCall_invalid(t *testing.T) {
 			&optionalArgsArguments{},
 			functionWithOptionalArgs,
 		),
+		createFactory[any](
+			"testing_non_pointer_lambda",
+			&nonPointerLambdaArguments{},
+			functionWithNonPointerLambda,
+		),
 	)
 
 	p, _ := NewParser(
@@ -111,7 +123,7 @@ func Test_NewFunctionCall_invalid(t *testing.T) {
 				Arguments: []argument{
 					{
 						Value: value{
-							String: (ottltest.Strp("SHA256")),
+							String: new("SHA256"),
 						},
 					},
 				},
@@ -124,7 +136,20 @@ func Test_NewFunctionCall_invalid(t *testing.T) {
 				Arguments: []argument{
 					{
 						Value: value{
-							String: ottltest.Strp("not path"),
+							String: new("not path"),
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "not accessor (pslice)",
+			inv: editor{
+				Function: "testing_pslicegetsetter",
+				Arguments: []argument{
+					{
+						Value: value{
+							String: new("not path"),
 						},
 					},
 				},
@@ -137,7 +162,7 @@ func Test_NewFunctionCall_invalid(t *testing.T) {
 				Arguments: []argument{
 					{
 						Value: value{
-							String: ottltest.Strp("not path"),
+							String: new("not path"),
 						},
 					},
 				},
@@ -180,7 +205,7 @@ func Test_NewFunctionCall_invalid(t *testing.T) {
 					},
 					{
 						Value: value{
-							String: ottltest.Strp("test"),
+							String: new("test"),
 						},
 					},
 				},
@@ -206,12 +231,12 @@ func Test_NewFunctionCall_invalid(t *testing.T) {
 					},
 					{
 						Value: value{
-							String: ottltest.Strp("test"),
+							String: new("test"),
 						},
 					},
 					{
 						Value: value{
-							String: ottltest.Strp("test"),
+							String: new("test"),
 						},
 					},
 				},
@@ -225,7 +250,7 @@ func Test_NewFunctionCall_invalid(t *testing.T) {
 					{
 						Value: value{
 							Literal: &mathExprLiteral{
-								Int: ottltest.Intp(10),
+								Int: new(int64(10)),
 							},
 						},
 					},
@@ -239,17 +264,17 @@ func Test_NewFunctionCall_invalid(t *testing.T) {
 				Arguments: []argument{
 					{
 						Value: value{
-							String: ottltest.Strp("test"),
+							String: new("test"),
 						},
 					},
 					{
 						Value: value{
-							String: ottltest.Strp("test"),
+							String: new("test"),
 						},
 					},
 					{
 						Value: value{
-							String: ottltest.Strp("test"),
+							String: new("test"),
 						},
 					},
 				},
@@ -265,11 +290,11 @@ func Test_NewFunctionCall_invalid(t *testing.T) {
 							List: &list{
 								Values: []value{
 									{
-										String: ottltest.Strp("test"),
+										String: new("test"),
 									},
 									{
 										Literal: &mathExprLiteral{
-											Int: ottltest.Intp(10),
+											Int: new(int64(10)),
 										},
 									},
 								},
@@ -286,7 +311,7 @@ func Test_NewFunctionCall_invalid(t *testing.T) {
 				Arguments: []argument{
 					{
 						Value: value{
-							String: ottltest.Strp("test"),
+							String: new("test"),
 						},
 					},
 				},
@@ -313,20 +338,20 @@ func Test_NewFunctionCall_invalid(t *testing.T) {
 					},
 					{
 						Value: value{
-							String: ottltest.Strp("test"),
+							String: new("test"),
 						},
 					},
 					{
 						Name: "optional_arg",
 						Value: value{
-							String: ottltest.Strp("test_optional"),
+							String: new("test_optional"),
 						},
 					},
 					{
 						Name: "optional_float_arg",
 						Value: value{
 							Literal: &mathExprLiteral{
-								Float: ottltest.Floatp(1.1),
+								Float: new(1.1),
 							},
 						},
 					},
@@ -353,20 +378,20 @@ func Test_NewFunctionCall_invalid(t *testing.T) {
 					},
 					{
 						Value: value{
-							String: ottltest.Strp("test"),
+							String: new("test"),
 						},
 					},
 					{
 						Name: "no_such_name",
 						Value: value{
-							String: ottltest.Strp("test_optional"),
+							String: new("test_optional"),
 						},
 					},
 					{
 						Name: "optional_float_arg",
 						Value: value{
 							Literal: &mathExprLiteral{
-								Float: ottltest.Floatp(1.1),
+								Float: new(1.1),
 							},
 						},
 					},
@@ -386,7 +411,7 @@ func Test_NewFunctionCall_invalid(t *testing.T) {
 				Arguments: []argument{
 					{
 						Value: value{
-							Enum: (*enumSymbol)(ottltest.Strp("SYMBOL_NOT_FOUND")),
+							Enum: (*enumSymbol)(new("SYMBOL_NOT_FOUND")),
 						},
 					},
 				},
@@ -398,7 +423,7 @@ func Test_NewFunctionCall_invalid(t *testing.T) {
 				Function: "testing_functiongetter",
 				Arguments: []argument{
 					{
-						FunctionName: ottltest.Strp("SHA256"),
+						FunctionName: new("SHA256"),
 					},
 				},
 			},
@@ -413,6 +438,30 @@ func Test_NewFunctionCall_invalid(t *testing.T) {
 			name: "path parts not all used (pmap)",
 			inv: editor{
 				Function: "testing_pmapgetsetter",
+				Arguments: []argument{
+					{
+						Value: value{
+							Literal: &mathExprLiteral{
+								Path: &path{
+									Fields: []field{
+										{
+											Name: "name",
+										},
+										{
+											Name: "not-used",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "path parts not all used (pslice)",
+			inv: editor{
+				Function: "testing_pslicegetsetter",
 				Arguments: []argument{
 					{
 						Value: value{
@@ -471,10 +520,39 @@ func Test_NewFunctionCall_invalid(t *testing.T) {
 											Name: "name",
 											Keys: []key{
 												{
-													String: ottltest.Strp("foo"),
+													String: new("foo"),
 												},
 												{
-													String: ottltest.Strp("bar"),
+													String: new("bar"),
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "Keys not allowed (pslice)",
+			inv: editor{
+				Function: "testing_pslicegetsetter",
+				Arguments: []argument{
+					{
+						Value: value{
+							Literal: &mathExprLiteral{
+								Path: &path{
+									Fields: []field{
+										{
+											Name: "name",
+											Keys: []key{
+												{
+													String: new("foo"),
+												},
+												{
+													String: new("bar"),
 												},
 											},
 										},
@@ -500,12 +578,34 @@ func Test_NewFunctionCall_invalid(t *testing.T) {
 											Name: "name",
 											Keys: []key{
 												{
-													String: ottltest.Strp("foo"),
+													String: new("foo"),
 												},
 												{
-													String: ottltest.Strp("bar"),
+													String: new("bar"),
 												},
 											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "lambda expression argument that is not a pointer",
+			inv: editor{
+				Function: "testing_non_pointer_lambda",
+				Arguments: []argument{
+					{
+						Value: value{
+							Lambda: &lambdaExpr{
+								Params: []localIdentifierDecl{"value"},
+								Body: lambdaBody{
+									Value: &value{
+										Literal: &mathExprLiteral{
+											Path: &path{Fields: []field{{Name: "value"}}},
 										},
 									},
 								},
@@ -519,7 +619,7 @@ func Test_NewFunctionCall_invalid(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := p.newFunctionCall(tt.inv)
+			_, err := p.newParseContext().newFunctionCall(tt.inv)
 			t.Log(err)
 			assert.Error(t, err)
 		})
@@ -527,17 +627,13 @@ func Test_NewFunctionCall_invalid(t *testing.T) {
 }
 
 func Test_NewFunctionCall(t *testing.T) {
-	p, _ := NewParser(
-		defaultFunctionsForTests(),
-		testParsePath[any],
-		componenttest.NewNopTelemetrySettings(),
-		WithEnumParser[any](testParseEnum),
-	)
+	t.Cleanup(ottltest.SetFeatureGateForTest(t, metadata.OttlFunctionsEnableLambdaFeatureGate, true))
 
 	tests := []struct {
-		name string
-		inv  editor
-		want any
+		name      string
+		inv       editor
+		want      any
+		wantError string
 	}{
 		{
 			name: "no arguments",
@@ -573,13 +669,13 @@ func Test_NewFunctionCall(t *testing.T) {
 							List: &list{
 								Values: []value{
 									{
-										String: ottltest.Strp("test"),
+										String: new("test"),
 									},
 									{
-										String: ottltest.Strp("test"),
+										String: new("test"),
 									},
 									{
-										String: ottltest.Strp("test"),
+										String: new("test"),
 									},
 								},
 							},
@@ -600,17 +696,17 @@ func Test_NewFunctionCall(t *testing.T) {
 								Values: []value{
 									{
 										Literal: &mathExprLiteral{
-											Float: ottltest.Floatp(1.1),
+											Float: new(1.1),
 										},
 									},
 									{
 										Literal: &mathExprLiteral{
-											Float: ottltest.Floatp(1.2),
+											Float: new(1.2),
 										},
 									},
 									{
 										Literal: &mathExprLiteral{
-											Float: ottltest.Floatp(1.3),
+											Float: new(1.3),
 										},
 									},
 								},
@@ -632,17 +728,17 @@ func Test_NewFunctionCall(t *testing.T) {
 								Values: []value{
 									{
 										Literal: &mathExprLiteral{
-											Int: ottltest.Intp(1),
+											Int: new(int64(1)),
 										},
 									},
 									{
 										Literal: &mathExprLiteral{
-											Int: ottltest.Intp(1),
+											Int: new(int64(1)),
 										},
 									},
 									{
 										Literal: &mathExprLiteral{
-											Int: ottltest.Intp(1),
+											Int: new(int64(1)),
 										},
 									},
 								},
@@ -674,32 +770,32 @@ func Test_NewFunctionCall(t *testing.T) {
 										},
 									},
 									{
-										String: ottltest.Strp("test"),
+										String: new("test"),
 									},
 									{
 										Literal: &mathExprLiteral{
-											Int: ottltest.Intp(1),
+											Int: new(int64(1)),
 										},
 									},
 									{
 										Literal: &mathExprLiteral{
-											Float: ottltest.Floatp(1.1),
+											Float: new(1.1),
 										},
 									},
 									{
-										Bool: (*boolean)(ottltest.Boolp(true)),
+										Bool: (*boolean)(new(true)),
 									},
 									{
-										Enum: (*enumSymbol)(ottltest.Strp("TEST_ENUM")),
+										Enum: (*enumSymbol)(new("TEST_ENUM")),
 									},
 									{
 										List: &list{
 											Values: []value{
 												{
-													String: ottltest.Strp("test"),
+													String: new("test"),
 												},
 												{
-													String: ottltest.Strp("test"),
+													String: new("test"),
 												},
 											},
 										},
@@ -708,22 +804,22 @@ func Test_NewFunctionCall(t *testing.T) {
 										List: &list{
 											Values: []value{
 												{
-													String: ottltest.Strp("test"),
+													String: new("test"),
 												},
 												{
 													List: &list{
 														Values: []value{
 															{
-																String: ottltest.Strp("test"),
+																String: new("test"),
 															},
 															{
 																List: &list{
 																	Values: []value{
 																		{
-																			String: ottltest.Strp("test"),
+																			String: new("test"),
 																		},
 																		{
-																			String: ottltest.Strp("test"),
+																			String: new("test"),
 																		},
 																	},
 																},
@@ -774,10 +870,10 @@ func Test_NewFunctionCall(t *testing.T) {
 							List: &list{
 								Values: []value{
 									{
-										String: ottltest.Strp("test"),
+										String: new("test"),
 									},
 									{
-										String: ottltest.Strp("also test"),
+										String: new("also test"),
 									},
 								},
 							},
@@ -797,7 +893,13 @@ func Test_NewFunctionCall(t *testing.T) {
 							List: &list{
 								Values: []value{
 									{
-										String: ottltest.Strp("test"),
+										Literal: &mathExprLiteral{
+											Path: &path{
+												Fields: []field{
+													{Name: "dur1"},
+												},
+											},
+										},
 									},
 								},
 							},
@@ -816,7 +918,13 @@ func Test_NewFunctionCall(t *testing.T) {
 							List: &list{
 								Values: []value{
 									{
-										String: ottltest.Strp("test"),
+										Literal: &mathExprLiteral{
+											Path: &path{
+												Fields: []field{
+													{Name: "time1"},
+												},
+											},
+										},
 									},
 								},
 							},
@@ -835,11 +943,13 @@ func Test_NewFunctionCall(t *testing.T) {
 							List: &list{
 								Values: []value{
 									{
-										String: ottltest.Strp("1.1"),
+										Literal: &mathExprLiteral{
+											Float: new(1.1),
+										},
 									},
 									{
 										Literal: &mathExprLiteral{
-											Float: ottltest.Floatp(1),
+											Float: new(float64(1)),
 										},
 									},
 								},
@@ -861,12 +971,12 @@ func Test_NewFunctionCall(t *testing.T) {
 								Values: []value{
 									{
 										Literal: &mathExprLiteral{
-											Int: ottltest.Intp(1),
+											Int: new(int64(1)),
 										},
 									},
 									{
 										Literal: &mathExprLiteral{
-											Int: ottltest.Intp(2),
+											Int: new(int64(2)),
 										},
 									},
 								},
@@ -939,6 +1049,76 @@ func Test_NewFunctionCall(t *testing.T) {
 			want: 2,
 		},
 		{
+			name: "pslicegetsetter arg",
+			inv: editor{
+				Function: "testing_pslicegetsetter",
+				Arguments: []argument{
+					{
+						Value: value{
+							Literal: &mathExprLiteral{
+								Path: &path{
+									Fields: []field{
+										{
+											Name: "name",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "pslicegetter slice arg",
+			inv: editor{
+				Function: "testing_pslicegetter_slice",
+				Arguments: []argument{
+					{
+						Value: value{
+							List: &list{
+								Values: []value{
+									{
+										List: &list{
+											Values: []value{
+												{
+													Literal: &mathExprLiteral{
+														Int: new(int64(1)),
+													},
+												},
+												{
+													Literal: &mathExprLiteral{
+														Int: new(int64(2)),
+													},
+												},
+											},
+										},
+									},
+									{
+										List: &list{
+											Values: []value{
+												{
+													Literal: &mathExprLiteral{
+														Int: new(int64(1)),
+													},
+												},
+												{
+													Literal: &mathExprLiteral{
+														Int: new(int64(2)),
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: 2,
+		},
+		{
 			name: "stringlikegetter slice arg",
 			inv: editor{
 				Function: "testing_stringlikegetter_slice",
@@ -948,11 +1128,11 @@ func Test_NewFunctionCall(t *testing.T) {
 							List: &list{
 								Values: []value{
 									{
-										String: ottltest.Strp("test"),
+										String: new("test"),
 									},
 									{
 										Literal: &mathExprLiteral{
-											Int: ottltest.Intp(1),
+											Int: new(int64(1)),
 										},
 									},
 								},
@@ -973,11 +1153,11 @@ func Test_NewFunctionCall(t *testing.T) {
 							List: &list{
 								Values: []value{
 									{
-										String: ottltest.Strp("1.1"),
+										String: new("1.1"),
 									},
 									{
 										Literal: &mathExprLiteral{
-											Float: ottltest.Floatp(1.1),
+											Float: new(1.1),
 										},
 									},
 								},
@@ -998,11 +1178,11 @@ func Test_NewFunctionCall(t *testing.T) {
 							List: &list{
 								Values: []value{
 									{
-										String: ottltest.Strp("1"),
+										String: new("1"),
 									},
 									{
 										Literal: &mathExprLiteral{
-											Float: ottltest.Floatp(1.1),
+											Float: new(1.1),
 										},
 									},
 								},
@@ -1086,7 +1266,7 @@ func Test_NewFunctionCall(t *testing.T) {
 				Arguments: []argument{
 					{
 						Value: value{
-							IsNil: (*isNil)(ottltest.Boolp(true)),
+							IsNil: (*isNil)(new(true)),
 						},
 					},
 				},
@@ -1103,20 +1283,20 @@ func Test_NewFunctionCall(t *testing.T) {
 							List: &list{
 								Values: []value{
 									{
-										String: ottltest.Strp("test"),
+										String: new("test"),
 									},
 									{
 										Literal: &mathExprLiteral{
-											Int: ottltest.Intp(1),
+											Int: new(int64(1)),
 										},
 									},
 									{
 										Literal: &mathExprLiteral{
-											Float: ottltest.Floatp(1.1),
+											Float: new(1.1),
 										},
 									},
 									{
-										Bool: (*boolean)(ottltest.Boolp(true)),
+										Bool: (*boolean)(new(true)),
 									},
 									{
 										Bytes: (*byteSlice)(&[]byte{1, 2, 3, 4, 5, 6, 7, 8}),
@@ -1169,7 +1349,7 @@ func Test_NewFunctionCall(t *testing.T) {
 				Arguments: []argument{
 					{
 						Value: value{
-							String: ottltest.Strp("test"),
+							String: new("test"),
 						},
 					},
 				},
@@ -1183,7 +1363,13 @@ func Test_NewFunctionCall(t *testing.T) {
 				Arguments: []argument{
 					{
 						Value: value{
-							String: ottltest.Strp("test"),
+							Literal: &mathExprLiteral{
+								Path: &path{
+									Fields: []field{
+										{Name: "dur1"},
+									},
+								},
+							},
 						},
 					},
 				},
@@ -1196,7 +1382,13 @@ func Test_NewFunctionCall(t *testing.T) {
 				Arguments: []argument{
 					{
 						Value: value{
-							String: ottltest.Strp("test"),
+							Literal: &mathExprLiteral{
+								Path: &path{
+									Fields: []field{
+										{Name: "time1"},
+									},
+								},
+							},
 						},
 					},
 				},
@@ -1208,7 +1400,7 @@ func Test_NewFunctionCall(t *testing.T) {
 				Function: "testing_functiongetter",
 				Arguments: []argument{
 					{
-						FunctionName: ottltest.Strp("SHA256"),
+						FunctionName: new("SHA256"),
 					},
 				},
 			},
@@ -1220,7 +1412,7 @@ func Test_NewFunctionCall(t *testing.T) {
 				Function: "testing_functiongetter",
 				Arguments: []argument{
 					{
-						FunctionName: ottltest.Strp("Sha256"),
+						FunctionName: new("Sha256"),
 					},
 				},
 			},
@@ -1233,7 +1425,7 @@ func Test_NewFunctionCall(t *testing.T) {
 				Arguments: []argument{
 					{
 						Value: value{
-							Bool: (*boolean)(ottltest.Boolp(false)),
+							Bool: (*boolean)(new(false)),
 						},
 					},
 				},
@@ -1247,12 +1439,14 @@ func Test_NewFunctionCall(t *testing.T) {
 				Arguments: []argument{
 					{
 						Value: value{
-							String: ottltest.Strp("1.1"),
+							Literal: &mathExprLiteral{
+								Float: new(1.1),
+							},
 						},
 					},
 				},
 			},
-			want: nil,
+			want: "anything",
 		},
 		{
 			name: "floatlikegetter arg",
@@ -1261,7 +1455,7 @@ func Test_NewFunctionCall(t *testing.T) {
 				Arguments: []argument{
 					{
 						Value: value{
-							Bool: (*boolean)(ottltest.Boolp(false)),
+							Bool: (*boolean)(new(false)),
 						},
 					},
 				},
@@ -1276,7 +1470,7 @@ func Test_NewFunctionCall(t *testing.T) {
 					{
 						Value: value{
 							Literal: &mathExprLiteral{
-								Int: ottltest.Intp(1),
+								Int: new(int64(1)),
 							},
 						},
 					},
@@ -1292,13 +1486,13 @@ func Test_NewFunctionCall(t *testing.T) {
 					{
 						Value: value{
 							Literal: &mathExprLiteral{
-								Float: ottltest.Floatp(1.1),
+								Int: new(int64(1)),
 							},
 						},
 					},
 				},
 			},
-			want: nil,
+			want: "anything",
 		},
 		{
 			name: "byteslicelikegetter arg",
@@ -1337,13 +1531,40 @@ func Test_NewFunctionCall(t *testing.T) {
 			want: nil,
 		},
 		{
+			name: "pslicegetter arg",
+			inv: editor{
+				Function: "testing_pslicegetter",
+				Arguments: []argument{
+					{
+						Value: value{
+							List: &list{
+								Values: []value{
+									{
+										Literal: &mathExprLiteral{
+											Int: new(int64(1)),
+										},
+									},
+									{
+										Literal: &mathExprLiteral{
+											Int: new(int64(2)),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: nil,
+		},
+		{
 			name: "string arg",
 			inv: editor{
 				Function: "testing_string",
 				Arguments: []argument{
 					{
 						Value: value{
-							String: ottltest.Strp("test"),
+							String: new("test"),
 						},
 					},
 				},
@@ -1358,7 +1579,7 @@ func Test_NewFunctionCall(t *testing.T) {
 					{
 						Value: value{
 							Literal: &mathExprLiteral{
-								Float: ottltest.Floatp(1.1),
+								Float: new(1.1),
 							},
 						},
 					},
@@ -1374,7 +1595,7 @@ func Test_NewFunctionCall(t *testing.T) {
 					{
 						Value: value{
 							Literal: &mathExprLiteral{
-								Int: ottltest.Intp(1),
+								Int: new(int64(1)),
 							},
 						},
 					},
@@ -1389,7 +1610,7 @@ func Test_NewFunctionCall(t *testing.T) {
 				Arguments: []argument{
 					{
 						Value: value{
-							Bool: (*boolean)(ottltest.Boolp(true)),
+							Bool: (*boolean)(new(true)),
 						},
 					},
 				},
@@ -1430,20 +1651,20 @@ func Test_NewFunctionCall(t *testing.T) {
 					},
 					{
 						Value: value{
-							String: ottltest.Strp("test"),
+							String: new("test"),
 						},
 					},
 					{
 						Value: value{
 							Literal: &mathExprLiteral{
-								Float: ottltest.Floatp(1.1),
+								Float: new(1.1),
 							},
 						},
 					},
 					{
 						Value: value{
 							Literal: &mathExprLiteral{
-								Int: ottltest.Intp(1),
+								Int: new(int64(1)),
 							},
 						},
 					},
@@ -1471,18 +1692,18 @@ func Test_NewFunctionCall(t *testing.T) {
 					},
 					{
 						Value: value{
-							String: ottltest.Strp("test"),
+							String: new("test"),
 						},
 					},
 					{
 						Value: value{
-							String: ottltest.Strp("test_optional"),
+							String: new("test_optional"),
 						},
 					},
 					{
 						Value: value{
 							Literal: &mathExprLiteral{
-								Float: ottltest.Floatp(1.1),
+								Float: new(1.1),
 							},
 						},
 					},
@@ -1510,20 +1731,20 @@ func Test_NewFunctionCall(t *testing.T) {
 					},
 					{
 						Value: value{
-							String: ottltest.Strp("test"),
+							String: new("test"),
 						},
 					},
 					{
 						Name: "optional_arg",
 						Value: value{
-							String: ottltest.Strp("test_optional"),
+							String: new("test_optional"),
 						},
 					},
 					{
 						Name: "optional_float_arg",
 						Value: value{
 							Literal: &mathExprLiteral{
-								Float: ottltest.Floatp(1.1),
+								Float: new(1.1),
 							},
 						},
 					},
@@ -1538,7 +1759,7 @@ func Test_NewFunctionCall(t *testing.T) {
 				Arguments: []argument{
 					{
 						Value: value{
-							Enum: (*enumSymbol)(ottltest.Strp("TEST_ENUM")),
+							Enum: (*enumSymbol)(new("TEST_ENUM")),
 						},
 					},
 				},
@@ -1559,10 +1780,40 @@ func Test_NewFunctionCall(t *testing.T) {
 											Name: "attributes",
 											Keys: []key{
 												{
-													String: ottltest.Strp("foo"),
+													String: new("foo"),
 												},
 												{
-													String: ottltest.Strp("bar"),
+													String: new("bar"),
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: nil,
+		},
+		{
+			name: "Complex Indexing (pslice)",
+			inv: editor{
+				Function: "testing_pslicegetsetter",
+				Arguments: []argument{
+					{
+						Value: value{
+							Literal: &mathExprLiteral{
+								Path: &path{
+									Fields: []field{
+										{
+											Name: "attributes",
+											Keys: []key{
+												{
+													Int: new(int64(0)),
+												},
+												{
+													String: new("bar"),
 												},
 											},
 										},
@@ -1589,10 +1840,10 @@ func Test_NewFunctionCall(t *testing.T) {
 											Name: "attributes",
 											Keys: []key{
 												{
-													String: ottltest.Strp("foo"),
+													String: new("foo"),
 												},
 												{
-													String: ottltest.Strp("bar"),
+													String: new("bar"),
 												},
 											},
 										},
@@ -1609,6 +1860,28 @@ func Test_NewFunctionCall(t *testing.T) {
 			name: "path that allows keys but none have been specified (pmap)",
 			inv: editor{
 				Function: "testing_pmapgetsetter",
+				Arguments: []argument{
+					{
+						Value: value{
+							Literal: &mathExprLiteral{
+								Path: &path{
+									Fields: []field{
+										{
+											Name: "attributes",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: nil,
+		},
+		{
+			name: "path that allows keys but none have been specified (pslice)",
+			inv: editor{
+				Function: "testing_pslicegetsetter",
 				Arguments: []argument{
 					{
 						Value: value{
@@ -1649,15 +1922,316 @@ func Test_NewFunctionCall(t *testing.T) {
 			},
 			want: nil,
 		},
+		{
+			name: "lambda arg",
+			inv: editor{
+				Function: "eval_lambda",
+				Arguments: []argument{
+					{
+						Value: value{
+							Lambda: &lambdaExpr{
+								Params: []localIdentifierDecl{"value"},
+								Body: lambdaBody{
+									Value: &value{
+										Literal: &mathExprLiteral{
+											Path: &path{Fields: []field{{Name: "value"}}},
+										},
+									},
+								},
+							},
+						},
+					},
+					{
+						Value: value{
+							List: &list{
+								Values: []value{
+									{
+										String: new("hello lambda"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: "hello lambda",
+		},
+		{
+			name: "lambda arg with slice indexing",
+			inv: editor{
+				Function: "eval_lambda",
+				Arguments: []argument{
+					{
+						Value: value{
+							Lambda: &lambdaExpr{
+								Params: []localIdentifierDecl{"value"},
+								Body: lambdaBody{
+									Value: &value{
+										Literal: &mathExprLiteral{
+											Path: &path{
+												Fields: []field{{
+													Name: "value",
+													Keys: []key{
+														{
+															Int: new(int64(1)),
+														},
+														{
+															Int: new(int64(0)),
+														},
+													},
+												}},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					{
+						Value: value{
+							List: &list{
+								Values: []value{
+									{
+										List: &list{
+											Values: []value{
+												{
+													String: new("first"),
+												},
+												{
+													List: &list{
+														Values: []value{
+															{
+																String: new("second"),
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: "second",
+		},
+		{
+			name: "lambda arg with map indexing",
+			inv: editor{
+				Function: "eval_lambda",
+				Arguments: []argument{
+					{
+						Value: value{
+							Lambda: &lambdaExpr{
+								Params: []localIdentifierDecl{"value"},
+								Body: lambdaBody{
+									Value: &value{
+										Literal: &mathExprLiteral{
+											Path: &path{
+												Fields: []field{{
+													Name: "value",
+													Keys: []key{
+														{
+															String: new("one"),
+														},
+														{
+															String: new("two"),
+														},
+													},
+												}},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					{
+						Value: value{
+							List: &list{
+								Values: []value{
+									{
+										Map: &mapValue{
+											Values: []mapItem{
+												{
+													Key: new("one"),
+													Value: &value{
+														Map: &mapValue{
+															Values: []mapItem{
+																{
+																	Key: new("two"),
+																	Value: &value{
+																		Literal: &mathExprLiteral{
+																			Int: new(int64(2)),
+																		},
+																	},
+																},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: int64(2),
+		},
+		{
+			name: "lambda arg with duplicate formals",
+			inv: editor{
+				Function: "eval_lambda",
+				Arguments: []argument{
+					{
+						Value: value{
+							Lambda: &lambdaExpr{
+								Params: []localIdentifierDecl{"value", "value"},
+								Body: lambdaBody{
+									Value: &value{
+										Literal: &mathExprLiteral{
+											Path: &path{Fields: []field{{Name: "value"}}},
+										},
+									},
+								},
+							},
+						},
+					},
+					{
+						Value: value{
+							List: &list{
+								Values: []value{
+									{
+										String: new("hello lambda"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantError: `duplicate local identifier "value"`,
+		},
+		{
+			name: "lambda arg with duplicate blank formals",
+			inv: editor{
+				Function: "eval_lambda",
+				Arguments: []argument{
+					{
+						Value: value{
+							Lambda: &lambdaExpr{
+								Params: []localIdentifierDecl{"_", "_"},
+								Body: lambdaBody{
+									Value: &value{
+										String: new("ok"),
+									},
+								},
+							},
+						},
+					},
+					{
+						Value: value{
+							List: &list{
+								Values: []value{
+									{
+										String: new("skip"),
+									},
+									{
+										String: new("ignore"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: "ok",
+		},
+		{
+			name: "lambda arg with expression body",
+			inv: editor{
+				Function: "eval_lambda",
+				Arguments: []argument{
+					{
+						Value: value{
+							Lambda: &lambdaExpr{
+								Params: []localIdentifierDecl{"a", "b"},
+								Body: lambdaBody{
+									Expr: &booleanExpression{
+										Left: &term{
+											Left: &booleanValue{
+												Comparison: &comparison{
+													Left: value{
+														Literal: &mathExprLiteral{
+															Path: &path{Fields: []field{{Name: "a"}}},
+														},
+													},
+													Op: eq,
+													Right: value{
+														Literal: &mathExprLiteral{
+															Path: &path{Fields: []field{{Name: "b"}}},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					{
+						Value: value{
+							List: &list{
+								Values: []value{
+									{
+										String: new("same value"),
+									},
+									{
+										String: new("same value"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: true,
+		},
 	}
+
+	p, _ := NewParser(
+		defaultFunctionsForTests(),
+		testParsePath[any],
+		componenttest.NewNopTelemetrySettings(),
+		WithEnumParser[any](testParseEnum),
+	)
+
+	testMap := pcommon.NewMap()
+	testMap.PutStr("foo", "bar")
+
+	testSlice := pcommon.NewSlice()
+	testSlice.AppendEmpty().SetStr("test")
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fn, err := p.newFunctionCall(tt.inv)
-			assert.NoError(t, err)
-
+			fn, err := p.newParseContext().newFunctionCall(tt.inv)
+			if tt.wantError != "" {
+				require.ErrorContains(t, err, tt.wantError)
+				return
+			}
+			require.NoError(t, err)
+			result, err := fn.Eval(t.Context(), nil)
 			if tt.want != nil {
-				result, _ := fn.Eval(context.Background(), nil)
+				require.NoError(t, err)
 				assert.Equal(t, tt.want, result)
+			} else if tt.wantError != "" {
+				require.ErrorContains(t, err, tt.wantError)
 			}
 		})
 	}
@@ -1695,18 +2269,18 @@ func Test_ArgumentsNotMutated(t *testing.T) {
 			},
 			{
 				Value: value{
-					String: ottltest.Strp("test"),
+					String: new("test"),
 				},
 			},
 			{
 				Value: value{
-					String: ottltest.Strp("test_optional"),
+					String: new("test_optional"),
 				},
 			},
 			{
 				Value: value{
 					Literal: &mathExprLiteral{
-						Float: ottltest.Floatp(1.1),
+						Float: new(1.1),
 					},
 				},
 			},
@@ -1731,20 +2305,21 @@ func Test_ArgumentsNotMutated(t *testing.T) {
 			},
 			{
 				Value: value{
-					String: ottltest.Strp("test"),
+					String: new("test"),
 				},
 			},
 		},
 	}
 
-	fn, err := p.newFunctionCall(invWithOptArg)
+	pc := p.newParseContext()
+	fn, err := pc.newFunctionCall(invWithOptArg)
 	require.NoError(t, err)
-	res, _ := fn.Eval(context.Background(), nil)
+	res, _ := fn.Eval(t.Context(), nil)
 	require.Equal(t, 4, res)
 
-	fn, err = p.newFunctionCall(invWithoutOptArg)
+	fn, err = pc.newFunctionCall(invWithoutOptArg)
 	require.NoError(t, err)
-	res, _ = fn.Eval(context.Background(), nil)
+	res, _ = fn.Eval(t.Context(), nil)
 	require.Equal(t, 2, res)
 
 	assert.Zero(t, args.OptionalArg)
@@ -1873,6 +2448,16 @@ func functionWithPMapGetterSlice(getters []PMapGetter[any]) (ExprFunc[any], erro
 	}, nil
 }
 
+type pSliceGetterSliceArguments struct {
+	PSliceGetter []PSliceGetter[any]
+}
+
+func functionWithPSliceGetterSlice(getters []PSliceGetter[any]) (ExprFunc[any], error) {
+	return func(context.Context, any) (any, error) {
+		return len(getters), nil
+	}, nil
+}
+
 type stringLikeGetterSliceArguments struct {
 	StringLikeGetters []StringLikeGetter[any]
 }
@@ -1973,6 +2558,45 @@ func functionWithFunctionGetter(FunctionGetter[any]) (ExprFunc[any], error) {
 	}, nil
 }
 
+type nonPointerLambdaArguments struct {
+	Expr LambdaExpression[any]
+}
+
+func functionWithNonPointerLambda(LambdaExpression[any]) (ExprFunc[any], error) {
+	return func(context.Context, any) (any, error) {
+		return nil, nil
+	}, nil
+}
+
+type evalLambdaArguments[K any] struct {
+	Expr *LambdaExpression[K]
+	Args []Getter[K]
+}
+
+//nolint:unparam // returning (ExprFunc[K], error) is required by this local test framework
+func evalLambdaFunction[K any](expr *LambdaExpression[any], args []Getter[K]) (ExprFunc[K], error) {
+	return func(ctx context.Context, tCtx K) (any, error) {
+		if err := expr.ValidateArity(len(args)); err != nil {
+			return nil, err
+		}
+		lambda, err := expr.Activate(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer lambda.Close()
+		for i, getter := range args {
+			val, err := getter.Get(ctx, tCtx)
+			if err != nil {
+				return nil, err
+			}
+			if err := lambda.SetArg(i, val); err != nil {
+				return nil, err
+			}
+		}
+		return lambda.Eval(tCtx)
+	}, nil
+}
+
 type stringLikeGetterArguments struct {
 	StringLikeGetterArg StringLikeGetter[any]
 }
@@ -2048,6 +2672,26 @@ type pMapGetterArguments struct {
 }
 
 func functionWithPMapGetter(PMapGetter[any]) (ExprFunc[any], error) {
+	return func(context.Context, any) (any, error) {
+		return "anything", nil
+	}, nil
+}
+
+type pSliceGetSetterArguments struct {
+	PSliceGetSetterArg PSliceGetSetter[any]
+}
+
+func functionWithPSliceGetSetter(PSliceGetSetter[any]) (ExprFunc[any], error) {
+	return func(context.Context, any) (any, error) {
+		return "anything", nil
+	}, nil
+}
+
+type pSliceGetterArguments struct {
+	PSliceArg PSliceGetter[any]
+}
+
+func functionWithPSliceGetter(PSliceGetter[any]) (ExprFunc[any], error) {
 	return func(context.Context, any) (any, error) {
 		return "anything", nil
 	}, nil
@@ -2260,6 +2904,11 @@ func defaultFunctionsForTests() map[string]Factory[any] {
 			functionWithPMapGetterSlice,
 		),
 		createFactory[any](
+			"testing_pslicegetter_slice",
+			&pSliceGetterSliceArguments{},
+			functionWithPSliceGetterSlice,
+		),
+		createFactory[any](
 			"testing_setter",
 			&setterArguments{},
 			functionWithSetter,
@@ -2268,6 +2917,11 @@ func defaultFunctionsForTests() map[string]Factory[any] {
 			"testing_pmapgetsetter",
 			&pMapGetSetterArguments{},
 			functionWithPMapGetSetter,
+		),
+		createFactory[any](
+			"testing_pslicegetsetter",
+			&pSliceGetSetterArguments{},
+			functionWithPSliceGetSetter,
 		),
 		createFactory[any](
 			"testing_getsetter",
@@ -2345,6 +2999,11 @@ func defaultFunctionsForTests() map[string]Factory[any] {
 			functionWithPMapGetter,
 		),
 		createFactory[any](
+			"testing_pslicegetter",
+			&pSliceGetterArguments{},
+			functionWithPSliceGetter,
+		),
+		createFactory[any](
 			"testing_string",
 			&stringArguments{},
 			functionWithString,
@@ -2378,6 +3037,11 @@ func defaultFunctionsForTests() map[string]Factory[any] {
 			"testing_enum",
 			&enumArguments{},
 			functionWithEnum,
+		),
+		createFactory[any](
+			"eval_lambda",
+			&evalLambdaArguments[any]{},
+			evalLambdaFunction[any],
 		),
 	)
 }
@@ -2464,7 +3128,7 @@ func Test_basePath_isComplete(t *testing.T) {
 			if tt.expectedError {
 				assert.Error(t, err)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 			}
 		})
 	}
@@ -2513,7 +3177,7 @@ func Test_basePath_NextWithIsComplete(t *testing.T) {
 			if tt.expectedError {
 				assert.Error(t, err)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 			}
 		})
 	}
@@ -2535,14 +3199,14 @@ func Test_newPath(t *testing.T) {
 			Name: "string",
 			Keys: []key{
 				{
-					String: ottltest.Strp("key"),
+					String: new("key"),
 				},
 			},
 		},
 	}
 
-	np, err := ps.newPath(&path{Fields: fields})
-	assert.NoError(t, err)
+	np, err := ps.newParseContext().newPath(&path{Fields: fields})
+	require.NoError(t, err)
 	p := Path[any](np)
 	assert.Equal(t, "body", p.Name())
 	assert.Nil(t, p.Keys())
@@ -2552,11 +3216,11 @@ func Test_newPath(t *testing.T) {
 	assert.Equal(t, "body.string[key]", p.String())
 	assert.Nil(t, p.Next())
 	assert.Len(t, p.Keys(), 1)
-	v, err := p.Keys()[0].String(context.Background(), struct{}{})
-	assert.NoError(t, err)
+	v, err := p.Keys()[0].String(t.Context(), struct{}{})
+	require.NoError(t, err)
 	assert.Equal(t, "key", *v)
-	i, err := p.Keys()[0].Int(context.Background(), struct{}{})
-	assert.NoError(t, err)
+	i, err := p.Keys()[0].Int(t.Context(), struct{}{})
+	require.NoError(t, err)
 	assert.Nil(t, i)
 }
 
@@ -2613,19 +3277,19 @@ func Test_newPath_WithPathContextNames(t *testing.T) {
 						Name: "string",
 						Keys: []key{
 							{
-								String: ottltest.Strp("key"),
+								String: new("key"),
 							},
 						},
 					},
 				},
 			}
 
-			np, err := ps.newPath(gp)
+			np, err := ps.newParseContext().newPath(gp)
 			if tt.expectedError != "" {
 				assert.Error(t, err, tt.expectedError)
 				return
 			}
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			p := Path[any](np)
 			contextParsedAsField := len(tt.pathContextNames) == 0 && tt.pathContext != ""
 			if contextParsedAsField {
@@ -2654,11 +3318,11 @@ func Test_newPath_WithPathContextNames(t *testing.T) {
 			}
 			assert.Nil(t, p.Next())
 			assert.Len(t, p.Keys(), 1)
-			v, err := p.Keys()[0].String(context.Background(), struct{}{})
-			assert.NoError(t, err)
+			v, err := p.Keys()[0].String(t.Context(), struct{}{})
+			require.NoError(t, err)
 			assert.Equal(t, "key", *v)
-			i, err := p.Keys()[0].Int(context.Background(), struct{}{})
-			assert.NoError(t, err)
+			i, err := p.Keys()[0].Int(t.Context(), struct{}{})
+			require.NoError(t, err)
 			assert.Nil(t, i)
 		})
 	}
@@ -2666,20 +3330,20 @@ func Test_newPath_WithPathContextNames(t *testing.T) {
 
 func Test_baseKey_String(t *testing.T) {
 	bp := baseKey[any]{
-		s: ottltest.Strp("test"),
+		s: new("test"),
 	}
-	s, err := bp.String(context.Background(), nil)
-	assert.NoError(t, err)
+	s, err := bp.String(t.Context(), nil)
+	require.NoError(t, err)
 	assert.NotNil(t, s)
 	assert.Equal(t, "test", *s)
 }
 
 func Test_baseKey_Int(t *testing.T) {
 	bp := baseKey[any]{
-		i: ottltest.Intp(1),
+		i: new(int64(1)),
 	}
-	i, err := bp.Int(context.Background(), nil)
-	assert.NoError(t, err)
+	i, err := bp.Int(t.Context(), nil)
+	require.NoError(t, err)
 	assert.NotNil(t, i)
 	assert.Equal(t, int64(1), *i)
 }
@@ -2694,22 +3358,89 @@ func Test_newKey(t *testing.T) {
 	)
 	keys := []key{
 		{
-			String: ottltest.Strp("foo"),
+			String: new("foo"),
 		},
 		{
-			String: ottltest.Strp("bar"),
+			String: new("bar"),
 		},
 	}
-	ks, _ := ps.newKeys(keys)
+	ks, _ := ps.newParseContext().newKeys(keys)
 
 	assert.Len(t, ks, 2)
 
-	s, err := ks[0].String(context.Background(), nil)
-	assert.NoError(t, err)
+	s, err := ks[0].String(t.Context(), nil)
+	require.NoError(t, err)
 	assert.NotNil(t, s)
 	assert.Equal(t, "foo", *s)
-	s, err = ks[1].String(context.Background(), nil)
-	assert.NoError(t, err)
+	s, err = ks[1].String(t.Context(), nil)
+	require.NoError(t, err)
 	assert.NotNil(t, s)
 	assert.Equal(t, "bar", *s)
+}
+
+func Test_Optional_Get(t *testing.T) {
+	opt := NewTestingOptional[string]("foo")
+	assert.Equal(t, "foo", opt.Get())
+}
+
+func Test_Optional_IsEmpty(t *testing.T) {
+	setOpt := NewTestingOptional[string]("foo")
+	assert.False(t, setOpt.IsEmpty())
+
+	emptyOpt := Optional[any]{}
+	assert.True(t, emptyOpt.IsEmpty())
+}
+
+func Test_Optional_GetOr(t *testing.T) {
+	emptyOpt := Optional[string]{}
+	assert.Equal(t, "bar", emptyOpt.GetOr("bar"))
+
+	setOpt := NewTestingOptional[string]("foo")
+	assert.Equal(t, "foo", setOpt.GetOr("bar"))
+}
+
+func Test_OttlFunctionsEnableLambdaFeatureGate(t *testing.T) {
+	funcWithLambda := editor{
+		Function: "eval_lambda",
+		Arguments: []argument{
+			{
+				Value: value{
+					Lambda: &lambdaExpr{
+						Params: []localIdentifierDecl{"value"},
+						Body: lambdaBody{
+							Value: &value{
+								Literal: &mathExprLiteral{
+									Path: &path{Fields: []field{{Name: "value"}}},
+								},
+							},
+						},
+					},
+				},
+			},
+			{
+				Value: value{
+					List: &list{Values: []value{{String: new("hello")}}},
+				},
+			},
+		},
+	}
+
+	p, _ := NewParser(
+		defaultFunctionsForTests(),
+		testParsePath[any],
+		componenttest.NewNopTelemetrySettings(),
+		WithEnumParser[any](testParseEnum),
+	)
+
+	t.Run("enabled with lambda", func(t *testing.T) {
+		defer ottltest.SetFeatureGateForTest(t, metadata.OttlFunctionsEnableLambdaFeatureGate, true)()
+		_, err := p.newParseContext().newFunctionCall(funcWithLambda)
+		require.NoError(t, err)
+	})
+
+	t.Run("disabled with lambda", func(t *testing.T) {
+		defer ottltest.SetFeatureGateForTest(t, metadata.OttlFunctionsEnableLambdaFeatureGate, false)()
+		_, err := p.newParseContext().newFunctionCall(funcWithLambda)
+		require.ErrorContains(t, err, "lambda expression arguments require the `ottl.functions.enableLambda` feature gate to be enabled")
+	})
 }

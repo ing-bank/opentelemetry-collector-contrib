@@ -4,7 +4,6 @@
 package couchdbreceiver // import "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/couchdbreceiver"
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,13 +19,14 @@ import (
 
 func defaultClient(t *testing.T, endpoint string) client {
 	cfg := createDefaultConfig().(*Config)
-	cfg.Endpoint = endpoint
+	cfg.ClientConfig.Endpoint = endpoint
 
 	couchdbClient, err := newCouchDBClient(
-		context.Background(),
+		t.Context(),
 		cfg,
 		componenttest.NewNopHost(),
-		componenttest.NewNopTelemetrySettings())
+		componenttest.NewNopTelemetrySettings(),
+	)
 	require.NoError(t, err)
 	require.NotNil(t, couchdbClient)
 	return couchdbClient
@@ -42,12 +42,13 @@ func TestNewCouchDBClient(t *testing.T) {
 	}
 	t.Run("Invalid config", func(t *testing.T) {
 		couchdbClient, err := newCouchDBClient(
-			context.Background(),
+			t.Context(),
 			&Config{
 				ClientConfig: clientConfig,
 			},
 			componenttest.NewNopHost(),
-			componenttest.NewNopTelemetrySettings())
+			componenttest.NewNopTelemetrySettings(),
+		)
 
 		require.ErrorContains(t, err, "failed to create HTTP Client: ")
 		require.Nil(t, couchdbClient)
@@ -112,14 +113,15 @@ func TestGet(t *testing.T) {
 		clientConfig.Endpoint = url
 
 		couchdbClient, err := newCouchDBClient(
-			context.Background(),
+			t.Context(),
 			&Config{
 				ClientConfig: clientConfig,
 				Username:     "unauthorized",
 				Password:     "unauthorized",
 			},
 			componenttest.NewNopHost(),
-			componenttest.NewNopTelemetrySettings())
+			componenttest.NewNopTelemetrySettings(),
+		)
 		require.NoError(t, err)
 		require.NotNil(t, couchdbClient)
 

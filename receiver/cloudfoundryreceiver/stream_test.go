@@ -21,22 +21,24 @@ func TestValidMetricsStream(t *testing.T) {
 		zap.NewNop(),
 		cfg.UAA.LimitedClientConfig,
 		cfg.UAA.Username,
-		string(cfg.UAA.Password))
+		string(cfg.UAA.Password),
+	)
 
 	require.NoError(t, err)
 	require.NotNil(t, uaa)
 
 	streamFactory, streamErr := newEnvelopeStreamFactory(
-		context.Background(),
+		t.Context(),
 		componenttest.NewNopTelemetrySettings(),
 		uaa,
 		cfg.RLPGateway.ClientConfig,
-		componenttest.NewNopHost())
+		componenttest.NewNopHost(),
+	)
 
 	require.NoError(t, streamErr)
 	require.NotNil(t, streamFactory)
 
-	innerCtx, cancel := context.WithCancel(context.Background())
+	innerCtx, cancel := context.WithCancel(t.Context())
 
 	envelopeStream := streamFactory.CreateMetricsStream(innerCtx, cfg.RLPGateway.ShardID)
 
@@ -54,22 +56,24 @@ func TestValidLogsStream(t *testing.T) {
 		zap.NewNop(),
 		cfg.UAA.LimitedClientConfig,
 		cfg.UAA.Username,
-		string(cfg.UAA.Password))
+		string(cfg.UAA.Password),
+	)
 
 	require.NoError(t, err)
 	require.NotNil(t, uaa)
 
 	streamFactory, streamErr := newEnvelopeStreamFactory(
-		context.Background(),
+		t.Context(),
 		componenttest.NewNopTelemetrySettings(),
 		uaa,
 		cfg.RLPGateway.ClientConfig,
-		componenttest.NewNopHost())
+		componenttest.NewNopHost(),
+	)
 
 	require.NoError(t, streamErr)
 	require.NotNil(t, streamFactory)
 
-	innerCtx, cancel := context.WithCancel(context.Background())
+	innerCtx, cancel := context.WithCancel(t.Context())
 
 	envelopeStream := streamFactory.CreateLogsStream(innerCtx, cfg.RLPGateway.ShardID)
 

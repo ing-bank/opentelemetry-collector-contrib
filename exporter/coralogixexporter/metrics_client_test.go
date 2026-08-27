@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -45,8 +46,10 @@ func TestNewMetricsExporter(t *testing.T) {
 		{
 			name: "Valid metrics endpoint config",
 			cfg: &Config{
-				Metrics: configgrpc.ClientConfig{
-					Endpoint: "localhost:4317",
+				Metrics: TransportConfig{
+					ClientConfig: configgrpc.ClientConfig{
+						Endpoint: "localhost:4317",
+					},
 				},
 				PrivateKey: "test-key",
 			},
@@ -79,22 +82,20 @@ func TestMetricsExporter_Start(t *testing.T) {
 	cfg := &Config{
 		Domain:     "test.domain.com",
 		PrivateKey: "test-key",
-		Metrics: configgrpc.ClientConfig{
-			Headers: map[string]configopaque.String{},
-		},
 	}
 
 	exp, err := newMetricsExporter(cfg, exportertest.NewNopSettings(exportertest.NopType))
 	require.NoError(t, err)
 
-	err = exp.start(context.Background(), componenttest.NewNopHost())
+	err = exp.start(t.Context(), componenttest.NewNopHost())
 	require.NoError(t, err)
 	assert.NotNil(t, exp.clientConn)
-	assert.NotNil(t, exp.metricExporter)
-	assert.Contains(t, exp.config.Metrics.Headers, "Authorization")
+	assert.NotNil(t, exp.grpcMetricsExporter)
+	_, ok := exp.config.Metrics.ClientConfig.Headers.Get("Authorization")
+	assert.True(t, ok)
 
 	// Test shutdown
-	err = exp.shutdown(context.Background())
+	err = exp.shutdown(t.Context())
 	require.NoError(t, err)
 }
 
@@ -102,9 +103,11 @@ func TestMetricsExporter_EnhanceContext(t *testing.T) {
 	cfg := &Config{
 		Domain:     "test.domain.com",
 		PrivateKey: "test-key",
-		Metrics: configgrpc.ClientConfig{
-			Headers: map[string]configopaque.String{
-				"test-header": "test-value",
+		Metrics: TransportConfig{
+			ClientConfig: configgrpc.ClientConfig{
+				Headers: configopaque.MapList{
+					{Name: "test-header", Value: "test-value"},
+				},
 			},
 		},
 	}
@@ -112,7 +115,7 @@ func TestMetricsExporter_EnhanceContext(t *testing.T) {
 	exp, err := newMetricsExporter(cfg, exportertest.NewNopSettings(exportertest.NopType))
 	require.NoError(t, err)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	enhancedCtx := exp.enhanceContext(ctx)
 	assert.NotEqual(t, ctx, enhancedCtx)
 }
@@ -121,19 +124,16 @@ func TestMetricsExporter_PushMetrics(t *testing.T) {
 	cfg := &Config{
 		Domain:     "test.domain.com",
 		PrivateKey: "test-key",
-		Metrics: configgrpc.ClientConfig{
-			Headers: map[string]configopaque.String{},
-		},
 	}
 
 	exp, err := newMetricsExporter(cfg, exportertest.NewNopSettings(exportertest.NopType))
 	require.NoError(t, err)
 
 	// Initialize the exporter by calling start
-	err = exp.start(context.Background(), componenttest.NewNopHost())
+	err = exp.start(t.Context(), componenttest.NewNopHost())
 	require.NoError(t, err)
 	defer func() {
-		err = exp.shutdown(context.Background())
+		err = exp.shutdown(t.Context())
 		require.NoError(t, err)
 	}()
 
@@ -145,7 +145,17 @@ func TestMetricsExporter_PushMetrics(t *testing.T) {
 	resource := rm.Resource()
 	resource.Attributes().PutStr("service.name", "test-service")
 
-	err = exp.pushMetrics(context.Background(), metrics)
+	// Add a metric
+	scopeMetrics := rm.ScopeMetrics().AppendEmpty()
+	metric := scopeMetrics.Metrics().AppendEmpty()
+	metric.SetName("test-metric")
+	metric.SetUnit("1")
+	metric.SetEmptyGauge()
+	dp := metric.Gauge().DataPoints().AppendEmpty()
+	dp.SetTimestamp(pcommon.NewTimestampFromTime(time.Now()))
+	dp.SetDoubleValue(1.0)
+
+	err = exp.pushMetrics(t.Context(), metrics)
 	assert.Error(t, err)
 }
 
@@ -169,8 +179,10 @@ func TestMetricsExporter_PushMetrics_WhenCannotSend(t *testing.T) {
 			cfg := &Config{
 				Domain:     "test.domain.com",
 				PrivateKey: "test-key",
-				Metrics: configgrpc.ClientConfig{
-					Headers: map[string]configopaque.String{},
+				Metrics: TransportConfig{
+					ClientConfig: configgrpc.ClientConfig{
+						Endpoint: "ingress.test.domain.com:443",
+					},
 				},
 				RateLimiter: RateLimiterConfig{
 					Enabled:   tt.enabled,
@@ -182,16 +194,16 @@ func TestMetricsExporter_PushMetrics_WhenCannotSend(t *testing.T) {
 			exp, err := newMetricsExporter(cfg, exportertest.NewNopSettings(exportertest.NopType))
 			require.NoError(t, err)
 
-			err = exp.start(context.Background(), componenttest.NewNopHost())
+			err = exp.start(t.Context(), componenttest.NewNopHost())
 			require.NoError(t, err)
 			defer func() {
-				err = exp.shutdown(context.Background())
+				err = exp.shutdown(t.Context())
 				require.NoError(t, err)
 			}()
 
-			rateLimitErr := errors.New("rate limit exceeded")
-			exp.EnableRateLimit(rateLimitErr)
-			exp.EnableRateLimit(rateLimitErr)
+			// Add two rate limit errors
+			exp.EnableRateLimit()
+			exp.EnableRateLimit()
 
 			metrics := pmetric.NewMetrics()
 			resourceMetrics := metrics.ResourceMetrics()
@@ -199,12 +211,12 @@ func TestMetricsExporter_PushMetrics_WhenCannotSend(t *testing.T) {
 			resource := rm.Resource()
 			resource.Attributes().PutStr("service.name", "test-service")
 
-			err = exp.pushMetrics(context.Background(), metrics)
+			err = exp.pushMetrics(t.Context(), metrics)
 			assert.Error(t, err)
 			if tt.enabled {
 				assert.Contains(t, err.Error(), "rate limit exceeded")
 			} else {
-				assert.Contains(t, err.Error(), "no such host")
+				assert.Contains(t, err.Error(), "produced zero addresses")
 			}
 		})
 	}
@@ -234,6 +246,8 @@ func (m *mockMetricsServer) Export(ctx context.Context, req pmetricotlp.ExportRe
 		m.t.Errorf("Expected Authorization header 'Bearer test-key', got %s", authHeader[0])
 		return pmetricotlp.NewExportResponse(), errors.New("invalid authorization header")
 	}
+
+	assertAcceptEncodingGzip(m.t, md)
 
 	m.recvCount += req.Metrics().DataPointCount()
 	resp := pmetricotlp.NewExportResponse()
@@ -266,12 +280,13 @@ func BenchmarkMetricsExporter_PushMetrics(b *testing.B) {
 	defer stopFn()
 
 	cfg := &Config{
-		Metrics: configgrpc.ClientConfig{
-			Endpoint: endpoint,
-			TLS: configtls.ClientConfig{
-				Insecure: true,
+		Metrics: TransportConfig{
+			ClientConfig: configgrpc.ClientConfig{
+				Endpoint: endpoint,
+				TLS: configtls.ClientConfig{
+					Insecure: true,
+				},
 			},
-			Headers: map[string]configopaque.String{},
 		},
 		PrivateKey: "test-key",
 	}
@@ -280,11 +295,11 @@ func BenchmarkMetricsExporter_PushMetrics(b *testing.B) {
 	if err != nil {
 		b.Fatalf("failed to create metrics exporter: %v", err)
 	}
-	if err := exp.start(context.Background(), componenttest.NewNopHost()); err != nil {
+	if err := exp.start(b.Context(), componenttest.NewNopHost()); err != nil {
 		b.Fatalf("failed to start metrics exporter: %v", err)
 	}
 	defer func() {
-		_ = exp.shutdown(context.Background())
+		_ = exp.shutdown(b.Context())
 	}()
 
 	testCases := []int{
@@ -297,12 +312,12 @@ func BenchmarkMetricsExporter_PushMetrics(b *testing.B) {
 	}
 	for _, numMetrics := range testCases {
 		b.Run("numMetrics="+fmt.Sprint(numMetrics), func(b *testing.B) {
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				metrics := pmetric.NewMetrics()
 				rm := metrics.ResourceMetrics().AppendEmpty()
 				rm.Resource().Attributes().PutStr("service.name", "benchmark-service")
 				sm := rm.ScopeMetrics().AppendEmpty()
-				for j := 0; j < numMetrics; j++ {
+				for j := range numMetrics {
 					metric := sm.Metrics().AppendEmpty()
 					metric.SetName("benchmark_metric")
 					metric.SetUnit("1")
@@ -311,7 +326,7 @@ func BenchmarkMetricsExporter_PushMetrics(b *testing.B) {
 					dp.SetTimestamp(pcommon.NewTimestampFromTime(time.Now()))
 					dp.SetDoubleValue(float64(j))
 				}
-				_ = exp.pushMetrics(context.Background(), metrics)
+				_ = exp.pushMetrics(b.Context(), metrics)
 			}
 		})
 	}
@@ -323,12 +338,13 @@ func TestMetricsExporter_PushMetrics_PartialSuccess(t *testing.T) {
 	defer stopFn()
 
 	cfg := &Config{
-		Metrics: configgrpc.ClientConfig{
-			Endpoint: endpoint,
-			TLS: configtls.ClientConfig{
-				Insecure: true,
+		Metrics: TransportConfig{
+			ClientConfig: configgrpc.ClientConfig{
+				Endpoint: endpoint,
+				TLS: configtls.ClientConfig{
+					Insecure: true,
+				},
 			},
-			Headers: map[string]configopaque.String{},
 		},
 		PrivateKey: "test-key",
 	}
@@ -336,10 +352,10 @@ func TestMetricsExporter_PushMetrics_PartialSuccess(t *testing.T) {
 	exp, err := newMetricsExporter(cfg, exportertest.NewNopSettings(exportertest.NopType))
 	require.NoError(t, err)
 
-	err = exp.start(context.Background(), componenttest.NewNopHost())
+	err = exp.start(t.Context(), componenttest.NewNopHost())
 	require.NoError(t, err)
 	defer func() {
-		err = exp.shutdown(context.Background())
+		err = exp.shutdown(t.Context())
 		require.NoError(t, err)
 	}()
 
@@ -349,63 +365,75 @@ func TestMetricsExporter_PushMetrics_PartialSuccess(t *testing.T) {
 	resource := rm.Resource()
 	resource.Attributes().PutStr("service.name", "test-service")
 
+	// Add a metric
 	scopeMetrics := rm.ScopeMetrics().AppendEmpty()
-	scopeMetrics.Scope().SetName("test-scope")
+	metric := scopeMetrics.Metrics().AppendEmpty()
+	metric.SetName("test-metric")
+	metric.SetUnit("1")
+	metric.SetEmptyGauge()
+	dp := metric.Gauge().DataPoints().AppendEmpty()
+	dp.SetTimestamp(pcommon.NewTimestampFromTime(time.Now()))
+	dp.SetDoubleValue(1.0)
 
-	metric1 := scopeMetrics.Metrics().AppendEmpty()
-	metric1.SetName("metric1")
-	metric2 := scopeMetrics.Metrics().AppendEmpty()
-	metric2.SetName("metric2")
+	scopeMetrics.Metrics().AppendEmpty()
+	scopeMetrics.Metrics().AppendEmpty()
 
 	partialSuccess := pmetricotlp.NewExportPartialSuccess()
 	partialSuccess.SetErrorMessage("some metrics were rejected")
 	partialSuccess.SetRejectedDataPoints(1)
 	mockSrv.partialSuccess = &partialSuccess
 
-	core, observed := observer.New(zapcore.ErrorLevel)
+	core, observed := observer.New(zapcore.DebugLevel)
 	logger := zap.New(core)
 	exp.settings.Logger = logger
 
-	err = exp.pushMetrics(context.Background(), metrics)
+	err = exp.pushMetrics(t.Context(), metrics)
 	require.NoError(t, err)
 
 	entries := observed.All()
 	found := false
 	for _, entry := range entries {
-		if entry.Message == "Partial success response from Coralogix" &&
-			entry.Level == zapcore.ErrorLevel &&
-			entry.ContextMap()["message"] == "some metrics were rejected" &&
-			entry.ContextMap()["rejected_data_points"] == int64(1) {
-			fields := entry.ContextMap()
-			var names []string
-			if arr, ok := fields["metric_names"].([]string); ok {
-				names = arr
-			} else if arr, ok := fields["metric_names"].([]any); ok {
-				for _, v := range arr {
-					if s, ok := v.(string); ok {
-						names = append(names, s)
-					}
+		if entry.Message != "Partial success response from Coralogix" ||
+			entry.Level != zapcore.ErrorLevel ||
+			entry.ContextMap()["message"] != "some metrics were rejected" ||
+			entry.ContextMap()["rejected_data_points"] != int64(1) {
+			continue
+		}
+		fields := entry.ContextMap()
+		var names []string
+		switch arr := fields["metric_names"].(type) {
+		case []string:
+			names = arr
+		case []any:
+			for _, v := range arr {
+				if s, ok := v.(string); ok {
+					names = append(names, s)
 				}
 			}
-			assert.Contains(t, names, "metric1")
-			assert.Contains(t, names, "metric2")
-			found = true
 		}
+		assert.Contains(t, names, "test-metric")
+		found = true
 	}
 	assert.True(t, found, "Expected partial success log with correct fields and metric names")
 }
 
 func TestMetricsExporter_PushMetrics_Performance(t *testing.T) {
+	isIntegrationTest := os.Getenv("INTEGRATION_TEST")
+	if isIntegrationTest != "true" {
+		t.Skip("Skipping E2E test: INTEGRATION_TEST not set")
+	}
+
 	endpoint, stopFn, mockSrv := startMockOtlpMetricsServer(t)
 	defer stopFn()
 
 	cfg := &Config{
-		Metrics: configgrpc.ClientConfig{
-			Endpoint: endpoint,
-			TLS: configtls.ClientConfig{
-				Insecure: true,
+		Metrics: TransportConfig{
+			ClientConfig: configgrpc.ClientConfig{
+				Endpoint: endpoint,
+				TLS: configtls.ClientConfig{
+					Insecure: true,
+				},
 			},
-			Headers: map[string]configopaque.String{},
 		},
 		PrivateKey: "test-key",
 		RateLimiter: RateLimiterConfig{
@@ -418,10 +446,10 @@ func TestMetricsExporter_PushMetrics_Performance(t *testing.T) {
 	exp, err := newMetricsExporter(cfg, exportertest.NewNopSettings(exportertest.NopType))
 	require.NoError(t, err)
 
-	err = exp.start(context.Background(), componenttest.NewNopHost())
+	err = exp.start(t.Context(), componenttest.NewNopHost())
 	require.NoError(t, err)
 	defer func() {
-		err = exp.shutdown(context.Background())
+		err = exp.shutdown(t.Context())
 		require.NoError(t, err)
 	}()
 
@@ -433,7 +461,7 @@ func TestMetricsExporter_PushMetrics_Performance(t *testing.T) {
 		sm := rm.ScopeMetrics().AppendEmpty()
 
 		metricCount := 3000
-		for i := 0; i < metricCount; i++ {
+		for i := range metricCount {
 			metric := sm.Metrics().AppendEmpty()
 			metric.SetName(fmt.Sprintf("test_metric_%d", i))
 			metric.SetUnit("1")
@@ -444,7 +472,7 @@ func TestMetricsExporter_PushMetrics_Performance(t *testing.T) {
 		}
 
 		start := time.Now()
-		err = exp.pushMetrics(context.Background(), metrics)
+		err = exp.pushMetrics(t.Context(), metrics)
 		duration := time.Since(start)
 
 		require.NoError(t, err)
@@ -455,9 +483,8 @@ func TestMetricsExporter_PushMetrics_Performance(t *testing.T) {
 	t.Run("Over rate limit", func(t *testing.T) {
 		mockSrv.recvCount = 0
 
-		rateLimitErr := errors.New("rate limit exceeded")
-		for i := 0; i < 5; i++ {
-			exp.EnableRateLimit(rateLimitErr)
+		for range 5 {
+			exp.EnableRateLimit()
 		}
 
 		metrics := pmetric.NewMetrics()
@@ -466,7 +493,7 @@ func TestMetricsExporter_PushMetrics_Performance(t *testing.T) {
 		sm := rm.ScopeMetrics().AppendEmpty()
 
 		metricCount := 7000
-		for i := 0; i < metricCount; i++ {
+		for i := range metricCount {
 			metric := sm.Metrics().AppendEmpty()
 			metric.SetName(fmt.Sprintf("test_metric_%d", i))
 			metric.SetUnit("1")
@@ -477,7 +504,7 @@ func TestMetricsExporter_PushMetrics_Performance(t *testing.T) {
 		}
 
 		start := time.Now()
-		err = exp.pushMetrics(context.Background(), metrics)
+		err = exp.pushMetrics(t.Context(), metrics)
 		duration := time.Since(start)
 
 		assert.Error(t, err)
@@ -488,7 +515,27 @@ func TestMetricsExporter_PushMetrics_Performance(t *testing.T) {
 
 	t.Run("Rate limit reset", func(t *testing.T) {
 		mockSrv.recvCount = 0
-		time.Sleep(2 * time.Second)
+
+		require.Eventually(t, func() bool {
+			testMetrics := pmetric.NewMetrics()
+			testRm := testMetrics.ResourceMetrics().AppendEmpty()
+			testRm.Resource().Attributes().PutStr("service.name", "test-service")
+			testSm := testRm.ScopeMetrics().AppendEmpty()
+			testMetric := testSm.Metrics().AppendEmpty()
+			testMetric.SetName("test-metric")
+			testMetric.SetUnit("1")
+			testMetric.SetEmptyGauge()
+			testDp := testMetric.Gauge().DataPoints().AppendEmpty()
+			testDp.SetTimestamp(pcommon.NewTimestampFromTime(time.Now()))
+			testDp.SetDoubleValue(1.0)
+
+			errPush := exp.pushMetrics(t.Context(), testMetrics)
+			return errPush == nil
+		}, 3*time.Second, 100*time.Millisecond, "Rate limit should reset within 3 seconds")
+
+		// It's 1 because the last push is successful
+		require.Equal(t, 1, mockSrv.recvCount)
+		mockSrv.recvCount = 0
 
 		metrics := pmetric.NewMetrics()
 		rm := metrics.ResourceMetrics().AppendEmpty()
@@ -496,7 +543,7 @@ func TestMetricsExporter_PushMetrics_Performance(t *testing.T) {
 		sm := rm.ScopeMetrics().AppendEmpty()
 
 		metricCount := 3000
-		for i := 0; i < metricCount; i++ {
+		for i := range metricCount {
 			metric := sm.Metrics().AppendEmpty()
 			metric.SetName(fmt.Sprintf("test_metric_%d", i))
 			metric.SetUnit("1")
@@ -507,11 +554,155 @@ func TestMetricsExporter_PushMetrics_Performance(t *testing.T) {
 		}
 
 		start := time.Now()
-		err = exp.pushMetrics(context.Background(), metrics)
+		err = exp.pushMetrics(t.Context(), metrics)
 		duration := time.Since(start)
 
 		require.NoError(t, err)
 		assert.Equal(t, metricCount, mockSrv.recvCount, "Expected to receive exactly %d metrics after rate limit reset", metricCount)
 		assert.Less(t, duration, time.Millisecond*100, "Operation took longer than 100 milliseconds")
+	})
+}
+
+func TestMetricsExporter_RateLimitErrorCountReset(t *testing.T) {
+	endpoint, stop, srv := startMockOtlpMetricsServer(t)
+	defer stop()
+
+	cfg := &Config{
+		Metrics: TransportConfig{
+			ClientConfig: configgrpc.ClientConfig{
+				Endpoint: endpoint,
+				TLS: configtls.ClientConfig{
+					Insecure: true,
+				},
+			},
+		},
+		PrivateKey: "test-key",
+		RateLimiter: RateLimiterConfig{
+			Enabled:   true,
+			Threshold: 5,
+			Duration:  time.Second,
+		},
+	}
+
+	exp, err := newMetricsExporter(cfg, exportertest.NewNopSettings(exportertest.NopType))
+	require.NoError(t, err)
+
+	err = exp.start(t.Context(), componenttest.NewNopHost())
+	require.NoError(t, err)
+	defer func() {
+		err = exp.shutdown(t.Context())
+		require.NoError(t, err)
+	}()
+
+	for range 5 {
+		exp.EnableRateLimit()
+	}
+	assert.Equal(t, int32(5), exp.rateError.errorCount.Load())
+
+	metrics := pmetric.NewMetrics()
+	resourceMetrics := metrics.ResourceMetrics()
+	rm := resourceMetrics.AppendEmpty()
+	resource := rm.Resource()
+	resource.Attributes().PutStr("service.name", "test-service")
+
+	scopeMetrics := rm.ScopeMetrics().AppendEmpty()
+	metric := scopeMetrics.Metrics().AppendEmpty()
+	metric.SetName("test-metric")
+	metric.SetUnit("1")
+	metric.SetEmptyGauge()
+	dp := metric.Gauge().DataPoints().AppendEmpty()
+	dp.SetTimestamp(pcommon.NewTimestampFromTime(time.Now()))
+	dp.SetDoubleValue(1.0)
+
+	err = exp.pushMetrics(t.Context(), metrics)
+	assert.Error(t, err)
+	assert.Equal(t, int32(5), exp.rateError.errorCount.Load())
+	assert.Equal(t, 0, srv.recvCount)
+
+	require.Eventually(t, func() bool {
+		err = exp.pushMetrics(t.Context(), metrics)
+		return err == nil &&
+			exp.rateError.errorCount.Load() == 0 &&
+			srv.recvCount > 0
+	}, 3*time.Second, 100*time.Millisecond)
+}
+
+func TestMetricsExporter_RateLimitCounterResetOnSuccess(t *testing.T) {
+	endpoint, stopFn, srv := startMockOtlpMetricsServer(t)
+	defer stopFn()
+
+	cfg := &Config{
+		Metrics: TransportConfig{
+			ClientConfig: configgrpc.ClientConfig{
+				Endpoint: endpoint,
+				TLS: configtls.ClientConfig{
+					Insecure: true,
+				},
+			},
+		},
+		PrivateKey: "test-key",
+		RateLimiter: RateLimiterConfig{
+			Enabled:   true,
+			Threshold: 5,
+			Duration:  time.Second,
+		},
+	}
+
+	exp, err := newMetricsExporter(cfg, exportertest.NewNopSettings(exportertest.NopType))
+	require.NoError(t, err)
+
+	err = exp.start(t.Context(), componenttest.NewNopHost())
+	require.NoError(t, err)
+	defer func() {
+		err = exp.shutdown(t.Context())
+		require.NoError(t, err)
+	}()
+
+	createTestMetrics := func() pmetric.Metrics {
+		metrics := pmetric.NewMetrics()
+		resourceMetrics := metrics.ResourceMetrics().AppendEmpty()
+		resource := resourceMetrics.Resource()
+		resource.Attributes().PutStr("service.name", "test-service")
+		scopeMetrics := resourceMetrics.ScopeMetrics().AppendEmpty()
+		metric := scopeMetrics.Metrics().AppendEmpty()
+		metric.SetName("test-metric")
+		metric.SetUnit("1")
+		metric.SetEmptyGauge()
+		dp := metric.Gauge().DataPoints().AppendEmpty()
+		dp.SetTimestamp(pcommon.NewTimestampFromTime(time.Now()))
+		dp.SetDoubleValue(1.0)
+		return metrics
+	}
+
+	t.Run("Initial successful push", func(t *testing.T) {
+		metrics := createTestMetrics()
+		err = exp.pushMetrics(t.Context(), metrics)
+		require.NoError(t, err)
+		assert.Equal(t, int32(0), exp.rateError.errorCount.Load())
+		assert.Equal(t, 1, srv.recvCount)
+	})
+
+	t.Run("Trigger errors below threshold", func(t *testing.T) {
+		for range 4 {
+			exp.EnableRateLimit()
+		}
+		assert.Equal(t, int32(4), exp.rateError.errorCount.Load())
+		assert.False(t, exp.rateError.isRateLimited(), "Should not be rate limited yet")
+	})
+
+	t.Run("Successful push after errors", func(t *testing.T) {
+		metrics := createTestMetrics()
+		err = exp.pushMetrics(t.Context(), metrics)
+		require.NoError(t, err)
+		assert.Equal(t, int32(0), exp.rateError.errorCount.Load())
+		assert.Equal(t, 2, srv.recvCount)
+	})
+
+	t.Run("Verify error count stays at 0", func(t *testing.T) {
+		metrics := createTestMetrics()
+		err = exp.pushMetrics(t.Context(), metrics)
+		require.NoError(t, err)
+		assert.Equal(t, int32(0), exp.rateError.errorCount.Load())
+		assert.Equal(t, 3, srv.recvCount)
 	})
 }

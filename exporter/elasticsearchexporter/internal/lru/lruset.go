@@ -6,7 +6,7 @@ package lru // import "github.com/open-telemetry/opentelemetry-collector-contrib
 import (
 	"time"
 
-	"github.com/cespare/xxhash"
+	"github.com/cespare/xxhash/v2"
 	"github.com/elastic/go-freelru"
 	"go.opentelemetry.io/ebpf-profiler/libpf/xsync"
 )
@@ -56,9 +56,9 @@ type lockedLRUSet struct {
 }
 
 func (l lockedLRUSet) CheckAndAdd(entry string) (excluded bool) {
-	if _, exclude := (l.lru).Get(entry); exclude {
+	if _, exclude := l.lru.Get(entry); exclude {
 		return true
 	}
-	(l.lru).Add(entry, void{})
+	l.lru.Add(entry, void{})
 	return false
 }

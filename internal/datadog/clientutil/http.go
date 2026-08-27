@@ -22,14 +22,24 @@ var (
 		"Content-Encoding": "gzip",
 	}
 	// ProtobufHeaders headers for protobuf requests.
+	// Content-Encoding is gzip to stay consistent with the metric series path,
+	// which is always gzip-compressed (see clientutil.GZipSubmitMetricsOptionalParameters).
 	ProtobufHeaders = map[string]string{
 		"Content-Type":     "application/x-protobuf",
-		"Content-Encoding": "identity",
+		"Content-Encoding": "gzip",
 	}
 )
 
 // NewHTTPClient returns a http.Client configured with a subset of the confighttp.ClientConfig options.
 func NewHTTPClient(hcs confighttp.ClientConfig) *http.Client {
+	return &http.Client{
+		Timeout:   hcs.Timeout,
+		Transport: NewHTTPTransport(hcs),
+	}
+}
+
+// NewHTTPTransport returns a http.Transport configured with a subset of the confighttp.ClientConfig options.
+func NewHTTPTransport(hcs confighttp.ClientConfig) *http.Transport {
 	// If the ProxyURL field in the configuration is set, the HTTP client will use the proxy.
 	// Otherwise, the HTTP client will use the system's proxy settings.
 	httpProxy := http.ProxyFromEnvironment
@@ -55,6 +65,7 @@ func NewHTTPClient(hcs confighttp.ClientConfig) *http.Client {
 		// Not supported by intake
 		ForceAttemptHTTP2: false,
 		TLSClientConfig:   &tls.Config{InsecureSkipVerify: hcs.TLS.InsecureSkipVerify},
+		DisableKeepAlives: hcs.DisableKeepAlives, //nolint:staticcheck // SA1019: intentionally honoring deprecated fields for backward compatibility
 	}
 	if hcs.ReadBufferSize > 0 {
 		transport.ReadBufferSize = hcs.ReadBufferSize
@@ -62,23 +73,20 @@ func NewHTTPClient(hcs confighttp.ClientConfig) *http.Client {
 	if hcs.WriteBufferSize > 0 {
 		transport.WriteBufferSize = hcs.WriteBufferSize
 	}
-	if hcs.MaxIdleConns > 0 {
-		transport.MaxIdleConns = hcs.MaxIdleConns
+	if hcs.MaxIdleConns > 0 { //nolint:staticcheck // SA1019: intentionally honoring deprecated fields for backward compatibility
+		transport.MaxIdleConns = hcs.MaxIdleConns //nolint:staticcheck // SA1019: intentionally honoring deprecated fields for backward compatibility
 	}
-	if hcs.MaxIdleConnsPerHost > 0 {
-		transport.MaxIdleConnsPerHost = hcs.MaxIdleConnsPerHost
+	if hcs.MaxIdleConnsPerHost > 0 { //nolint:staticcheck // SA1019: intentionally honoring deprecated fields for backward compatibility
+		transport.MaxIdleConnsPerHost = hcs.MaxIdleConnsPerHost //nolint:staticcheck // SA1019: intentionally honoring deprecated fields for backward compatibility
 	}
 	if hcs.MaxConnsPerHost > 0 {
 		transport.MaxConnsPerHost = hcs.MaxConnsPerHost
 	}
-	if hcs.IdleConnTimeout > 0 {
-		transport.IdleConnTimeout = hcs.IdleConnTimeout
+	if hcs.IdleConnTimeout > 0 { //nolint:staticcheck // SA1019: intentionally honoring deprecated fields for backward compatibility
+		transport.IdleConnTimeout = hcs.IdleConnTimeout //nolint:staticcheck // SA1019: intentionally honoring deprecated fields for backward compatibility
 	}
-	transport.DisableKeepAlives = hcs.DisableKeepAlives
-	return &http.Client{
-		Timeout:   hcs.Timeout,
-		Transport: &transport,
-	}
+
+	return &transport
 }
 
 // SetExtraHeaders appends a header map to HTTP headers.

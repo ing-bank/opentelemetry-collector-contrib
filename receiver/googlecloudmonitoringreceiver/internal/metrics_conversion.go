@@ -41,6 +41,7 @@ func (mb *MetricsBuilder) ConvertGaugeToMetrics(ts *monitoringpb.TimeSeries, m p
 	m.SetUnit(ts.GetUnit())
 	gauge := m.SetEmptyGauge()
 
+	metricAttributes := convertLabelsToMetricAttributes(ts.GetMetric().GetLabels())
 	for _, point := range ts.GetPoints() {
 		dp := gauge.DataPoints().AppendEmpty()
 
@@ -56,11 +57,19 @@ func (mb *MetricsBuilder) ConvertGaugeToMetrics(ts *monitoringpb.TimeSeries, m p
 			mb.logger.Warn("EndTime is invalid for metric:", zap.String("Metric", ts.GetMetric().GetType()))
 		}
 
+		metricAttributes.CopyTo(dp.Attributes())
+
 		switch v := point.Value.Value.(type) {
 		case *monitoringpb.TypedValue_DoubleValue:
 			dp.SetDoubleValue(v.DoubleValue)
 		case *monitoringpb.TypedValue_Int64Value:
 			dp.SetIntValue(v.Int64Value)
+		case *monitoringpb.TypedValue_BoolValue:
+			if v.BoolValue {
+				dp.SetIntValue(1)
+			} else {
+				dp.SetIntValue(0)
+			}
 		default:
 			mb.logger.Info("Unhandled metric value type:", zap.Reflect("Type", v))
 		}
@@ -74,7 +83,10 @@ func (mb *MetricsBuilder) ConvertSumToMetrics(ts *monitoringpb.TimeSeries, m pme
 	m.SetUnit(ts.GetUnit())
 	sum := m.SetEmptySum()
 	sum.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+	// GCP's cumulative metric kind maps to OTel's monotonic sum
+	sum.SetIsMonotonic(true)
 
+	metricAttributes := convertLabelsToMetricAttributes(ts.GetMetric().GetLabels())
 	for _, point := range ts.GetPoints() {
 		dp := sum.DataPoints().AppendEmpty()
 
@@ -89,6 +101,8 @@ func (mb *MetricsBuilder) ConvertSumToMetrics(ts *monitoringpb.TimeSeries, m pme
 		} else {
 			mb.logger.Warn("EndTime is invalid for metric:", zap.String("Metric", ts.GetMetric().GetType()))
 		}
+
+		metricAttributes.CopyTo(dp.Attributes())
 
 		switch v := point.Value.Value.(type) {
 		case *monitoringpb.TypedValue_DoubleValue:
@@ -109,6 +123,7 @@ func (mb *MetricsBuilder) ConvertDeltaToMetrics(ts *monitoringpb.TimeSeries, m p
 	sum := m.SetEmptySum()
 	sum.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
 
+	metricAttributes := convertLabelsToMetricAttributes(ts.GetMetric().GetLabels())
 	for _, point := range ts.GetPoints() {
 		dp := sum.DataPoints().AppendEmpty()
 
@@ -123,6 +138,8 @@ func (mb *MetricsBuilder) ConvertDeltaToMetrics(ts *monitoringpb.TimeSeries, m p
 		} else {
 			mb.logger.Warn("EndTime is invalid for metric:", zap.String("Metric", ts.GetMetric().GetType()))
 		}
+
+		metricAttributes.CopyTo(dp.Attributes())
 
 		switch v := point.Value.Value.(type) {
 		case *monitoringpb.TypedValue_DoubleValue:
@@ -152,7 +169,7 @@ func (mb *MetricsBuilder) ConvertDistributionToMetrics(ts *monitoringpb.TimeSeri
 	// > Importers and exporters working with OpenTelemetry Metrics data are meant to disregard this specification when
 	// > translating to and from histogram formats that use inclusive lower bounds and exclusive upper bounds.
 
-	metricAttributes := convertDistributionLabels(ts.GetMetric().GetLabels())
+	metricAttributes := convertLabelsToMetricAttributes(ts.GetMetric().GetLabels())
 	for _, sourceDataPoint := range ts.GetPoints() {
 		sourceValue := sourceDataPoint.GetValue()
 		if sourceValue == nil {
@@ -226,10 +243,34 @@ func (mb *MetricsBuilder) ConvertDistributionToMetrics(ts *monitoringpb.TimeSeri
 			continue
 		}
 
-		countTotal := uint64(0)
 		targetBucketCounts := targetDataPoint.BucketCounts()
-		targetBucketCounts.EnsureCapacity(len(sourceBucketCounts))
-		for _, bucketCount := range sourceBucketCounts {
+
+		// The number of elements in bucket_counts array must be by one greater than the number of elements in explicit_bounds array.
+		lenBounds := targetDataPoint.ExplicitBounds().Len()
+		lenCounts := lenBounds + 1
+
+		// The exception to this rule is when the length of bucket_counts is 0, then the length of explicit_bounds must also be 0.
+		// Google says this case should never happen, but you never know...
+		if lenBounds == 0 {
+			// A Histogram without buckets conveys a population in terms of only the sum and count, and may be interpreted as a
+			// histogram with single bucket covering (-Inf, +Inf).
+			targetDataPoint.SetCount(uint64(distributionValue.GetCount()))
+			continue
+		}
+
+		targetBucketCounts.EnsureCapacity(lenCounts)
+		countTotal := uint64(0)
+		for i := range lenCounts {
+			if i >= len(sourceBucketCounts) {
+				// If present, `bucket_counts` should contain N values, where N is the number
+				// of buckets specified in `bucket_options`. If you supply fewer than N
+				// values, the remaining values are assumed to be 0.
+				// (see https://pkg.go.dev/google.golang.org/genproto/googleapis/api/distribution#Distribution)
+				targetBucketCounts.Append(0)
+				continue
+			}
+
+			bucketCount := sourceBucketCounts[i]
 			if bucketCount >= 0 {
 				targetBucketCounts.Append(uint64(bucketCount))
 				countTotal += uint64(bucketCount)
@@ -247,7 +288,7 @@ func (mb *MetricsBuilder) ConvertDistributionToMetrics(ts *monitoringpb.TimeSeri
 	return m
 }
 
-func convertDistributionLabels(sourceLabels map[string]string) pcommon.Map {
+func convertLabelsToMetricAttributes(sourceLabels map[string]string) pcommon.Map {
 	metricAttributes := pcommon.NewMap()
 	metricAttributes.EnsureCapacity(len(sourceLabels))
 	for k, v := range sourceLabels {

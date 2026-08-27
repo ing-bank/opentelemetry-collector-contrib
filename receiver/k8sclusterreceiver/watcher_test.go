@@ -4,15 +4,17 @@
 package k8sclusterreceiver
 
 import (
+	maps0 "maps"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumertest"
+	"go.opentelemetry.io/collector/featuregate"
 	"go.opentelemetry.io/collector/receiver/receivertest"
-	conventions "go.opentelemetry.io/otel/semconv/v1.6.1"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -31,10 +33,12 @@ import (
 )
 
 var commonPodMetadata = map[string]string{
-	"foo":                    "bar",
-	"foo1":                   "",
+	"k8s.pod.label.foo":      "bar",
+	"k8s.pod.label.foo1":     "",
 	"pod.creation_timestamp": "0001-01-01T00:00:00Z",
 }
+
+const entityEventsSpecificationFeatureGateID = "pkg.experimentalmetricmetadata.useEntityEventsSpecification"
 
 func TestSetupMetadataExporters(t *testing.T) {
 	type fields struct {
@@ -137,12 +141,16 @@ func TestIsKindSupported(t *testing.T) {
 
 func TestPrepareSharedInformerFactory(t *testing.T) {
 	tests := []struct {
-		name   string
-		client *fake.Clientset
+		name                  string
+		client                *fake.Clientset
+		config                *Config
+		wantInformerFactories int
 	}{
 		{
-			name:   "new_server_version",
-			client: newFakeClientWithAllResources(),
+			name:                  "new_server_version",
+			client:                newFakeClientWithAllResources(),
+			config:                &Config{},
+			wantInformerFactories: 1,
 		},
 		{
 			name: "old_server_version", // With no batch/v1.CronJob support.
@@ -184,6 +192,16 @@ func TestPrepareSharedInformerFactory(t *testing.T) {
 				}
 				return client
 			}(),
+			config:                &Config{},
+			wantInformerFactories: 1,
+		},
+		{
+			name:   "with namespaced informers",
+			client: newFakeClientWithAllResources(),
+			config: &Config{
+				Namespaces: []string{"namespace1", "namespace2"},
+			},
+			wantInformerFactories: 2,
 		},
 	}
 	for _, tt := range tests {
@@ -194,11 +212,12 @@ func TestPrepareSharedInformerFactory(t *testing.T) {
 				client:        newFakeClientWithAllResources(),
 				logger:        obsLogger,
 				metadataStore: metadata.NewStore(),
-				config:        &Config{},
+				config:        tt.config,
 			}
 
 			assert.NoError(t, rw.prepareSharedInformerFactory())
 
+			assert.Len(t, rw.informerFactories, tt.wantInformerFactories)
 			// Make sure no warning or error logs are raised
 			assert.Equal(t, 0, logs.Len())
 		})
@@ -214,10 +233,114 @@ func TestSetupInformerForKind(t *testing.T) {
 	}
 
 	factory := informers.NewSharedInformerFactoryWithOptions(rw.client, 0)
-	rw.setupInformerForKind(schema.GroupVersionKind{Group: "", Version: "v1", Kind: "WrongKind"}, factory)
+	rw.setupInformerForKind(schema.GroupVersionKind{Group: "", Version: "v1", Kind: "WrongKind"}, map[string]informers.SharedInformerFactory{
+		"<cluster-wide-informer-key>": factory,
+	})
 
 	assert.Equal(t, 1, logs.Len())
 	assert.Equal(t, "Could not setup an informer for provided group version kind", logs.All()[0].Message)
+}
+
+// TestConditionalInformerSetup verifies that PV/PVC informers are only set up when their metrics
+// are enabled or when metadata exporters / entity log consumers are configured.
+func TestConditionalInformerSetup(t *testing.T) {
+	tests := []struct {
+		name           string
+		config         *Config
+		entityConsumer consumer.Logs
+		wantPV         bool
+		wantPVC        bool
+	}{
+		{
+			name:   "default_config_no_pv_pvc",
+			config: &Config{MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig()},
+			wantPV: false, wantPVC: false,
+		},
+		{
+			name: "pv_phase_metric_enabled",
+			config: func() *Config {
+				cfg := &Config{MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig()}
+				cfg.MetricsBuilderConfig.Metrics.K8sPersistentvolumeStatusPhase.Enabled = true
+				return cfg
+			}(),
+			wantPV: true, wantPVC: false,
+		},
+		{
+			name: "pv_capacity_metric_enabled",
+			config: func() *Config {
+				cfg := &Config{MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig()}
+				cfg.MetricsBuilderConfig.Metrics.K8sPersistentvolumeStorageCapacity.Enabled = true
+				return cfg
+			}(),
+			wantPV: true, wantPVC: false,
+		},
+		{
+			name: "pvc_phase_metric_enabled",
+			config: func() *Config {
+				cfg := &Config{MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig()}
+				cfg.MetricsBuilderConfig.Metrics.K8sPersistentvolumeclaimStatusPhase.Enabled = true
+				return cfg
+			}(),
+			wantPV: false, wantPVC: true,
+		},
+		{
+			name: "pvc_capacity_metric_enabled",
+			config: func() *Config {
+				cfg := &Config{MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig()}
+				cfg.MetricsBuilderConfig.Metrics.K8sPersistentvolumeclaimStorageCapacity.Enabled = true
+				return cfg
+			}(),
+			wantPV: false, wantPVC: true,
+		},
+		{
+			name: "pvc_request_metric_enabled",
+			config: func() *Config {
+				cfg := &Config{MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig()}
+				cfg.MetricsBuilderConfig.Metrics.K8sPersistentvolumeclaimStorageRequest.Enabled = true
+				return cfg
+			}(),
+			wantPV: false, wantPVC: true,
+		},
+		{
+			name: "metadata_exporters_configured",
+			config: &Config{
+				MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig(),
+				MetadataExporters:    []string{"signalfx"},
+			},
+			wantPV: true, wantPVC: true,
+		},
+		{
+			name:           "entity_log_consumer_set",
+			config:         &Config{MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig()},
+			entityConsumer: consumertest.NewNop(),
+			wantPV:         true, wantPVC: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rw := &resourceWatcher{
+				client:            newFakeClientWithAllResources(),
+				logger:            zap.NewNop(),
+				metadataStore:     metadata.NewStore(),
+				config:            tt.config,
+				entityLogConsumer: tt.entityConsumer,
+			}
+
+			err := rw.prepareSharedInformerFactory()
+			require.NoError(t, err)
+
+			// Get returns a map[string]cache.Store; if nil/empty, the informer wasn't set up
+			pvStores := rw.metadataStore.Get(gvk.PersistentVolume)
+			hasPV := len(pvStores) > 0
+
+			pvcStores := rw.metadataStore.Get(gvk.PersistentVolumeClaim)
+			hasPVC := len(pvcStores) > 0
+
+			assert.Equal(t, tt.wantPV, hasPV, "PV informer setup mismatch")
+			assert.Equal(t, tt.wantPVC, hasPVC, "PVC informer setup mismatch")
+		})
+	}
 }
 
 func TestSyncMetadataAndEmitEntityEvents(t *testing.T) {
@@ -226,7 +349,7 @@ func TestSyncMetadataAndEmitEntityEvents(t *testing.T) {
 	logsConsumer := new(consumertest.LogsSink)
 
 	// Setup k8s resources.
-	pods := createPods(t, client, 1)
+	pods := createPods(t, client, 1, false)
 
 	origPod := pods[0]
 	updatedPod := getUpdatedPod(origPod)
@@ -271,7 +394,7 @@ func TestSyncMetadataAndEmitEntityEvents(t *testing.T) {
 		"otel.entity.interval":   int64(7200000), // 2h in milliseconds
 		"otel.entity.type":       "k8s.pod",
 		"otel.entity.id":         map[string]any{"k8s.pod.uid": "pod0"},
-		"otel.entity.attributes": map[string]any{"pod.creation_timestamp": "0001-01-01T00:00:00Z", "k8s.pod.phase": "Unknown", "k8s.namespace.name": "test", "k8s.pod.name": "0", string(conventions.K8SNodeNameKey): "test-node"},
+		"otel.entity.attributes": map[string]any{"pod.creation_timestamp": "0001-01-01T00:00:00Z", "k8s.pod.phase": "Unknown", "k8s.namespace.name": "test", "k8s.pod.name": "0", "k8s.node.name": "test-node"},
 	}
 	assert.Equal(t, expected, lr.Attributes().AsRaw())
 	assert.WithinRange(t, lr.Timestamp().AsTime(), step1, step2)
@@ -279,7 +402,7 @@ func TestSyncMetadataAndEmitEntityEvents(t *testing.T) {
 	// Event 2 should contain the updated state of the pod.
 	lr = logsConsumer.AllLogs()[1].ResourceLogs().At(0).ScopeLogs().At(0).LogRecords().At(0)
 	attrs := expected["otel.entity.attributes"].(map[string]any)
-	attrs["key"] = "value"
+	attrs["k8s.pod.label.key"] = "value"
 	assert.Equal(t, expected, lr.Attributes().AsRaw())
 	assert.WithinRange(t, lr.Timestamp().AsTime(), step2, step3)
 
@@ -291,7 +414,7 @@ func TestSyncMetadataAndEmitEntityEvents(t *testing.T) {
 	// Event 4 should contain the reverted state of the pod.
 	lr = logsConsumer.AllLogs()[3].ResourceLogs().At(0).ScopeLogs().At(0).LogRecords().At(0)
 	attrs = expected["otel.entity.attributes"].(map[string]any)
-	delete(attrs, "key")
+	delete(attrs, "k8s.pod.label.key")
 	assert.Equal(t, expected, lr.Attributes().AsRaw())
 	assert.WithinRange(t, lr.Timestamp().AsTime(), step4, step5)
 
@@ -304,6 +427,146 @@ func TestSyncMetadataAndEmitEntityEvents(t *testing.T) {
 	}
 	assert.Equal(t, expected, lr.Attributes().AsRaw())
 	assert.WithinRange(t, lr.Timestamp().AsTime(), step5, step6)
+}
+
+func TestSyncMetadataAndEmitEntityEventsWithEntityEventsSpecificationFeatureGate(t *testing.T) {
+	setEntityEventsSpecificationFeatureGate(t, true)
+
+	client := newFakeClientWithAllResources()
+
+	logsConsumer := new(consumertest.LogsSink)
+	pods := createPods(t, client, 1, false)
+	pod := pods[0]
+
+	rw := newResourceWatcher(receivertest.NewNopSettings(metadata.Type), &Config{MetadataCollectionInterval: 2 * time.Hour}, metadata.NewStore())
+	rw.entityLogConsumer = logsConsumer
+
+	step1 := time.Now()
+	rw.syncMetadataUpdate(nil, rw.objMetadata(pod))
+	step2 := time.Now()
+
+	rw.syncMetadataUpdate(rw.objMetadata(pod), nil)
+	step3 := time.Now()
+
+	require.Equal(t, 2, logsConsumer.LogRecordCount())
+
+	lr := logsConsumer.AllLogs()[0].ResourceLogs().At(0).ScopeLogs().At(0).LogRecords().At(0)
+	expected := map[string]any{
+		"entity.report.interval": int64(7200), // 2h in seconds
+		"entity.type":            "k8s.pod",
+		"entity.id":              map[string]any{"k8s.pod.uid": "pod0"},
+		"entity.description":     map[string]any{"pod.creation_timestamp": "0001-01-01T00:00:00Z", "k8s.pod.phase": "Unknown", "k8s.namespace.name": "test", "k8s.pod.name": "0", "k8s.node.name": "test-node"},
+	}
+	assert.Equal(t, "entity.state", lr.EventName())
+	assert.Equal(t, expected, lr.Attributes().AsRaw())
+	assert.WithinRange(t, lr.Timestamp().AsTime(), step1, step2)
+
+	lr = logsConsumer.AllLogs()[1].ResourceLogs().At(0).ScopeLogs().At(0).LogRecords().At(0)
+	expected = map[string]any{
+		"entity.type": "k8s.pod",
+		"entity.id":   map[string]any{"k8s.pod.uid": "pod0"},
+	}
+	assert.Equal(t, "entity.delete", lr.EventName())
+	assert.Equal(t, expected, lr.Attributes().AsRaw())
+	assert.WithinRange(t, lr.Timestamp().AsTime(), step2, step3)
+}
+
+func TestSyncMetadataAndEmitEntityEventsForPV(t *testing.T) {
+	logsConsumer := new(consumertest.LogsSink)
+
+	pv := testutils.NewPersistentVolume("1")
+
+	rw := newResourceWatcher(receivertest.NewNopSettings(metadata.Type), &Config{MetadataCollectionInterval: 2 * time.Hour}, metadata.NewStore())
+	rw.entityLogConsumer = logsConsumer
+
+	step1 := time.Now()
+
+	// PV is created.
+	rw.syncMetadataUpdate(nil, rw.objMetadata(pv))
+	step2 := time.Now()
+
+	// PV is deleted.
+	rw.syncMetadataUpdate(rw.objMetadata(pv), nil)
+	step3 := time.Now()
+
+	require.Equal(t, 2, logsConsumer.LogRecordCount())
+
+	// Event 1: entity_state for the PV creation
+	lr := logsConsumer.AllLogs()[0].ResourceLogs().At(0).ScopeLogs().At(0).LogRecords().At(0)
+	expected := map[string]any{
+		"otel.entity.event.type": "entity_state",
+		"otel.entity.interval":   int64(7200000),
+		"otel.entity.type":       "k8s.persistentvolume",
+		"otel.entity.id":         map[string]any{"k8s.persistentvolume.uid": "test-pv-1-uid"},
+		"otel.entity.attributes": map[string]any{
+			"k8s.persistentvolume.name":               "test-pv-1",
+			"k8s.persistentvolume.label.foo":          "bar",
+			"k8s.persistentvolume.label.foo1":         "",
+			"k8s.persistentvolume.creation_timestamp": "0001-01-01T00:00:00Z",
+		},
+	}
+	assert.Equal(t, expected, lr.Attributes().AsRaw())
+	assert.WithinRange(t, lr.Timestamp().AsTime(), step1, step2)
+
+	// Event 2: entity_delete for the PV
+	lr = logsConsumer.AllLogs()[1].ResourceLogs().At(0).ScopeLogs().At(0).LogRecords().At(0)
+	expected = map[string]any{
+		"otel.entity.event.type": "entity_delete",
+		"otel.entity.type":       "k8s.persistentvolume",
+		"otel.entity.id":         map[string]any{"k8s.persistentvolume.uid": "test-pv-1-uid"},
+	}
+	assert.Equal(t, expected, lr.Attributes().AsRaw())
+	assert.WithinRange(t, lr.Timestamp().AsTime(), step2, step3)
+}
+
+func TestSyncMetadataAndEmitEntityEventsForPVC(t *testing.T) {
+	logsConsumer := new(consumertest.LogsSink)
+
+	pvc := testutils.NewPersistentVolumeClaim("1")
+
+	rw := newResourceWatcher(receivertest.NewNopSettings(metadata.Type), &Config{MetadataCollectionInterval: 2 * time.Hour}, metadata.NewStore())
+	rw.entityLogConsumer = logsConsumer
+
+	step1 := time.Now()
+
+	// PVC is created.
+	rw.syncMetadataUpdate(nil, rw.objMetadata(pvc))
+	step2 := time.Now()
+
+	// PVC is deleted.
+	rw.syncMetadataUpdate(rw.objMetadata(pvc), nil)
+	step3 := time.Now()
+
+	require.Equal(t, 2, logsConsumer.LogRecordCount())
+
+	// Event 1: entity_state for the PVC creation
+	lr := logsConsumer.AllLogs()[0].ResourceLogs().At(0).ScopeLogs().At(0).LogRecords().At(0)
+	expected := map[string]any{
+		"otel.entity.event.type": "entity_state",
+		"otel.entity.interval":   int64(7200000),
+		"otel.entity.type":       "k8s.persistentvolumeclaim",
+		"otel.entity.id":         map[string]any{"k8s.persistentvolumeclaim.uid": "test-pvc-1-uid"},
+		"otel.entity.attributes": map[string]any{
+			"k8s.persistentvolumeclaim.name":               "test-pvc-1",
+			"k8s.namespace.name":                           "test-namespace",
+			"k8s.persistentvolume.name":                    "test-pv-1",
+			"k8s.persistentvolumeclaim.label.foo":          "bar",
+			"k8s.persistentvolumeclaim.label.foo1":         "",
+			"k8s.persistentvolumeclaim.creation_timestamp": "0001-01-01T00:00:00Z",
+		},
+	}
+	assert.Equal(t, expected, lr.Attributes().AsRaw())
+	assert.WithinRange(t, lr.Timestamp().AsTime(), step1, step2)
+
+	// Event 2: entity_delete for the PVC
+	lr = logsConsumer.AllLogs()[1].ResourceLogs().At(0).ScopeLogs().At(0).LogRecords().At(0)
+	expected = map[string]any{
+		"otel.entity.event.type": "entity_delete",
+		"otel.entity.type":       "k8s.persistentvolumeclaim",
+		"otel.entity.id":         map[string]any{"k8s.persistentvolumeclaim.uid": "test-pvc-1-uid"},
+	}
+	assert.Equal(t, expected, lr.Attributes().AsRaw())
+	assert.WithinRange(t, lr.Timestamp().AsTime(), step2, step3)
 }
 
 func TestObjMetadata(t *testing.T) {
@@ -326,7 +589,7 @@ func TestObjMetadata(t *testing.T) {
 					EntityType:    "k8s.pod",
 					ResourceIDKey: "k8s.pod.uid",
 					ResourceID:    "test-pod-0-uid",
-					Metadata:      allPodMetadata(map[string]string{"k8s.pod.phase": "Succeeded", "k8s.pod.name": "test-pod-0", "k8s.namespace.name": "test-namespace", string(conventions.K8SNodeNameKey): "test-node"}),
+					Metadata:      allPodMetadata(map[string]string{"k8s.pod.phase": "Succeeded", "k8s.pod.name": "test-pod-0", "k8s.namespace.name": "test-namespace", "k8s.node.name": "test-node"}),
 				},
 				experimentalmetricmetadata.ResourceID("container-id"): {
 					EntityType:    "container",
@@ -362,15 +625,15 @@ func TestObjMetadata(t *testing.T) {
 					ResourceIDKey: "k8s.pod.uid",
 					ResourceID:    "test-pod-0-uid",
 					Metadata: allPodMetadata(map[string]string{
-						"k8s.workload.kind":                "StatefulSet",
-						"k8s.workload.name":                "test-statefulset-0",
-						"k8s.statefulset.name":             "test-statefulset-0",
-						"k8s.statefulset.uid":              "test-statefulset-0-uid",
-						"k8s.pod.phase":                    "Failed",
-						"k8s.pod.status_reason":            "Evicted",
-						"k8s.pod.name":                     "test-pod-0",
-						"k8s.namespace.name":               "test-namespace",
-						string(conventions.K8SNodeNameKey): "test-node",
+						"k8s.workload.kind":     "StatefulSet",
+						"k8s.workload.name":     "test-statefulset-0",
+						"k8s.statefulset.name":  "test-statefulset-0",
+						"k8s.statefulset.uid":   "test-statefulset-0-uid",
+						"k8s.pod.phase":         "Failed",
+						"k8s.pod.status_reason": "Evicted",
+						"k8s.pod.name":          "test-pod-0",
+						"k8s.namespace.name":    "test-namespace",
+						"k8s.node.name":         "test-node",
 					}),
 				},
 			},
@@ -379,7 +642,7 @@ func TestObjMetadata(t *testing.T) {
 			name: "Pod with Service metadata",
 			metadataStore: func() *metadata.Store {
 				ms := metadata.NewStore()
-				ms.Setup(gvk.Service, &testutils.MockStore{
+				ms.Setup(gvk.Service, metadata.ClusterWideInformerKey, &testutils.MockStore{
 					Cache: map[string]any{
 						"test-namespace/test-service": &corev1.Service{
 							ObjectMeta: metav1.ObjectMeta{
@@ -407,12 +670,12 @@ func TestObjMetadata(t *testing.T) {
 					ResourceIDKey: "k8s.pod.uid",
 					ResourceID:    "test-pod-0-uid",
 					Metadata: allPodMetadata(map[string]string{
-						"k8s.service.test-service":         "",
-						"k8s-app":                          "my-app",
-						"k8s.pod.phase":                    "Running",
-						"k8s.namespace.name":               "test-namespace",
-						"k8s.pod.name":                     "test-pod-0",
-						string(conventions.K8SNodeNameKey): "test-node",
+						"k8s.service.test-service": "",
+						"k8s.pod.label.k8s-app":    "my-app",
+						"k8s.pod.phase":            "Running",
+						"k8s.namespace.name":       "test-namespace",
+						"k8s.pod.name":             "test-pod-0",
+						"k8s.node.name":            "test-node",
 					}),
 				},
 			},
@@ -482,8 +745,8 @@ func TestObjMetadata(t *testing.T) {
 					ResourceIDKey: "k8s.job.uid",
 					ResourceID:    "test-job-1-uid",
 					Metadata: map[string]string{
-						"foo":                    "bar",
-						"foo1":                   "",
+						"k8s.job.label.foo":      "bar",
+						"k8s.job.label.foo1":     "",
 						"k8s.workload.kind":      "Job",
 						"k8s.workload.name":      "test-job-1",
 						"job.creation_timestamp": "0001-01-01T00:00:00Z",
@@ -502,8 +765,8 @@ func TestObjMetadata(t *testing.T) {
 					ResourceIDKey: "k8s.node.uid",
 					ResourceID:    "test-node-1-uid",
 					Metadata: map[string]string{
-						"foo":                                    "bar",
-						"foo1":                                   "",
+						"k8s.node.label.foo":                     "bar",
+						"k8s.node.label.foo1":                    "",
 						"k8s.node.name":                          "test-node-1",
 						"node.creation_timestamp":                "0001-01-01T00:00:00Z",
 						"k8s.node.condition_disk_pressure":       "false",
@@ -525,8 +788,8 @@ func TestObjMetadata(t *testing.T) {
 					ResourceIDKey: "k8s.replicaset.uid",
 					ResourceID:    "test-replicaset-1-uid",
 					Metadata: map[string]string{
-						"foo":                           "bar",
-						"foo1":                          "",
+						"k8s.replicaset.label.foo":      "bar",
+						"k8s.replicaset.label.foo1":     "",
 						"k8s.workload.kind":             "ReplicaSet",
 						"k8s.workload.name":             "test-replicaset-1",
 						"replicaset.creation_timestamp": "0001-01-01T00:00:00Z",
@@ -586,6 +849,44 @@ func TestObjMetadata(t *testing.T) {
 				},
 			},
 		},
+		{
+			name:          "PersistentVolume simple case",
+			metadataStore: &metadata.Store{},
+			resource:      testutils.NewPersistentVolume("1"),
+			want: map[experimentalmetricmetadata.ResourceID]*metadata.KubernetesMetadata{
+				experimentalmetricmetadata.ResourceID("test-pv-1-uid"): {
+					EntityType:    "k8s.persistentvolume",
+					ResourceIDKey: "k8s.persistentvolume.uid",
+					ResourceID:    "test-pv-1-uid",
+					Metadata: map[string]string{
+						"k8s.persistentvolume.name":               "test-pv-1",
+						"k8s.persistentvolume.label.foo":          "bar",
+						"k8s.persistentvolume.label.foo1":         "",
+						"k8s.persistentvolume.creation_timestamp": "0001-01-01T00:00:00Z",
+					},
+				},
+			},
+		},
+		{
+			name:          "PersistentVolumeClaim simple case",
+			metadataStore: &metadata.Store{},
+			resource:      testutils.NewPersistentVolumeClaim("1"),
+			want: map[experimentalmetricmetadata.ResourceID]*metadata.KubernetesMetadata{
+				experimentalmetricmetadata.ResourceID("test-pvc-1-uid"): {
+					EntityType:    "k8s.persistentvolumeclaim",
+					ResourceIDKey: "k8s.persistentvolumeclaim.uid",
+					ResourceID:    "test-pvc-1-uid",
+					Metadata: map[string]string{
+						"k8s.persistentvolumeclaim.name":               "test-pvc-1",
+						"k8s.namespace.name":                           "test-namespace",
+						"k8s.persistentvolume.name":                    "test-pv-1",
+						"k8s.persistentvolumeclaim.label.foo":          "bar",
+						"k8s.persistentvolumeclaim.label.foo1":         "",
+						"k8s.persistentvolumeclaim.creation_timestamp": "0001-01-01T00:00:00Z",
+					},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -617,9 +918,26 @@ func podWithAdditionalLabels(labels map[string]string, pod *corev1.Pod) any {
 		pod.Labels = make(map[string]string, len(labels))
 	}
 
-	for k, v := range labels {
-		pod.Labels[k] = v
-	}
+	maps0.Copy(pod.Labels, labels)
 
 	return pod
+}
+
+func setEntityEventsSpecificationFeatureGate(t *testing.T, enabled bool) {
+	t.Helper()
+
+	previous := false
+	found := false
+	featuregate.GlobalRegistry().VisitAll(func(gate *featuregate.Gate) {
+		if gate.ID() == entityEventsSpecificationFeatureGateID {
+			previous = gate.IsEnabled()
+			found = true
+		}
+	})
+	require.True(t, found, "feature gate %q is not registered", entityEventsSpecificationFeatureGateID)
+
+	require.NoError(t, featuregate.GlobalRegistry().Set(entityEventsSpecificationFeatureGateID, enabled))
+	t.Cleanup(func() {
+		require.NoError(t, featuregate.GlobalRegistry().Set(entityEventsSpecificationFeatureGateID, previous))
+	})
 }

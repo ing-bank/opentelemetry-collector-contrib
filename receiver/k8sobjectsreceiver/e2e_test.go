@@ -64,7 +64,7 @@ func TestE2E(t *testing.T) {
 
 	f := otlpreceiver.NewFactory()
 	cfg := f.CreateDefaultConfig().(*otlpreceiver.Config)
-	getOrInsertDefault(t, &cfg.GRPC).NetAddr.Endpoint = "0.0.0.0:4317"
+	getOrInsertDefault(t, &cfg.Protocols.GRPC).NetAddr.Endpoint = "0.0.0.0:4317"
 	logsConsumer := new(consumertest.LogsSink)
 	rcvr, err := f.CreateLogs(context.Background(), receivertest.NewNopSettings(f.Type()), cfg, logsConsumer)
 	require.NoError(t, err, "failed creating logs receiver")
@@ -165,7 +165,8 @@ func TestE2E(t *testing.T) {
 				plogtest.IgnoreObservedTimestamp(),
 				plogtest.IgnoreResourceLogsOrder(),
 				plogtest.IgnoreScopeLogsOrder(),
-				plogtest.IgnoreLogRecordsOrder()),
+				plogtest.IgnoreLogRecordsOrder(),
+				plogtest.IgnoreScopeLogsVersion()),
 				"Received logs did not match log records in file %s", expectedFile,
 			)
 		})

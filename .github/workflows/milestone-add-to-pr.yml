@@ -4,16 +4,21 @@
 
 name: 'Project: Add PR to Milestone'
 on:
-  pull_request_target:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] — no PR code is checked out or executed
     types:
       - closed
 
+permissions:
+  contents: read
+
 jobs:
   update-pr:
-    if: github.event.pull_request.merged
+    permissions:
+      pull-requests: write # required for adding milestone to PRs
+    if: github.event.pull_request.merged && github.repository_owner == 'open-telemetry'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const milestones = await github.rest.issues.listMilestones({

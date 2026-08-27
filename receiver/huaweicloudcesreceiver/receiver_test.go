@@ -23,14 +23,6 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/huaweicloudcesreceiver/internal/mocks"
 )
 
-func stringPtr(s string) *string {
-	return &s
-}
-
-func float64Ptr(f float64) *float64 {
-	return &f
-}
-
 func TestNewReceiver(t *testing.T) {
 	cfg := &Config{
 		ControllerConfig: scraperhelper.ControllerConfig{
@@ -66,7 +58,7 @@ func TestListMetricDefinitionsSuccess(t *testing.T) {
 		config: createDefaultConfig().(*Config),
 	}
 
-	metrics, err := receiver.listMetricDefinitions(context.Background())
+	metrics, err := receiver.listMetricDefinitions(t.Context())
 
 	assert.NoError(t, err)
 	assert.NotNil(t, metrics)
@@ -86,7 +78,7 @@ func TestListMetricDefinitionsFailure(t *testing.T) {
 		config: createDefaultConfig().(*Config),
 	}
 
-	metrics, err := receiver.listMetricDefinitions(context.Background())
+	metrics, err := receiver.listMetricDefinitions(t.Context())
 
 	assert.Error(t, err)
 	assert.Empty(t, metrics)
@@ -102,20 +94,20 @@ func TestListDataPointsForMetricBackOffWIthDefaultConfig(t *testing.T) {
 
 	mockCes.On("ShowMetricData", mock.Anything).Return(nil, errors.New(requestThrottledErrMsg)).Times(3)
 	mockCes.On("ShowMetricData", mock.Anything).Return(&model.ShowMetricDataResponse{
-		MetricName: stringPtr("cpu_util"),
+		MetricName: new("cpu_util"),
 		Datapoints: &[]model.Datapoint{
 			{
-				Average:   float64Ptr(45.67),
+				Average:   new(45.67),
 				Timestamp: 1556625610000,
 			},
 			{
-				Average:   float64Ptr(89.01),
+				Average:   new(89.01),
 				Timestamp: 1556625715000,
 			},
 		},
 	}, nil)
 
-	resp, err := receiver.listDataPointsForMetric(context.Background(), time.Now().Add(10*time.Minute), time.Now(), model.MetricInfoList{
+	resp, err := receiver.listDataPointsForMetric(t.Context(), time.Now().Add(10*time.Minute), time.Now(), model.MetricInfoList{
 		Namespace:  "SYS.ECS",
 		MetricName: "cpu_util",
 		Dimensions: []model.MetricsDimension{
@@ -145,7 +137,7 @@ func TestListDataPointsForMetricBackOffFails(t *testing.T) {
 
 	mockCes.On("ShowMetricData", mock.Anything).Return(nil, errors.New(requestThrottledErrMsg)).Times(4)
 
-	resp, err := receiver.listDataPointsForMetric(context.Background(), time.Now().Add(10*time.Minute), time.Now(), model.MetricInfoList{
+	resp, err := receiver.listDataPointsForMetric(t.Context(), time.Now().Add(10*time.Minute), time.Now(), model.MetricInfoList{
 		Namespace:  "SYS.ECS",
 		MetricName: "cpu_util",
 		Dimensions: []model.MetricsDimension{
@@ -158,6 +150,12 @@ func TestListDataPointsForMetricBackOffFails(t *testing.T) {
 
 	require.ErrorContains(t, err, requestThrottledErrMsg)
 	assert.Nil(t, resp)
+}
+
+func TestValidPeriodValues(t *testing.T) {
+	for period, value := range validPeriods {
+		assert.Equal(t, period, value.Value())
+	}
 }
 
 func TestPollMetricsAndConsumeSuccess(t *testing.T) {
@@ -182,20 +180,20 @@ func TestPollMetricsAndConsumeSuccess(t *testing.T) {
 	}, nil)
 
 	mockCes.On("ShowMetricData", mock.Anything).Return(&model.ShowMetricDataResponse{
-		MetricName: stringPtr("cpu_util"),
+		MetricName: new("cpu_util"),
 		Datapoints: &[]model.Datapoint{
 			{
-				Average:   float64Ptr(45.67),
+				Average:   new(45.67),
 				Timestamp: 1556625610000,
 			},
 			{
-				Average:   float64Ptr(89.01),
+				Average:   new(89.01),
 				Timestamp: 1556625715000,
 			},
 		},
 	}, nil)
 
-	err := receiver.pollMetricsAndConsume(context.Background())
+	err := receiver.pollMetricsAndConsume(t.Context())
 
 	require.NoError(t, err)
 	assert.Equal(t, 2, next.DataPointCount())
@@ -228,10 +226,10 @@ func TestStartReadingMetrics(t *testing.T) {
 				}, nil)
 
 				m.On("ShowMetricData", mock.Anything).Return(&model.ShowMetricDataResponse{
-					MetricName: stringPtr("cpu_util"),
+					MetricName: new("cpu_util"),
 					Datapoints: &[]model.Datapoint{
 						{
-							Average:   float64Ptr(45.67),
+							Average:   new(45.67),
 							Timestamp: 1556625610000,
 						},
 					},
@@ -267,7 +265,7 @@ func TestStartReadingMetrics(t *testing.T) {
 				nextConsumer: next,
 				lastSeenTs:   make(map[string]time.Time),
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 			defer cancel()
 			r.startReadingMetrics(ctx)
 

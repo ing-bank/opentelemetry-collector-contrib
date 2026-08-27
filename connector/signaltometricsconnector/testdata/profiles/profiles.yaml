@@ -1,54 +1,62 @@
+dictionary:
+  attributeTable:
+    - keyStrindex: 0
+      value:
+        stringValue: foo
+    - keyStrindex: 1
+      value:
+        stringValue: bar
+    - keyStrindex: 2
+      value:
+        stringValue: foo
+    - keyStrindex: 3
+      value:
+        stringValue: notbar
+    - keyStrindex: 3
+      value:
+        stringValue: notbar
+    - keyStrindex: 2
+      value:
+        stringValue: notfoo
+  stringTable:
+    - profile.foo
+    - profile.bar
+    - profile.required
+    - profile.optional
+    - foo
+    - bar
+    - notbar
+    - notfoo
+    - resource.foo
+    - resource.bar
 resourceProfiles:
   - resource:
       attributes:
-        - key: resource.foo
+        - keyStrindex: 8
           value:
-            stringValue: foo
-        - key: resource.bar
+            stringValueStrindex: 4
+        - keyStrindex: 9
           value:
-            stringValue: bar
+            stringValueStrindex: 5
     scopeProfiles:
       - profiles:
           - attributeIndices: [0, 1]
             sample:
-              - locationsLength: 0
-                timestampsUnixNano: ["0"]
+              - timestampsUnixNano: ["0"]
             sampleType:
-              - unitStrindex: 0
+              unitStrindex: 0
             duration: 10000
           - attributeIndices: [2, 3]
             sample:
-              - locationsLength: 0
-                timestampsUnixNano: ["0"]
+              - timestampsUnixNano: ["0"]
             sampleType:
-              - unitStrindex: 0
+              unitStrindex: 0
             stringTable:
               - count
             duration: 10000
           - attributeIndices: [5]
             sample:
-              - locationsLength: 0
-                timestampsUnixNano: ["0"]
+              - timestampsUnixNano: ["0"]
             sampleType:
-              - unitStrindex: 0
+              unitStrindex: 0
         scope: {}
-dictionary:
-  attributeTable:
-    - key: profile.foo
-      value:
-        stringValue: foo
-    - key: profile.bar
-      value:
-        stringValue: bar
-    - key: profile.required
-      value:
-        stringValue: foo
-    - key: profile.optional
-      value:
-        stringValue: notbar
-    - key: profile.optional
-      value:
-        stringValue: notbar
-    - key: profile.required
-      value:
-        stringValue: notfoo

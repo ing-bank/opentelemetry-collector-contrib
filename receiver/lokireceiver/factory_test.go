@@ -4,7 +4,6 @@
 package lokireceiver
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -27,14 +26,14 @@ func TestCreateDefaultConfig(t *testing.T) {
 func TestCreateReceiver(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
-	cfg.(*Config).GRPC = &configgrpc.ServerConfig{
+	cfg.(*Config).Protocols.GRPC = &configgrpc.ServerConfig{
 		NetAddr: confignet.AddrConfig{
 			Endpoint:  defaultGRPCEndpoint,
 			Transport: confignet.TransportTypeTCP,
 		},
 	}
 	set := receivertest.NewNopSettings(metadata.Type)
-	receiver, err := factory.CreateLogs(context.Background(), set, cfg, consumertest.NewNop())
+	receiver, err := factory.CreateLogs(t.Context(), set, cfg, consumertest.NewNop())
 	assert.NoError(t, err, "receiver creation failed")
 	assert.NotNil(t, receiver, "receiver creation failed")
 }

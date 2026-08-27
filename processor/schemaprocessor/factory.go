@@ -1,12 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//go:generate mdatagen metadata.yaml
+//go:generate make mdatagen
 
 package schemaprocessor // import "github.com/open-telemetry/opentelemetry-collector-contrib/processor/schemaprocessor"
 
 import (
 	"context"
+	"time"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/confighttp"
@@ -26,7 +27,9 @@ type factory struct{}
 // with the default values being used throughout it
 func newDefaultConfiguration() component.Config {
 	return &Config{
-		ClientConfig: confighttp.NewDefaultClientConfig(),
+		ClientConfig:    confighttp.NewDefaultClientConfig(),
+		CacheCooldown:   5 * time.Minute,
+		CacheRetryLimit: 5,
 	}
 }
 
@@ -41,7 +44,7 @@ func NewFactory() processor.Factory {
 	)
 }
 
-func (f factory) createLogsProcessor(
+func (factory) createLogsProcessor(
 	ctx context.Context,
 	set processor.Settings,
 	cfg component.Config,
@@ -59,10 +62,11 @@ func (f factory) createLogsProcessor(
 		schemaProcessor.processLogs,
 		processorhelper.WithCapabilities(processorCapabilities),
 		processorhelper.WithStart(schemaProcessor.start),
+		processorhelper.WithShutdown(schemaProcessor.shutdown),
 	)
 }
 
-func (f factory) createMetricsProcessor(
+func (factory) createMetricsProcessor(
 	ctx context.Context,
 	set processor.Settings,
 	cfg component.Config,
@@ -80,10 +84,11 @@ func (f factory) createMetricsProcessor(
 		schemaProcessor.processMetrics,
 		processorhelper.WithCapabilities(processorCapabilities),
 		processorhelper.WithStart(schemaProcessor.start),
+		processorhelper.WithShutdown(schemaProcessor.shutdown),
 	)
 }
 
-func (f factory) createTracesProcessor(
+func (factory) createTracesProcessor(
 	ctx context.Context,
 	set processor.Settings,
 	cfg component.Config,
@@ -101,5 +106,6 @@ func (f factory) createTracesProcessor(
 		schemaProcessor.processTraces,
 		processorhelper.WithCapabilities(processorCapabilities),
 		processorhelper.WithStart(schemaProcessor.start),
+		processorhelper.WithShutdown(schemaProcessor.shutdown),
 	)
 }

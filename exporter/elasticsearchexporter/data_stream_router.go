@@ -4,7 +4,7 @@
 package elasticsearchexporter // import "github.com/open-telemetry/opentelemetry-collector-contrib/exporter/elasticsearchexporter"
 
 import (
-	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -15,13 +15,42 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/elasticsearchexporter/internal/elasticsearch"
 )
 
-var receiverRegex = regexp.MustCompile(`/receiver/(\w*receiver)`)
+var componentsRegex = []*regexp.Regexp{
+	regexp.MustCompile(`/receiver/(\w+receiver)`),
+	regexp.MustCompile(`/connector/(\w+connector)`),
+}
+
+var selfTelemetryScopeNames = map[string]bool{
+	"go.opentelemetry.io/collector/receiver/receiverhelper":   true,
+	"go.opentelemetry.io/collector/scraper/scraperhelper":     true,
+	"go.opentelemetry.io/collector/processor/processorhelper": true,
+	"go.opentelemetry.io/collector/exporter/exporterhelper":   true,
+	"go.opentelemetry.io/collector/service":                   true,
+}
 
 const (
-	maxDataStreamBytes       = 100
-	disallowedNamespaceRunes = "\\/*?\"<>| ,#:"
-	disallowedDatasetRunes   = "-\\/*?\"<>| ,#:"
+	maxDataStreamBytes          = 100
+	maxIndexBytes               = 255
+	disallowedNamespaceRunes    = "\\/*?\"<>| ,#:"
+	disallowedDatasetRunes      = "-\\/*?\"<>| ,#:"
+	disallowedIndexRunes        = "\\/*?\"<>| ,#:"
+	encodingFormatAttributeName = "encoding.format"
 )
+
+// isAllowedDataStreamType reports whether dsType is a valid data_stream.type
+// value that users may set via attributes when using the 'bodymap' mapping mode.
+func isAllowedDataStreamType(dsType string) bool {
+	switch dsType {
+	case defaultDataStreamTypeLogs,
+		defaultDataStreamTypeMetrics,
+		defaultDataStreamTypeTraces,
+		defaultDataStreamTypeProfiles,
+		defaultDataStreamTypeSynthetics:
+		return true
+	default:
+		return false
+	}
+}
 
 // Sanitize the datastream fields (dataset, namespace) to apply restrictions
 // as outlined in https://www.elastic.co/guide/en/ecs/current/ecs-data_stream.html
@@ -40,6 +69,30 @@ func sanitizeDataStreamField(field, disallowed, appendSuffix string) string {
 	field += appendSuffix
 
 	return field
+}
+
+// Sanitize the index name to apply restrictions
+// as outlined in Elasticsearch index naming rules.
+// https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-indices-create#operation-indices-create-index
+func sanitizeIndexName(index string) string {
+	index = strings.Map(func(r rune) rune {
+		if strings.ContainsRune(disallowedIndexRunes, r) {
+			return '_'
+		}
+		return unicode.ToLower(r)
+	}, index)
+
+	if len(index) > maxIndexBytes {
+		index = index[:maxIndexBytes]
+	}
+
+	index = strings.TrimLeft(index, "-_+")
+
+	if index == "." || index == ".." {
+		return ""
+	}
+
+	return index
 }
 
 // documentRouter is an interface for routing records to the appropriate
@@ -158,12 +211,16 @@ func routeRecord(
 	// Order:
 	// 1. elasticsearch.index from attributes
 	// 2. read data_stream.* from attributes
-	// 3. receiver-based routing
+	// 3. scope-based routing
 	// 4. use default hardcoded data_stream.*
 	if esIndex, esIndexExists := getFromAttributes(elasticsearch.IndexAttributeName, "", recordAttr, scopeAttr, resourceAttr); esIndexExists {
 		// Advanced users can route documents by setting IndexAttributeName in a processor earlier in the pipeline.
 		// If `data_stream.*` needs to be set in the document, users should use `data_stream.*` attributes.
-		return elasticsearch.Index{Index: esIndex}, nil
+		sanitized := sanitizeIndexName(esIndex)
+		if sanitized == "" {
+			return elasticsearch.Index{}, fmt.Errorf("invalid index name: %q", esIndex)
+		}
+		return elasticsearch.Index{Index: sanitized}, nil
 	}
 
 	dataset, datasetExists := getFromAttributes(elasticsearch.DataStreamDataset, defaultDataStreamDataset, recordAttr, scopeAttr, resourceAttr)
@@ -173,20 +230,15 @@ func routeRecord(
 	// if mapping mode is bodymap, allow overriding data_stream.type
 	if mode == MappingBodyMap {
 		dsType, _ = getFromAttributes(elasticsearch.DataStreamType, defaultDSType, recordAttr, scopeAttr, resourceAttr)
-		if dsType != "logs" && dsType != "metrics" {
-			return elasticsearch.Index{}, errors.New("data_stream.type cannot be other than logs or metrics")
+		if !isAllowedDataStreamType(dsType) {
+			return elasticsearch.Index{}, fmt.Errorf("data_stream.type %q is not allowed for 'bodymap' mapping mode", dsType)
 		}
 	}
 
-	// Only use receiver-based routing if dataset is not specified.
+	// Only use scope-based routing if dataset is not specified.
 	if !datasetExists {
-		// Receiver-based routing
-		// For example, hostmetricsreceiver (or hostmetricsreceiver.otel in the OTel output mode)
-		// for the scope name
-		// github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver/internal/scraper/cpuscraper
-		if submatch := receiverRegex.FindStringSubmatch(scope.Name()); len(submatch) > 0 {
-			receiverName := submatch[1]
-			dataset = receiverName
+		if ds, ok := applyScopeRouting(scope); ok {
+			dataset = ds
 		}
 	}
 
@@ -200,4 +252,40 @@ func routeRecord(
 	dataset = sanitizeDataStreamField(dataset, disallowedDatasetRunes, datasetSuffix)
 	namespace = sanitizeDataStreamField(namespace, disallowedNamespaceRunes, "")
 	return elasticsearch.NewDataStreamIndex(dsType, dataset, namespace), nil
+}
+
+func applyScopeRouting(scope pcommon.InstrumentationScope) (string, bool) {
+	// Priority:
+	// 1. self-telemetry
+	// 2. encoding-based routing
+	// 3. receiver-based routing
+
+	// For collector self-telemetry, use a fixed dataset name
+	if selfTelemetryScopeNames[scope.Name()] {
+		return collectorSelfTelemetryDataStreamDataset, true
+	}
+
+	// Encoding-based routing
+	// Encoding extensions may set the `encoding.format` scope attribute according to log types.
+	// For example, awslogsencodingextension sets `aws.elbaccess`, `aws.vpcflow`, etc.
+	if format, ok := scope.Attributes().Get(encodingFormatAttributeName); ok {
+		if format.Type() == pcommon.ValueTypeStr {
+			if stringVal := format.Str(); stringVal != "" {
+				return stringVal, true
+			}
+		}
+	}
+
+	// {receiver/connector}-based routing
+	// For example, hostmetricsreceiver (or hostmetricsreceiver.otel in the OTel output mode)
+	// for the scope name
+	// github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver/internal/scraper/cpuscraper
+	for _, componentRegex := range componentsRegex {
+		loc := componentRegex.FindStringSubmatchIndex(scope.Name())
+		if len(loc) == 4 {
+			return scope.Name()[loc[2]:loc[3]], true
+		}
+	}
+
+	return "", false
 }

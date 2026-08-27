@@ -27,12 +27,10 @@ receivers:
     protocols:
       grpc:
       http:
-processors:
-  batch:
 
 exporters:
-  logging:
-    loglevel: debug
+  debug:
+    verbosity: detailed
   http:
     endpoint: "https://example.com/api/metrics"
     headers:
@@ -41,16 +39,13 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [batch]
-      exporters: [logging, http]
+      exporters: [debug, http]
     metrics:
       receivers: [otlp]
-      processors: [batch]
-      exporters: [logging, http]
+      exporters: [debug, http]
     logs:
       receivers: [otlp]
-      processors: [batch]
-      exporters: [logging, http]
+      exporters: [debug, http]
 
 ```
 

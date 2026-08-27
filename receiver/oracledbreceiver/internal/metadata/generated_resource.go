@@ -21,6 +21,41 @@ func NewResourceBuilder(rac ResourceAttributesConfig) *ResourceBuilder {
 	}
 }
 
+// SetHostName sets provided value as "host.name" attribute.
+func (rb *ResourceBuilder) SetHostName(val string) {
+	if rb.config.HostName.Enabled {
+		rb.res.Attributes().PutStr("host.name", val)
+	}
+}
+
+// SetOracleDbHostingType sets provided value as "oracle.db.hosting_type" attribute.
+func (rb *ResourceBuilder) SetOracleDbHostingType(val string) {
+	if rb.config.OracleDbHostingType.Enabled {
+		rb.res.Attributes().PutStr("oracle.db.hosting_type", val)
+	}
+}
+
+// SetOracleDbOpenMode sets provided value as "oracle.db.open_mode" attribute.
+func (rb *ResourceBuilder) SetOracleDbOpenMode(val string) {
+	if rb.config.OracleDbOpenMode.Enabled {
+		rb.res.Attributes().PutStr("oracle.db.open_mode", val)
+	}
+}
+
+// SetOracleDbRole sets provided value as "oracle.db.role" attribute.
+func (rb *ResourceBuilder) SetOracleDbRole(val string) {
+	if rb.config.OracleDbRole.Enabled {
+		rb.res.Attributes().PutStr("oracle.db.role", val)
+	}
+}
+
+// SetOracleDbVersion sets provided value as "oracle.db.version" attribute.
+func (rb *ResourceBuilder) SetOracleDbVersion(val string) {
+	if rb.config.OracleDbVersion.Enabled {
+		rb.res.Attributes().PutStr("oracle.db.version", val)
+	}
+}
+
 // SetOracledbInstanceName sets provided value as "oracledb.instance.name" attribute.
 func (rb *ResourceBuilder) SetOracledbInstanceName(val string) {
 	if rb.config.OracledbInstanceName.Enabled {
@@ -28,8 +63,30 @@ func (rb *ResourceBuilder) SetOracledbInstanceName(val string) {
 	}
 }
 
+// SetServiceInstanceID sets provided value as "service.instance.id" attribute.
+func (rb *ResourceBuilder) SetServiceInstanceID(val string) {
+	if rb.config.ServiceInstanceID.Enabled {
+		rb.res.Attributes().PutStr("service.instance.id", val)
+	}
+}
+
+// SetServiceName sets provided value as "service.name" attribute.
+func (rb *ResourceBuilder) SetServiceName(val string) {
+	if rb.config.ServiceName.Enabled {
+		rb.res.Attributes().PutStr("service.name", val)
+	}
+}
+
+// SetServiceNamespace sets provided value as "service.namespace" attribute.
+func (rb *ResourceBuilder) SetServiceNamespace(val string) {
+	if rb.config.ServiceNamespace.Enabled {
+		rb.res.Attributes().PutStr("service.namespace", val)
+	}
+}
+
 // Emit returns the built resource and resets the internal builder state.
 func (rb *ResourceBuilder) Emit() pcommon.Resource {
+	rb.config.applyOverrideValues(rb.res)
 	r := rb.res
 	rb.res = pcommon.NewResource()
 	return r

@@ -63,7 +63,7 @@ func createMetricsReceiver(
 	if err != nil {
 		return nil, err
 	}
-	return scraperhelper.NewMetricsController(&recv.config.ControllerConfig, params, consumer, scraperhelper.AddScraper(metadata.Type, scrp))
+	return scraperhelper.NewMetricsController(&recv.config.ControllerConfig, params, consumer, scraperhelper.AddMetricsScraper(metadata.Type, scrp))
 }
 
 func (r *metricsReceiver) start(ctx context.Context, _ component.Host) error {
@@ -73,7 +73,8 @@ func (r *metricsReceiver) start(ctx context.Context, _ component.Host) error {
 	}
 
 	r.scraper = newContainerScraper(podmanClient, r.set.Logger, r.config)
-	if err = r.scraper.loadContainerList(ctx); err != nil {
+	err = r.scraper.loadContainerList(ctx)
+	if err != nil {
 		return err
 	}
 
@@ -105,7 +106,8 @@ func (r *metricsReceiver) scrape(ctx context.Context) (pmetric.Metrics, error) {
 
 	wg := &sync.WaitGroup{}
 	wg.Add(len(containers))
-	for _, c := range containers {
+	for i := range containers {
+		c := containers[i]
 		go func(c container) {
 			defer wg.Done()
 			stats, err := r.scraper.fetchContainerStats(ctx, c)
@@ -156,8 +158,8 @@ func (r *metricsReceiver) recordCPUMetrics(now pcommon.Timestamp, stats *contain
 }
 
 func (r *metricsReceiver) recordNetworkMetrics(now pcommon.Timestamp, stats *containerStats) {
-	r.mb.RecordContainerNetworkIoUsageRxBytesDataPoint(now, int64(stats.NetOutput))
-	r.mb.RecordContainerNetworkIoUsageTxBytesDataPoint(now, int64(stats.NetInput))
+	r.mb.RecordContainerNetworkIoUsageRxBytesDataPoint(now, int64(stats.NetInput))
+	r.mb.RecordContainerNetworkIoUsageTxBytesDataPoint(now, int64(stats.NetOutput))
 }
 
 func (r *metricsReceiver) recordMemoryMetrics(now pcommon.Timestamp, stats *containerStats) {

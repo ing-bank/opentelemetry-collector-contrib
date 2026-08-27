@@ -9,9 +9,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
-	"go.opentelemetry.io/collector/confmap/xconfmap"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor/internal/common"
@@ -29,7 +30,7 @@ func TestLoadConfig(t *testing.T) {
 		{
 			id: component.NewIDWithName(metadata.Type, ""),
 			expected: &Config{
-				ErrorMode: ottl.PropagateError,
+				ErrorMode: ottl.IgnoreError,
 				TraceStatements: []common.ContextStatements{
 					{
 						Context: "span",
@@ -75,12 +76,26 @@ func TestLoadConfig(t *testing.T) {
 						},
 					},
 				},
+				ProfileStatements: []common.ContextStatements{
+					{
+						Context: "profile",
+						Statements: []string{
+							`set(original_payload_format, "bear") where original_payload_format == "/animal"`,
+						},
+					},
+					{
+						Context: "resource",
+						Statements: []string{
+							`set(attributes["name"], "bear")`,
+						},
+					},
+				},
 			},
 		},
 		{
 			id: component.NewIDWithName(metadata.Type, "with_conditions"),
 			expected: &Config{
-				ErrorMode: ottl.PropagateError,
+				ErrorMode: ottl.IgnoreError,
 				TraceStatements: []common.ContextStatements{
 					{
 						Context:    "span",
@@ -108,6 +123,15 @@ func TestLoadConfig(t *testing.T) {
 						},
 					},
 				},
+				ProfileStatements: []common.ContextStatements{
+					{
+						Context:    "profile",
+						Conditions: []string{`original_payload_format == "/animal"`},
+						Statements: []string{
+							`set(original_payload_format, "bear")`,
+						},
+					},
+				},
 			},
 		},
 		{
@@ -122,8 +146,9 @@ func TestLoadConfig(t *testing.T) {
 						},
 					},
 				},
-				MetricStatements: []common.ContextStatements{},
-				LogStatements:    []common.ContextStatements{},
+				MetricStatements:  []common.ContextStatements{},
+				LogStatements:     []common.ContextStatements{},
+				ProfileStatements: []common.ContextStatements{},
 			},
 		},
 		{
@@ -145,17 +170,23 @@ func TestLoadConfig(t *testing.T) {
 			id: component.NewIDWithName(metadata.Type, "unknown_function_log"),
 		},
 		{
+			id: component.NewIDWithName(metadata.Type, "bad_syntax_profile"),
+		},
+		{
+			id: component.NewIDWithName(metadata.Type, "unknown_function_profile"),
+		},
+		{
 			id: component.NewIDWithName(metadata.Type, "bad_syntax_multi_signal"),
 			errors: []error{
-				errors.New("unexpected token \"where\""),
-				errors.New("unexpected token \"attributes\""),
-				errors.New("unexpected token \"none\""),
+				errors.New("invalid syntax at 1:18 near `where attr`"),
+				errors.New("invalid syntax at 1:18 near `attributes`"),
+				errors.New("invalid syntax at 1:18 near `none"),
 			},
 		},
 		{
 			id: component.NewIDWithName(metadata.Type, "structured_configuration_with_path_context"),
 			expected: &Config{
-				ErrorMode: ottl.PropagateError,
+				ErrorMode: ottl.IgnoreError,
 				TraceStatements: []common.ContextStatements{
 					{
 						Context:    "span",
@@ -174,12 +205,18 @@ func TestLoadConfig(t *testing.T) {
 						Statements: []string{`set(log.body, "bear") where log.attributes["http.path"] == "/animal"`},
 					},
 				},
+				ProfileStatements: []common.ContextStatements{
+					{
+						Context:    "profile",
+						Statements: []string{`set(profile.original_payload_format, "bear") where profile.original_payload_format == "/animal"`},
+					},
+				},
 			},
 		},
 		{
 			id: component.NewIDWithName(metadata.Type, "structured_configuration_with_inferred_context"),
 			expected: &Config{
-				ErrorMode: ottl.PropagateError,
+				ErrorMode: ottl.IgnoreError,
 				TraceStatements: []common.ContextStatements{
 					{
 						Statements: []string{
@@ -200,6 +237,14 @@ func TestLoadConfig(t *testing.T) {
 					{
 						Statements: []string{
 							`set(log.body, "bear") where log.attributes["http.path"] == "/animal"`,
+							`set(resource.attributes["name"], "bear")`,
+						},
+					},
+				},
+				ProfileStatements: []common.ContextStatements{
+					{
+						Statements: []string{
+							`set(profile.original_payload_format, "bear") where profile.original_payload_format == "/animal"`,
 							`set(resource.attributes["name"], "bear")`,
 						},
 					},
@@ -209,7 +254,7 @@ func TestLoadConfig(t *testing.T) {
 		{
 			id: component.NewIDWithName(metadata.Type, "flat_configuration"),
 			expected: &Config{
-				ErrorMode: ottl.PropagateError,
+				ErrorMode: ottl.IgnoreError,
 				TraceStatements: []common.ContextStatements{
 					{
 						Statements: []string{
@@ -230,6 +275,14 @@ func TestLoadConfig(t *testing.T) {
 					{
 						Statements: []string{
 							`set(log.body, "bear") where log.attributes["http.path"] == "/animal"`,
+							`set(resource.attributes["name"], "bear")`,
+						},
+					},
+				},
+				ProfileStatements: []common.ContextStatements{
+					{
+						Statements: []string{
+							`set(profile.original_payload_format, "bear") where profile.original_payload_format == "/animal"`,
 							`set(resource.attributes["name"], "bear")`,
 						},
 					},
@@ -270,23 +323,33 @@ func TestLoadConfig(t *testing.T) {
 						ErrorMode:  "",
 					},
 				},
+				ProfileStatements: []common.ContextStatements{
+					{
+						Statements: []string{`set(resource.attributes["name"], "propagate")`},
+						ErrorMode:  ottl.PropagateError,
+					},
+					{
+						Statements: []string{`set(resource.attributes["name"], "ignore")`},
+						ErrorMode:  "",
+					},
+				},
 			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.id.Name(), func(t *testing.T) {
 			cm, err := confmaptest.LoadConf(filepath.Join("testdata", "config.yaml"))
-			assert.NoError(t, err)
+			require.NoError(t, err)
 
 			factory := NewFactory()
 			cfg := factory.CreateDefaultConfig()
 
 			sub, err := cm.Sub(tt.id.String())
-			assert.NoError(t, err)
-			assert.NoError(t, sub.Unmarshal(cfg))
+			require.NoError(t, err)
+			require.NoError(t, sub.Unmarshal(cfg))
 
 			if tt.expected == nil {
-				err = xconfmap.Validate(cfg)
+				err = confmap.Validate(cfg)
 				assert.Error(t, err)
 
 				if len(tt.errors) > 0 {
@@ -295,8 +358,9 @@ func TestLoadConfig(t *testing.T) {
 					}
 				}
 			} else {
-				assert.NoError(t, xconfmap.Validate(cfg))
-				assert.Equal(t, tt.expected, cfg)
+				require.NoError(t, confmap.Validate(cfg))
+				assert.EqualExportedValues(t, tt.expected, cfg)
+				assertConfigContainsDefaultFunctions(t, *cfg.(*Config))
 			}
 		})
 	}
@@ -306,13 +370,13 @@ func Test_UnknownContextID(t *testing.T) {
 	id := component.NewIDWithName(metadata.Type, "unknown_context")
 
 	cm, err := confmaptest.LoadConf(filepath.Join("testdata", "config.yaml"))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 
 	sub, err := cm.Sub(id.String())
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Error(t, sub.Unmarshal(cfg))
 }
 
@@ -320,24 +384,46 @@ func Test_UnknownErrorMode(t *testing.T) {
 	id := component.NewIDWithName(metadata.Type, "unknown_error_mode")
 
 	cm, err := confmaptest.LoadConf(filepath.Join("testdata", "config.yaml"))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 
 	sub, err := cm.Sub(id.String())
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Error(t, sub.Unmarshal(cfg))
 }
 
 func Test_MixedConfigurationStyles(t *testing.T) {
 	cm, err := confmaptest.LoadConf(filepath.Join("testdata", "config.yaml"))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 
 	sub, err := cm.Sub(component.NewIDWithName(metadata.Type, "mixed_configuration_styles").String())
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.ErrorContains(t, sub.Unmarshal(cfg), "configuring multiple configuration styles is not supported")
+}
+
+func Test_EmptyStatementListItem(t *testing.T) {
+	t.Parallel()
+
+	for _, fieldName := range []string{
+		"trace_statements",
+		"metric_statements",
+		"log_statements",
+		"profile_statements",
+	} {
+		t.Run(fieldName, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := NewFactory().CreateDefaultConfig()
+			conf := confmap.NewFromStringMap(map[string]any{
+				fieldName: []any{nil},
+			})
+
+			require.ErrorContains(t, conf.Unmarshal(cfg), "invalid "+fieldName+" item: empty statement list items are not supported")
+		})
+	}
 }

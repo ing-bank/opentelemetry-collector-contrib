@@ -5,15 +5,15 @@
     "dependencies"
   ],
   "constraints": {
-    "go": "1.23.0"
+    "go": "1.26"
   },
   "schedule": [
     "on tuesday"
   ],
+  "minimumReleaseAge": "2 days",
   "extends": [
-    "config:recommended",
-    "customManagers:githubActionsVersions",
-    "helpers:pinGitHubActionDigests"
+    "config:best-practices",
+    "helpers:pinGitHubActionDigestsToSemver"
   ],
   "ignorePaths": [
     "**/receiver/apachesparkreceiver/testdata/integration/Dockerfile.apache-spark",
@@ -97,6 +97,24 @@
       "groupName": "All github.com/datadog packages",
       "matchSourceUrls": [
         "https://github.com/datadog{/,}**"
+      ]
+    },
+    {
+      "enabled": false,
+      "matchPackageNames": [
+        "/^github.com/DataDog/opentelemetry-mapping-go//"
+      ]
+    },
+    {
+      "matchFileNames": [
+        "exporter/datadogexporter/**",
+        "connector/datadogconnector/**",
+        "internal/datadog/**",
+        "pkg/datadog/**"
+      ],
+      "enabled": false,
+      "matchPackageNames": [
+        "/^github.com/DataDog/datadog-agent/"
       ]
     },
     {
@@ -225,6 +243,28 @@
       "matchPackageNames": [
         "github.com/splunk/stef{/,}**"
       ]
+    },
+    {
+      "matchManagers": [
+        "gomod"
+      ],
+      "groupName": "All github.com/twmb/franz-go packages",
+      "matchPackageNames": [
+        "github.com/twmb/franz-go{/,}**"
+      ]
+    },
+    {
+      "groupName": "github.com/twmb/franz-go/pkg/kmsg package",
+      "matchPackageNames": [
+        "github.com/twmb/franz-go/pkg/kmsg"
+      ],
+      "allowedVersions": "<2.0.0"
+    },
+    {
+      "matchPackageNames": [
+        "github.com/vmware/govmomi"
+      ],
+      "allowedVersions": "!/v0.51.0$/"
     }
   ],
   "ignoreDeps": [

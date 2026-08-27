@@ -4,7 +4,6 @@
 package kafkareceiver // import "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/kafkareceiver"
 
 import (
-	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -30,7 +29,7 @@ import (
 var (
 	batchSizes     = []int{1, 10}
 	partitions     = []int32{1, 2}
-	clients        = []string{"Sarama", "Franz"}
+	clients        = []string{"Franz"}
 	benchmarkCases = []struct {
 		name string
 		MessageMarking
@@ -39,12 +38,12 @@ var (
 		{
 			name:             "AutoCommit OnError=false (default)",
 			MessageMarking:   createDefaultConfig().(*Config).MessageMarking,
-			AutoCommitConfig: createDefaultConfig().(*Config).AutoCommit,
+			AutoCommitConfig: createDefaultConfig().(*Config).ConsumerConfig.AutoCommit,
 		},
 		{
 			name:             "AutoCommit OnError=true",
 			MessageMarking:   MessageMarking{After: true, OnError: true},
-			AutoCommitConfig: createDefaultConfig().(*Config).AutoCommit,
+			AutoCommitConfig: createDefaultConfig().(*Config).ConsumerConfig.AutoCommit,
 		},
 		{
 			name:             "After=true OnError=false",
@@ -74,12 +73,12 @@ func newBenchConfigClient(b *testing.B, topic string, partitions int32,
 	messageMarking MessageMarking,
 ) (*Config, *kgo.Client) {
 	client, cfg := mustNewFakeCluster(b, kfake.SeedTopics(partitions, topic))
-	cfg.Logs.Topic = topic
-	cfg.Traces.Topic = topic
-	cfg.Metrics.Topic = topic
-	cfg.GroupID = b.Name()
-	cfg.InitialOffset = "earliest"
-	cfg.AutoCommit = autoCommit
+	cfg.Logs.Topics = []string{topic}
+	cfg.Traces.Topics = []string{topic}
+	cfg.Metrics.Topics = []string{topic}
+	cfg.ConsumerConfig.GroupID = b.Name()
+	cfg.ConsumerConfig.InitialOffset = "earliest"
+	cfg.ConsumerConfig.AutoCommit = autoCommit
 	cfg.MessageMarking = messageMarking
 	return cfg, client
 }
@@ -88,21 +87,21 @@ func runBenchmark(b *testing.B, topic string, data []byte,
 	rcv component.Component, client *kgo.Client,
 ) {
 	require.NoError(b,
-		rcv.Start(context.Background(), componenttest.NewNopHost()),
+		rcv.Start(b.Context(), componenttest.NewNopHost()),
 	)
-	defer func() { require.NoError(b, rcv.Shutdown(context.Background())) }()
+	defer func() { require.NoError(b, rcv.Shutdown(b.Context())) }()
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			client.Produce(context.Background(), &kgo.Record{
+			client.Produce(b.Context(), &kgo.Record{
 				Topic: topic, Value: data,
 			}, func(_ *kgo.Record, err error) {
 				require.NoError(b, err)
 			})
 		}
 	})
-	client.Flush(context.Background())
+	client.Flush(b.Context())
 }
 
 func BenchmarkTracesReceiver(b *testing.B) {
@@ -122,7 +121,6 @@ func BenchmarkTracesReceiver(b *testing.B) {
 					name := fmt.Sprintf("%s/%s/batch_%d/partitions_%d", client, tc.name, size, p)
 					b.Run(name, func(b *testing.B) {
 						defer sink.Reset()
-						setFranzGo(b, client == "Franz")
 						cfg, client := newBenchConfigClient(b, topic, p,
 							tc.AutoCommitConfig, tc.MessageMarking,
 						)
@@ -154,7 +152,6 @@ func BenchmarkLogsReceiver(b *testing.B) {
 					name := fmt.Sprintf("%s/%s/batch_%d/partitions_%d", client, tc.name, size, p)
 					b.Run(name, func(b *testing.B) {
 						defer sink.Reset()
-						setFranzGo(b, client == "Franz")
 						cfg, client := newBenchConfigClient(b, topic, p,
 							tc.AutoCommitConfig, tc.MessageMarking,
 						)
@@ -182,19 +179,20 @@ func BenchmarkMetricsReceiver(b *testing.B) {
 			data, err := marshaler.MarshalMetrics(testdata.GenerateMetrics(size))
 			require.NoError(b, err)
 			for _, p := range partitions {
-				suffix := fmt.Sprintf("/%s/batch_%d/partitions_%d", tc.name, size, p)
-				b.Run("Sarama"+suffix, func(b *testing.B) {
-					defer sink.Reset()
-					setFranzGo(b, false)
-					cfg, client := newBenchConfigClient(b, topic, p,
-						tc.AutoCommitConfig, tc.MessageMarking,
-					)
-					rcv, err := newMetricsReceiver(cfg, set, &sink)
-					require.NoError(b, err)
+				for _, client := range clients {
+					name := fmt.Sprintf("%s/%s/batch_%d/partitions_%d", client, tc.name, size, p)
+					b.Run(name, func(b *testing.B) {
+						defer sink.Reset()
+						cfg, client := newBenchConfigClient(b, topic, p,
+							tc.AutoCommitConfig, tc.MessageMarking,
+						)
+						rcv, err := newMetricsReceiver(cfg, set, &sink)
+						require.NoError(b, err)
 
-					runBenchmark(b, topic, data, rcv, client)
-					b.ReportMetric(float64(sink.DataPointCount())/b.Elapsed().Seconds(), "metrics/s")
-				})
+						runBenchmark(b, topic, data, rcv, client)
+						b.ReportMetric(float64(sink.DataPointCount())/b.Elapsed().Seconds(), "metrics/s")
+					})
+				}
 			}
 		}
 	}

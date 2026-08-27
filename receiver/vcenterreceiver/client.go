@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/url"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -63,8 +64,8 @@ func (vc *vcenterClient) EnsureConnection(ctx context.Context) error {
 		return err
 	}
 
-	soapClient := soap.NewClient(sdkURL, vc.cfg.Insecure)
-	tlsCfg, err := vc.cfg.LoadTLSConfig(ctx)
+	soapClient := soap.NewClient(sdkURL, vc.cfg.ClientConfig.Insecure)
+	tlsCfg, err := vc.cfg.ClientConfig.LoadTLSConfig(ctx)
 	if err != nil {
 		return err
 	}
@@ -241,6 +242,7 @@ func (vc *vcenterClient) VMs(ctx context.Context, containerMoRef vt.ManagedObjec
 		"summary.quickStats.swappedMemory",
 		"summary.quickStats.ssdSwappedMemory",
 		"summary.quickStats.overallCpuUsage",
+		"summary.quickStats.overallCpuReadiness",
 		"summary.overallStatus",
 		"summary.config.memorySizeMB",
 		"summary.storage.committed",
@@ -299,8 +301,7 @@ func (vc *vcenterClient) VAppInventoryListObjects(
 			continue
 		}
 
-		var notFoundErr *find.NotFoundError
-		if !errors.As(err, &notFoundErr) {
+		if _, ok := errors.AsType[*find.NotFoundError](err); !ok {
 			return nil, fmt.Errorf("unable to retrieve vApps with InventoryLists for datacenter %s: %w", dc.InventoryPath, err)
 		}
 	}
@@ -326,22 +327,41 @@ func (vc *vcenterClient) PerfMetricsQuery(
 		return &perfMetricsQueryResult{}, nil
 	}
 	vc.pm.Sort = true
-	sample, err := vc.pm.SampleByName(ctx, spec, names, objs)
-	if err != nil {
-		return nil, err
-	}
-	result, err := vc.pm.ToMetricSeries(ctx, sample)
-	if err != nil {
-		return nil, err
+
+	batchSize := vc.batchSizeForMetrics(len(names))
+	if batchSize <= 0 || batchSize >= len(objs) {
+		batchSize = max(len(objs), 1)
 	}
 
 	resultsByRef := map[string]*performance.EntityMetric{}
-	for i := range result {
-		resultsByRef[result[i].Entity.Value] = &result[i]
+	for batch := range slices.Chunk(objs, batchSize) {
+		sample, err := vc.pm.SampleByName(ctx, spec, names, batch)
+		if err != nil {
+			return nil, err
+		}
+		result, err := vc.pm.ToMetricSeries(ctx, sample)
+		if err != nil {
+			return nil, err
+		}
+
+		for i := range result {
+			resultsByRef[result[i].Entity.Value] = &result[i]
+		}
 	}
 	return &perfMetricsQueryResult{
 		resultsByRef: resultsByRef,
 	}, nil
+}
+
+func (vc *vcenterClient) batchSizeForMetrics(numMetrics int) int {
+	if vc.cfg == nil {
+		return 0
+	}
+	limit := vc.cfg.MaxQueryMetrics
+	if limit <= 0 || numMetrics == 0 {
+		return 0
+	}
+	return limit / numMetrics
 }
 
 // vSANQueryResults contains all returned vSAN metric related data
@@ -380,7 +400,7 @@ const (
 )
 
 // getLabelsForQueryType returns the appropriate labels for each query type
-func (vc *vcenterClient) getLabelsForQueryType(queryType vSANQueryType) []string {
+func (*vcenterClient) getLabelsForQueryType(queryType vSANQueryType) []string {
 	switch queryType {
 	case vSANQueryTypeClusters:
 		return []string{
@@ -555,7 +575,8 @@ func (vc *vcenterClient) convertVSANResultToMetricResults(vSANResult types.VsanP
 	}
 
 	// Parse all metrics
-	for _, vSANValue := range vSANResult.Value {
+	for i := range vSANResult.Value {
+		vSANValue := vSANResult.Value[i]
 		metricDetails, err := vc.convertVSANValueToMetricDetails(vSANValue, timestamps)
 		if err != nil {
 			return &metricResults, err
@@ -603,10 +624,10 @@ func (vc *vcenterClient) convertVSANValueToMetricDetails(
 }
 
 // uuidFromEntityRefID returns the UUID portion of the EntityRefId
-func (vc *vcenterClient) uuidFromEntityRefID(id string) (string, error) {
-	colonIndex := strings.Index(id, ":")
-	if colonIndex != -1 {
-		uuid := id[colonIndex+1:]
+func (*vcenterClient) uuidFromEntityRefID(id string) (string, error) {
+	_, after, ok := strings.Cut(id, ":")
+	if ok {
+		uuid := after
 		return uuid, nil
 	}
 

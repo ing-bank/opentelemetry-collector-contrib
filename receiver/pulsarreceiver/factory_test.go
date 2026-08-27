@@ -1,10 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build !aix
+
 package pulsarreceiver // import "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/pulsarreceiver"
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -35,7 +36,7 @@ func TestCreateTraces_err_addr(t *testing.T) {
 	cfg.Endpoint = "invalid:6650"
 
 	f := pulsarReceiverFactory{tracesUnmarshalers: defaultTracesUnmarshalers()}
-	r, err := f.createTracesReceiver(context.Background(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
+	r, err := f.createTracesReceiver(t.Context(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
 	require.Error(t, err)
 	assert.Nil(t, r)
 }
@@ -45,7 +46,7 @@ func TestCreateTraces_err_marshallers(t *testing.T) {
 	cfg.Endpoint = defaultServiceURL
 
 	f := pulsarReceiverFactory{tracesUnmarshalers: make(map[string]TracesUnmarshaler)}
-	r, err := f.createTracesReceiver(context.Background(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
+	r, err := f.createTracesReceiver(t.Context(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
 	require.Error(t, err)
 	assert.Nil(t, r)
 }
@@ -53,7 +54,7 @@ func TestCreateTraces_err_marshallers(t *testing.T) {
 func Test_CreateTraceReceiver(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	f := pulsarReceiverFactory{tracesUnmarshalers: defaultTracesUnmarshalers()}
-	recv, err := f.createTracesReceiver(context.Background(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
+	recv, err := f.createTracesReceiver(t.Context(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
 	require.NoError(t, err)
 	assert.NotNil(t, recv)
 }
@@ -65,13 +66,13 @@ func TestWithTracesUnmarshalers(t *testing.T) {
 
 	t.Run("custom_encoding", func(t *testing.T) {
 		cfg.Encoding = unmarshaler.Encoding()
-		receiver, err := f.CreateTraces(context.Background(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
+		receiver, err := f.CreateTraces(t.Context(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
 		require.NoError(t, err)
 		require.NotNil(t, receiver)
 	})
 	t.Run("default_encoding", func(t *testing.T) {
 		cfg.Encoding = defaultEncoding
-		receiver, err := f.CreateTraces(context.Background(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
+		receiver, err := f.CreateTraces(t.Context(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
 		require.NoError(t, err)
 		assert.NotNil(t, receiver)
 	})
@@ -83,7 +84,7 @@ func TestCreateMetrics_err_addr(t *testing.T) {
 	cfg.Endpoint = "invalid:6650"
 
 	f := pulsarReceiverFactory{metricsUnmarshalers: defaultMetricsUnmarshalers()}
-	r, err := f.createMetricsReceiver(context.Background(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
+	r, err := f.createMetricsReceiver(t.Context(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
 	require.Error(t, err)
 	assert.Nil(t, r)
 }
@@ -93,7 +94,7 @@ func TestCreateMetrics_err_marshallers(t *testing.T) {
 	cfg.Endpoint = defaultServiceURL
 
 	f := pulsarReceiverFactory{metricsUnmarshalers: make(map[string]MetricsUnmarshaler)}
-	r, err := f.createMetricsReceiver(context.Background(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
+	r, err := f.createMetricsReceiver(t.Context(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
 	require.Error(t, err)
 	assert.Nil(t, r)
 }
@@ -102,7 +103,7 @@ func Test_CreateMetrics(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	f := pulsarReceiverFactory{metricsUnmarshalers: defaultMetricsUnmarshalers()}
 
-	recv, err := f.createMetricsReceiver(context.Background(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
+	recv, err := f.createMetricsReceiver(t.Context(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
 	require.NoError(t, err)
 	assert.NotNil(t, recv)
 }
@@ -114,13 +115,13 @@ func TestWithMetricsUnmarshalers(t *testing.T) {
 
 	t.Run("custom_encoding", func(t *testing.T) {
 		cfg.Encoding = unmarshaler.Encoding()
-		receiver, err := f.CreateMetrics(context.Background(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
+		receiver, err := f.CreateMetrics(t.Context(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
 		require.NoError(t, err)
 		require.NotNil(t, receiver)
 	})
 	t.Run("default_encoding", func(t *testing.T) {
 		cfg.Encoding = defaultEncoding
-		receiver, err := f.CreateMetrics(context.Background(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
+		receiver, err := f.CreateMetrics(t.Context(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
 		require.NoError(t, err)
 		assert.NotNil(t, receiver)
 	})
@@ -132,7 +133,7 @@ func TestCreateLogs_err_addr(t *testing.T) {
 	cfg.Endpoint = "invalid:6650"
 
 	f := pulsarReceiverFactory{logsUnmarshalers: defaultLogsUnmarshalers()}
-	r, err := f.createLogsReceiver(context.Background(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
+	r, err := f.createLogsReceiver(t.Context(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
 	require.Error(t, err)
 	assert.Nil(t, r)
 }
@@ -142,7 +143,7 @@ func TestCreateLogs_err_marshallers(t *testing.T) {
 	cfg.Endpoint = defaultServiceURL
 
 	f := pulsarReceiverFactory{logsUnmarshalers: make(map[string]LogsUnmarshaler)}
-	r, err := f.createLogsReceiver(context.Background(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
+	r, err := f.createLogsReceiver(t.Context(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
 	require.Error(t, err)
 	assert.Nil(t, r)
 }
@@ -152,7 +153,7 @@ func Test_CreateLogs(t *testing.T) {
 	cfg.Endpoint = defaultServiceURL
 
 	f := pulsarReceiverFactory{logsUnmarshalers: defaultLogsUnmarshalers()}
-	recv, err := f.createLogsReceiver(context.Background(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
+	recv, err := f.createLogsReceiver(t.Context(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
 	require.NoError(t, err)
 	assert.NotNil(t, recv)
 }
@@ -164,13 +165,13 @@ func TestWithLogsUnmarshalers(t *testing.T) {
 
 	t.Run("custom_encoding", func(t *testing.T) {
 		cfg.Encoding = unmarshaler.Encoding()
-		exporter, err := f.CreateLogs(context.Background(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
+		exporter, err := f.CreateLogs(t.Context(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
 		require.NoError(t, err)
 		require.NotNil(t, exporter)
 	})
 	t.Run("default_encoding", func(t *testing.T) {
 		cfg.Encoding = defaultEncoding
-		exporter, err := f.CreateLogs(context.Background(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
+		exporter, err := f.CreateLogs(t.Context(), receivertest.NewNopSettings(metadata.Type), cfg, nil)
 		require.NoError(t, err)
 		assert.NotNil(t, exporter)
 	})
@@ -182,26 +183,26 @@ type customMetricsUnmarshaler struct{}
 
 type customLogsUnmarshaler struct{}
 
-func (c customTracesUnmarshaler) Unmarshal([]byte) (ptrace.Traces, error) {
+func (customTracesUnmarshaler) Unmarshal([]byte) (ptrace.Traces, error) {
 	panic("implement me")
 }
 
-func (c customTracesUnmarshaler) Encoding() string {
+func (customTracesUnmarshaler) Encoding() string {
 	return "custom"
 }
 
-func (c customMetricsUnmarshaler) Unmarshal([]byte) (pmetric.Metrics, error) {
+func (customMetricsUnmarshaler) Unmarshal([]byte) (pmetric.Metrics, error) {
 	panic("implement me")
 }
 
-func (c customMetricsUnmarshaler) Encoding() string {
+func (customMetricsUnmarshaler) Encoding() string {
 	return "custom"
 }
 
-func (c customLogsUnmarshaler) Unmarshal([]byte) (plog.Logs, error) {
+func (customLogsUnmarshaler) Unmarshal([]byte) (plog.Logs, error) {
 	panic("implement me")
 }
 
-func (c customLogsUnmarshaler) Encoding() string {
+func (customLogsUnmarshaler) Encoding() string {
 	return "custom"
 }

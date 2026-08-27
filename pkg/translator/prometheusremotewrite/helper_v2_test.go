@@ -4,27 +4,32 @@
 package prometheusremotewrite
 
 import (
+	"math"
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/prometheus/common/model"
+	"github.com/prometheus/otlptranslator"
+	"github.com/prometheus/prometheus/model/histogram"
+	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/model/value"
 	"github.com/prometheus/prometheus/prompb"
 	writev2 "github.com/prometheus/prometheus/prompb/io/prometheus/write/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
-	conventions "go.opentelemetry.io/otel/semconv/v1.25.0"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal/testdata"
-	prometheustranslator "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/prometheus"
 )
 
 func TestAddResourceTargetInfoV2(t *testing.T) {
 	resourceAttrMap := map[string]any{
-		string(conventions.ServiceNameKey):       "service-name",
-		string(conventions.ServiceNamespaceKey):  "service-namespace",
-		string(conventions.ServiceInstanceIDKey): "service-instance-id",
+		"service.name":        "service-name",
+		"service.namespace":   "service-namespace",
+		"service.instance.id": "service-instance-id",
 	}
 	resourceWithServiceAttrs := pcommon.NewResource()
 	require.NoError(t, resourceWithServiceAttrs.Attributes().FromRaw(resourceAttrMap))
@@ -33,11 +38,11 @@ func TestAddResourceTargetInfoV2(t *testing.T) {
 	require.NoError(t, resourceWithOnlyServiceAttrs.Attributes().FromRaw(resourceAttrMap))
 	// service.name is an identifying resource attribute.
 	resourceWithOnlyServiceName := pcommon.NewResource()
-	resourceWithOnlyServiceName.Attributes().PutStr(string(conventions.ServiceNameKey), "service-name")
+	resourceWithOnlyServiceName.Attributes().PutStr("service.name", "service-name")
 	resourceWithOnlyServiceName.Attributes().PutStr("resource_attr", "resource-attr-val-1")
 	// service.instance.id is an identifying resource attribute.
 	resourceWithOnlyServiceID := pcommon.NewResource()
-	resourceWithOnlyServiceID.Attributes().PutStr(string(conventions.ServiceInstanceIDKey), "service-instance-id")
+	resourceWithOnlyServiceID.Attributes().PutStr("service.instance.id", "service-instance-id")
 	resourceWithOnlyServiceID.Attributes().PutStr("resource_attr", "resource-attr-val-1")
 	for _, tc := range []struct {
 		desc           string
@@ -125,9 +130,10 @@ func TestAddResourceTargetInfoV2(t *testing.T) {
 		},
 	} {
 		t.Run(tc.desc, func(t *testing.T) {
-			converter := newPrometheusConverterV2()
+			converter := newPrometheusConverterV2(Settings{})
 
-			converter.addResourceTargetInfoV2(tc.resource, tc.settings, tc.timestamp)
+			err := converter.addResourceTargetInfoV2(tc.resource, tc.settings, tc.timestamp)
+			require.NoError(t, err)
 
 			if len(tc.wantLabels) == 0 || tc.settings.DisableTargetInfo {
 				assert.Empty(t, converter.timeSeries())
@@ -151,14 +157,14 @@ func TestAddResourceTargetInfoV2(t *testing.T) {
 				},
 			}
 			assert.Exactly(t, expected, converter.unique)
-			// TODO check when conflicts handling is implemented
-			// assert.Empty(t, converter.conflicts)
+			assert.Empty(t, converter.conflicts)
 		})
 	}
 }
 
 func TestPrometheusConverterV2_AddSummaryDataPoints(t *testing.T) {
 	ts := pcommon.Timestamp(time.Now().UnixNano())
+	startTs := ts - pcommon.Timestamp(time.Hour)
 	tests := []struct {
 		name   string
 		metric func() pmetric.Metric
@@ -173,7 +179,10 @@ func TestPrometheusConverterV2_AddSummaryDataPoints(t *testing.T) {
 
 				dp := metric.Summary().DataPoints().AppendEmpty()
 				dp.SetTimestamp(ts)
-				dp.SetStartTimestamp(ts)
+				dp.SetStartTimestamp(startTs)
+				qt := dp.QuantileValues().AppendEmpty()
+				qt.SetQuantile(0.5)
+				qt.SetValue(1)
 
 				return metric
 			},
@@ -184,11 +193,15 @@ func TestPrometheusConverterV2_AddSummaryDataPoints(t *testing.T) {
 				sumLabels := []prompb.Label{
 					{Name: model.MetricNameLabel, Value: "test_summary" + sumStr},
 				}
+				quantileLabels := []prompb.Label{
+					{Name: model.MetricNameLabel, Value: "test_summary"},
+					{Name: model.QuantileLabel, Value: "0.5"},
+				}
 				return map[uint64]*writev2.TimeSeries{
 					timeSeriesSignature(labels): {
 						LabelsRefs: []uint32{1, 3},
 						Samples: []writev2.Sample{
-							{Value: 0, Timestamp: convertTimeStamp(ts)},
+							{Value: 0, Timestamp: convertTimeStamp(ts), StartTimestamp: convertTimeStamp(startTs)},
 						},
 						Metadata: writev2.Metadata{
 							Type:    writev2.Metadata_METRIC_TYPE_SUMMARY,
@@ -198,7 +211,17 @@ func TestPrometheusConverterV2_AddSummaryDataPoints(t *testing.T) {
 					timeSeriesSignature(sumLabels): {
 						LabelsRefs: []uint32{1, 2},
 						Samples: []writev2.Sample{
-							{Value: 0, Timestamp: convertTimeStamp(ts)},
+							{Value: 0, Timestamp: convertTimeStamp(ts), StartTimestamp: convertTimeStamp(startTs)},
+						},
+						Metadata: writev2.Metadata{
+							Type:    writev2.Metadata_METRIC_TYPE_SUMMARY,
+							HelpRef: 0,
+						},
+					},
+					timeSeriesSignature(quantileLabels): {
+						LabelsRefs: []uint32{1, 4, 5, 6},
+						Samples: []writev2.Sample{
+							{Value: 1, Timestamp: convertTimeStamp(ts), StartTimestamp: convertTimeStamp(startTs)},
 						},
 						Metadata: writev2.Metadata{
 							Type:    writev2.Metadata_METRIC_TYPE_SUMMARY,
@@ -255,25 +278,499 @@ func TestPrometheusConverterV2_AddSummaryDataPoints(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			metric := tt.metric()
-			converter := newPrometheusConverterV2()
+			converter := newPrometheusConverterV2(Settings{})
 
+			unitNamer := otlptranslator.UnitNamer{}
 			m := metadata{
 				Type: otelMetricTypeToPromMetricTypeV2(metric),
 				Help: metric.Description(),
-				Unit: prometheustranslator.BuildCompliantPrometheusUnit(metric.Unit()),
+				Unit: unitNamer.Build(metric.Unit()),
 			}
 
-			converter.addSummaryDataPoints(
+			err := converter.addSummaryDataPoints(
 				metric.Summary().DataPoints(),
 				pcommon.NewResource(),
+				pcommon.NewInstrumentationScope(),
 				Settings{},
 				metric.Name(),
 				m,
 			)
-
+			require.NoError(t, err)
 			assert.Equal(t, tt.want(), converter.unique)
-			// TODO check when conflicts handling is implemented
-			// assert.Empty(t, converter.conflicts)
+			assert.Empty(t, converter.conflicts)
+		})
+	}
+}
+
+func TestPrometheusConverterV2_AddHistogramDataPoints(t *testing.T) {
+	ts := pcommon.Timestamp(time.Now().UnixNano())
+	startTs := ts - pcommon.Timestamp(time.Hour)
+	tests := []struct {
+		name     string
+		metric   func() pmetric.Metric
+		settings Settings
+		want     func() map[uint64]*writev2.TimeSeries
+		wantErr  bool
+		check    func(t *testing.T, converter *prometheusConverterV2)
+	}{
+		{
+			name: "histogram with start time",
+			metric: func() pmetric.Metric {
+				metric := pmetric.NewMetric()
+				metric.SetName("test_hist")
+				metric.SetEmptyHistogram().SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+
+				pt := metric.Histogram().DataPoints().AppendEmpty()
+				pt.SetTimestamp(ts)
+				pt.SetStartTimestamp(startTs)
+
+				return metric
+			},
+			want: func() map[uint64]*writev2.TimeSeries {
+				labels := []prompb.Label{
+					{Name: model.MetricNameLabel, Value: "test_hist" + countStr},
+				}
+				infLabels := []prompb.Label{
+					{Name: model.MetricNameLabel, Value: "test_hist_bucket"},
+					{Name: model.BucketLabel, Value: "+Inf"},
+				}
+				return map[uint64]*writev2.TimeSeries{
+					timeSeriesSignature(infLabels): {
+						LabelsRefs: []uint32{1, 3, 4, 5},
+						Samples: []writev2.Sample{
+							{Value: 0, Timestamp: convertTimeStamp(ts), StartTimestamp: convertTimeStamp(startTs)},
+						},
+						Metadata: writev2.Metadata{
+							Type:    writev2.Metadata_METRIC_TYPE_HISTOGRAM,
+							HelpRef: 0,
+						},
+					},
+					timeSeriesSignature(labels): {
+						LabelsRefs: []uint32{1, 2},
+						Samples: []writev2.Sample{
+							{Value: 0, Timestamp: convertTimeStamp(ts), StartTimestamp: convertTimeStamp(startTs)},
+						},
+						Metadata: writev2.Metadata{
+							Type:    writev2.Metadata_METRIC_TYPE_HISTOGRAM,
+							HelpRef: 0,
+						},
+					},
+				}
+			},
+		},
+		{
+			name: "histogram without start time",
+			metric: func() pmetric.Metric {
+				metric := pmetric.NewMetric()
+				metric.SetName("test_hist")
+				metric.SetEmptyHistogram().SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+
+				pt := metric.Histogram().DataPoints().AppendEmpty()
+				pt.SetTimestamp(ts)
+
+				return metric
+			},
+			want: func() map[uint64]*writev2.TimeSeries {
+				labels := []prompb.Label{
+					{Name: model.MetricNameLabel, Value: "test_hist" + countStr},
+				}
+				infLabels := []prompb.Label{
+					{Name: model.MetricNameLabel, Value: "test_hist_bucket"},
+					{Name: model.BucketLabel, Value: "+Inf"},
+				}
+				return map[uint64]*writev2.TimeSeries{
+					timeSeriesSignature(infLabels): {
+						LabelsRefs: []uint32{1, 3, 4, 5},
+						Samples: []writev2.Sample{
+							{Value: 0, Timestamp: convertTimeStamp(ts)},
+						},
+						Metadata: writev2.Metadata{
+							Type:    writev2.Metadata_METRIC_TYPE_HISTOGRAM,
+							HelpRef: 0,
+						},
+					},
+					timeSeriesSignature(labels): {
+						LabelsRefs: []uint32{1, 2},
+						Samples: []writev2.Sample{
+							{Value: 0, Timestamp: convertTimeStamp(ts)},
+						},
+						Metadata: writev2.Metadata{
+							Type:    writev2.Metadata_METRIC_TYPE_HISTOGRAM,
+							HelpRef: 0,
+						},
+					},
+				}
+			},
+		},
+		{
+			name:     "NHCB only",
+			metric:   newTestExplicitHistogram,
+			settings: Settings{ConvertExplicitHistogramsToNHCB: true},
+			check: func(t *testing.T, converter *prometheusConverterV2) {
+				require.Len(t, converter.unique, 1, "NHCB-only emits a single native series")
+				for _, series := range converter.unique {
+					require.Len(t, series.Histograms, 1)
+					assert.Empty(t, series.Samples, "no classic samples in NHCB-only mode")
+					assert.Equal(t, histogram.CustomBucketsSchema, series.Histograms[0].Schema)
+				}
+				require.NotNil(t, v2SeriesByName(t, converter, "test_hist"), "native series uses the base metric name")
+			},
+		},
+		{
+			name:     "NHCB with classic kept",
+			metric:   newTestExplicitHistogram,
+			settings: Settings{ConvertExplicitHistogramsToNHCB: true, KeepClassicHistograms: true},
+			check: func(t *testing.T, converter *prometheusConverterV2) {
+				var nativeSeries, classicSamples int
+				for _, series := range converter.unique {
+					nativeSeries += len(series.Histograms)
+					classicSamples += len(series.Samples)
+				}
+				assert.Equal(t, 1, nativeSeries, "one NHCB datapoint emitted alongside classic")
+				assert.Positive(t, classicSamples, "classic _bucket/_sum/_count still emitted")
+				require.NotNil(t, v2SeriesByName(t, converter, "test_hist"), "native series present under base name")
+				require.NotNil(t, v2SeriesByName(t, converter, "test_hist_bucket"), "classic _bucket series present")
+				require.NotNil(t, v2SeriesByName(t, converter, "test_hist_count"), "classic _count series present")
+			},
+		},
+		{
+			name: "NHCB carries exemplars",
+			metric: func() pmetric.Metric {
+				metric := newTestExplicitHistogram()
+				ex := metric.Histogram().DataPoints().At(0).Exemplars().AppendEmpty()
+				ex.SetTimestamp(testHistTimestamp)
+				ex.SetDoubleValue(7)
+				return metric
+			},
+			settings: Settings{ConvertExplicitHistogramsToNHCB: true},
+			check: func(t *testing.T, converter *prometheusConverterV2) {
+				nativeTS := v2SeriesByName(t, converter, "test_hist")
+				require.NotNil(t, nativeTS)
+				require.Len(t, nativeTS.Exemplars, 1, "exemplar carried onto the NHCB series")
+				assert.Equal(t, 7.0, nativeTS.Exemplars[0].Value)
+			},
+		},
+		{
+			name:     "classic mode does not emit the bare metric name",
+			metric:   newTestExplicitHistogram,
+			settings: Settings{},
+			check: func(t *testing.T, converter *prometheusConverterV2) {
+				for _, series := range converter.unique {
+					assert.Empty(t, series.Histograms, "no native histograms when conversion is off")
+				}
+				assert.Nil(t, v2SeriesByName(t, converter, "test_hist"),
+					"classic mode emits only _bucket/_sum/_count, never the bare name")
+			},
+		},
+		{
+			name: "NHCB conversion error keeps classic",
+			metric: func() pmetric.Metric {
+				metric := newTestExplicitHistogram()
+				metric.Histogram().DataPoints().At(0).ExplicitBounds().FromRaw([]float64{1, math.NaN(), 3})
+				return metric
+			},
+			settings: Settings{ConvertExplicitHistogramsToNHCB: true, KeepClassicHistograms: true},
+			wantErr:  true,
+			check: func(t *testing.T, converter *prometheusConverterV2) {
+				if nativeTS := v2SeriesByName(t, converter, "test_hist"); nativeTS != nil {
+					assert.Empty(t, nativeTS.Histograms, "no native histogram appended on conversion error")
+				}
+				require.NotNil(t, v2SeriesByName(t, converter, "test_hist_count"), "classic series still emitted on NHCB error")
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			metric := tt.metric()
+			converter := newPrometheusConverterV2(tt.settings)
+			unitNamer := otlptranslator.UnitNamer{}
+			m := metadata{
+				Type: otelMetricTypeToPromMetricTypeV2(metric),
+				Help: metric.Description(),
+				Unit: unitNamer.Build(metric.Unit()),
+			}
+			err := converter.addHistogramDataPoints(
+				metric.Histogram().DataPoints(),
+				pcommon.NewResource(),
+				pcommon.NewInstrumentationScope(),
+				tt.settings,
+				metric.Name(),
+				m,
+			)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			if tt.want != nil {
+				assert.Equal(t, tt.want(), converter.unique)
+				assert.Empty(t, converter.conflicts)
+			}
+			if tt.check != nil {
+				tt.check(t, converter)
+			}
+		})
+	}
+}
+
+// v2SeriesByName resolves each RW2 time series' labels through the symbol table and
+// returns the one whose __name__ equals name, or nil.
+func v2SeriesByName(t *testing.T, c *prometheusConverterV2, name string) *writev2.TimeSeries {
+	t.Helper()
+	symbols := c.symbolTable.Symbols()
+	all := c.timeSeries()
+	var b labels.ScratchBuilder
+	for i := range all {
+		lbls, err := all[i].ToLabels(&b, symbols)
+		require.NoError(t, err)
+		if lbls.Get(model.MetricNameLabel) == name {
+			return &all[i]
+		}
+	}
+	return nil
+}
+
+func TestPrometheusConverterV2_AddSampleWithLabels(t *testing.T) {
+	tests := []struct {
+		name            string
+		sampleValue     float64
+		timestamp       int64
+		startTimestamp  int64
+		noRecordedValue bool
+		baseName        string
+		baseLabels      []prompb.Label
+		labelName       string
+		labelValue      string
+		metadata        metadata
+		want            func() map[uint64]*writev2.TimeSeries
+	}{
+		{
+			name:        "normal sample with additional label",
+			sampleValue: 42.5,
+			timestamp:   1234567890000,
+			baseName:    "test_metric",
+			baseLabels: []prompb.Label{
+				{Name: "base_label", Value: "base_value"},
+			},
+			labelName:  "extra_label",
+			labelValue: "extra_value",
+			metadata: metadata{
+				Type: writev2.Metadata_METRIC_TYPE_GAUGE,
+				Help: "Test metric",
+				Unit: "bytes",
+			},
+			want: func() map[uint64]*writev2.TimeSeries {
+				labels := []prompb.Label{
+					{Name: "base_label", Value: "base_value"},
+					{Name: "extra_label", Value: "extra_value"},
+					{Name: model.MetricNameLabel, Value: "test_metric"},
+				}
+				return map[uint64]*writev2.TimeSeries{
+					timeSeriesSignature(labels): {
+						LabelsRefs: []uint32{1, 2, 3, 4, 5, 6},
+						Samples: []writev2.Sample{
+							{Value: 42.5, Timestamp: 1234567890000},
+						},
+						Metadata: writev2.Metadata{
+							Type:    writev2.Metadata_METRIC_TYPE_GAUGE,
+							HelpRef: 7,
+							UnitRef: 8,
+						},
+					},
+				}
+			},
+		},
+		{
+			name:        "normal sample without additional label",
+			sampleValue: 100.0,
+			timestamp:   1234567890000,
+			baseName:    "test_metric_no_extra",
+			baseLabels: []prompb.Label{
+				{Name: "base_label", Value: "base_value"},
+			},
+			labelName:  "",
+			labelValue: "",
+			metadata: metadata{
+				Type: writev2.Metadata_METRIC_TYPE_COUNTER,
+				Help: "Test counter",
+			},
+			want: func() map[uint64]*writev2.TimeSeries {
+				labels := []prompb.Label{
+					{Name: "base_label", Value: "base_value"},
+					{Name: model.MetricNameLabel, Value: "test_metric_no_extra"},
+				}
+				return map[uint64]*writev2.TimeSeries{
+					timeSeriesSignature(labels): {
+						LabelsRefs: []uint32{1, 2, 3, 4},
+						Samples: []writev2.Sample{
+							{Value: 100.0, Timestamp: 1234567890000},
+						},
+						Metadata: writev2.Metadata{
+							Type:    writev2.Metadata_METRIC_TYPE_COUNTER,
+							HelpRef: 5,
+							UnitRef: 0,
+						},
+					},
+				}
+			},
+		},
+		{
+			name:           "sample with start timestamp",
+			sampleValue:    7.0,
+			timestamp:      1234567890000,
+			startTimestamp: 1234567880000,
+			baseName:       "test_metric_with_start",
+			baseLabels: []prompb.Label{
+				{Name: "base_label", Value: "base_value"},
+			},
+			metadata: metadata{
+				Type: writev2.Metadata_METRIC_TYPE_COUNTER,
+				Help: "Test counter",
+			},
+			want: func() map[uint64]*writev2.TimeSeries {
+				labels := []prompb.Label{
+					{Name: "base_label", Value: "base_value"},
+					{Name: model.MetricNameLabel, Value: "test_metric_with_start"},
+				}
+				return map[uint64]*writev2.TimeSeries{
+					timeSeriesSignature(labels): {
+						LabelsRefs: []uint32{1, 2, 3, 4},
+						Samples: []writev2.Sample{
+							{Value: 7.0, Timestamp: 1234567890000, StartTimestamp: 1234567880000},
+						},
+						Metadata: writev2.Metadata{
+							Type:    writev2.Metadata_METRIC_TYPE_COUNTER,
+							HelpRef: 5,
+							UnitRef: 0,
+						},
+					},
+				}
+			},
+		},
+		{
+			name:            "stale sample with noRecordedValue true",
+			sampleValue:     50.0,
+			timestamp:       1234567890000,
+			noRecordedValue: true,
+			baseName:        "test_stale_metric",
+			baseLabels: []prompb.Label{
+				{Name: "instance", Value: "localhost:8080"},
+			},
+			labelName:  "job",
+			labelValue: "test_job",
+			metadata: metadata{
+				Type: writev2.Metadata_METRIC_TYPE_GAUGE,
+				Help: "Test stale metric",
+			},
+			want: func() map[uint64]*writev2.TimeSeries {
+				labels := []prompb.Label{
+					{Name: "instance", Value: "localhost:8080"},
+					{Name: "job", Value: "test_job"},
+					{Name: model.MetricNameLabel, Value: "test_stale_metric"},
+				}
+				return map[uint64]*writev2.TimeSeries{
+					timeSeriesSignature(labels): {
+						LabelsRefs: []uint32{1, 2, 3, 4, 5, 6},
+						Samples: []writev2.Sample{
+							{Value: math.Float64frombits(value.StaleNaN), Timestamp: 1234567890000},
+						},
+						Metadata: writev2.Metadata{
+							Type:    writev2.Metadata_METRIC_TYPE_GAUGE,
+							HelpRef: 7,
+							UnitRef: 0,
+						},
+					},
+				}
+			},
+		},
+		{
+			name:        "empty base labels",
+			sampleValue: 15.0,
+			timestamp:   1234567890000,
+			baseName:    "simple_metric",
+			baseLabels:  []prompb.Label{},
+			labelName:   "service",
+			labelValue:  "my_service",
+			metadata: metadata{
+				Type: writev2.Metadata_METRIC_TYPE_HISTOGRAM,
+				Help: "Simple histogram",
+			},
+			want: func() map[uint64]*writev2.TimeSeries {
+				labels := []prompb.Label{
+					{Name: "service", Value: "my_service"},
+					{Name: model.MetricNameLabel, Value: "simple_metric"},
+				}
+				return map[uint64]*writev2.TimeSeries{
+					timeSeriesSignature(labels): {
+						LabelsRefs: []uint32{1, 2, 3, 4},
+						Samples: []writev2.Sample{
+							{Value: 15.0, Timestamp: 1234567890000},
+						},
+						Metadata: writev2.Metadata{
+							Type:    writev2.Metadata_METRIC_TYPE_HISTOGRAM,
+							HelpRef: 5,
+							UnitRef: 0,
+						},
+					},
+				}
+			},
+		},
+		{
+			name:        "partial label name only",
+			sampleValue: 25.5,
+			timestamp:   1234567890000,
+			baseName:    "partial_metric",
+			baseLabels: []prompb.Label{
+				{Name: "region", Value: "us-west-1"},
+			},
+			labelName:  "environment",
+			labelValue: "", // empty value should not add the label
+			metadata: metadata{
+				Type: writev2.Metadata_METRIC_TYPE_SUMMARY,
+				Help: "Partial label test",
+			},
+			want: func() map[uint64]*writev2.TimeSeries {
+				labels := []prompb.Label{
+					{Name: "region", Value: "us-west-1"},
+					{Name: model.MetricNameLabel, Value: "partial_metric"},
+				}
+				return map[uint64]*writev2.TimeSeries{
+					timeSeriesSignature(labels): {
+						LabelsRefs: []uint32{1, 2, 3, 4},
+						Samples: []writev2.Sample{
+							{Value: 25.5, Timestamp: 1234567890000},
+						},
+						Metadata: writev2.Metadata{
+							Type:    writev2.Metadata_METRIC_TYPE_SUMMARY,
+							HelpRef: 5,
+							UnitRef: 0,
+						},
+					},
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			converter := newPrometheusConverterV2(Settings{})
+
+			converter.addSampleWithLabels(
+				tt.sampleValue,
+				tt.timestamp,
+				tt.startTimestamp,
+				tt.noRecordedValue,
+				tt.baseName,
+				tt.baseLabels,
+				tt.labelName,
+				tt.labelValue,
+				tt.metadata,
+			)
+
+			w := tt.want()
+			diff := cmp.Diff(w, converter.unique, cmpopts.EquateNaNs())
+			assert.Empty(t, diff)
+			assert.Empty(t, converter.conflicts)
 		})
 	}
 }

@@ -3,10 +3,10 @@
 package csv
 
 import (
-	"context"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component/componenttest"
 
@@ -808,7 +808,7 @@ func TestParserCSV(t *testing.T) {
 			for i := range tc.inputEntries {
 				inputEntry := tc.inputEntries[i]
 				inputEntry.ObservedTimestamp = ots
-				err = op.Process(context.Background(), &inputEntry)
+				err = op.Process(t.Context(), &inputEntry)
 				if tc.expectProcessErr {
 					require.Error(t, err)
 					return
@@ -1047,7 +1047,7 @@ cc""",dddd,eeee`,
 
 			entry := entry.New()
 			entry.Body = tc.input
-			err = op.Process(context.Background(), entry)
+			err = op.Process(t.Context(), entry)
 			require.NoError(t, err)
 			fake.ExpectBody(t, tc.expected)
 			fake.ExpectNoEntry(t, 100*time.Millisecond)
@@ -1070,7 +1070,7 @@ func TestParserCSVInvalidJSONInput(t *testing.T) {
 
 		entry := entry.New()
 		entry.Body = "{\"name\": \"stanza\"}"
-		err = op.Process(context.Background(), entry)
+		err = op.Process(t.Context(), entry)
 		require.Error(t, err, "parse error on line 1, column 1: bare \" in non-quoted-field")
 		fake.ExpectBody(t, "{\"name\": \"stanza\"}")
 	})
@@ -1124,4 +1124,108 @@ func TestBuildParserCSV(t *testing.T) {
 		_, err := c.Build(set)
 		require.ErrorContains(t, err, "missing field delimiter in header")
 	})
+}
+
+// TestParserCSVDoesNotSplitBatches verifies that the csv parser processes a
+// batch of entries without splitting it, when using a static header.
+func TestParserCSVDoesNotSplitBatches(t *testing.T) {
+	output := &testutil.Operator{}
+	output.On("ID").Return("test-output")
+	output.On("CanProcess").Return(true)
+	output.On("ProcessBatch", mock.Anything, mock.Anything).Return(nil)
+
+	cfg := NewConfigWithID("test")
+	cfg.Header = testHeader
+	cfg.OutputIDs = []string{"test-output"}
+	set := componenttest.NewNopTelemetrySettings()
+	op, err := cfg.Build(set)
+	require.NoError(t, err)
+	require.NoError(t, op.SetOutputs([]operator.Operator{output}))
+
+	ctx := t.Context()
+	entry1 := entry.New()
+	entry1.Body = "stanza,INFO,started"
+	entry2 := entry.New()
+	entry2.Body = "stanza,ERROR,failed"
+	entry3 := entry.New()
+	entry3.Body = "stanza,DEBUG,tracing"
+	testEntries := []*entry.Entry{entry1, entry2, entry3}
+
+	require.NoError(t, op.ProcessBatch(ctx, testEntries))
+
+	// A single ProcessBatch call with all three entries proves the batch was not split.
+	output.AssertCalled(t, "ProcessBatch", ctx, mock.MatchedBy(func(entries []*entry.Entry) bool {
+		return len(entries) == 3
+	}))
+	output.AssertNumberOfCalls(t, "ProcessBatch", 1)
+}
+
+// TestParserCSVDynamicHeaderDoesNotSplitBatches verifies that the csv parser
+// processes a batch of entries without splitting it, even when the header is
+// dynamically generated from a per-entry attribute.
+func TestParserCSVDynamicHeaderDoesNotSplitBatches(t *testing.T) {
+	output := &testutil.Operator{}
+	output.On("ID").Return("test-output")
+	output.On("CanProcess").Return(true)
+	output.On("ProcessBatch", mock.Anything, mock.Anything).Return(nil)
+
+	cfg := NewConfigWithID("test")
+	cfg.HeaderAttribute = "Fields"
+	cfg.OutputIDs = []string{"test-output"}
+	set := componenttest.NewNopTelemetrySettings()
+	op, err := cfg.Build(set)
+	require.NoError(t, err)
+	require.NoError(t, op.SetOutputs([]operator.Operator{output}))
+
+	ctx := t.Context()
+	// Entries carry different headers to exercise the per-entry parse function.
+	entry1 := entry.New()
+	entry1.Body = "stanza,INFO,started"
+	entry1.Attributes = map[string]any{"Fields": "name,sev,msg"}
+	entry2 := entry.New()
+	entry2.Body = "stanza,failed"
+	entry2.Attributes = map[string]any{"Fields": "name,msg"}
+	testEntries := []*entry.Entry{entry1, entry2}
+
+	require.NoError(t, op.ProcessBatch(ctx, testEntries))
+
+	output.AssertCalled(t, "ProcessBatch", ctx, mock.MatchedBy(func(entries []*entry.Entry) bool {
+		return len(entries) == 2
+	}))
+	output.AssertNumberOfCalls(t, "ProcessBatch", 1)
+}
+
+// TestParserCSVDynamicHeaderMissingAttribute verifies that when an entry in a
+// batch is missing its header attribute, an error is returned while the rest of
+// the batch is still processed and forwarded in a single batch.
+func TestParserCSVDynamicHeaderMissingAttribute(t *testing.T) {
+	output := &testutil.Operator{}
+	output.On("ID").Return("test-output")
+	output.On("CanProcess").Return(true)
+	output.On("ProcessBatch", mock.Anything, mock.Anything).Return(nil)
+
+	cfg := NewConfigWithID("test")
+	cfg.HeaderAttribute = "Fields"
+	cfg.OutputIDs = []string{"test-output"}
+	set := componenttest.NewNopTelemetrySettings()
+	op, err := cfg.Build(set)
+	require.NoError(t, err)
+	require.NoError(t, op.SetOutputs([]operator.Operator{output}))
+
+	ctx := t.Context()
+	good := entry.New()
+	good.Body = "stanza,INFO,started"
+	good.Attributes = map[string]any{"Fields": "name,sev,msg"}
+	bad := entry.New() // no "Fields" attribute
+	bad.Body = "stanza,INFO,started"
+	testEntries := []*entry.Entry{good, bad}
+
+	err = op.ProcessBatch(ctx, testEntries)
+	require.ErrorContains(t, err, "failed to read dynamic header attribute Fields")
+
+	// The valid entry is still forwarded as a single batch; the bad entry is dropped.
+	output.AssertCalled(t, "ProcessBatch", ctx, mock.MatchedBy(func(entries []*entry.Entry) bool {
+		return len(entries) == 1
+	}))
+	output.AssertNumberOfCalls(t, "ProcessBatch", 1)
 }

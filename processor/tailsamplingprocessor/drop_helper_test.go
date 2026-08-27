@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/tailsamplingprocessor/internal/sampling"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/tailsamplingprocessor/pkg/samplingpolicy"
 )
 
 func TestDropHelper(t *testing.T) {
@@ -26,11 +27,39 @@ func TestDropHelper(t *testing.T) {
 					},
 				},
 			},
-		})
+		}, nil)
 		require.NoError(t, err)
 
-		expected := sampling.NewDrop(zap.NewNop(), []sampling.PolicyEvaluator{
+		expected := sampling.NewDrop(zap.NewNop(), []samplingpolicy.Evaluator{
 			sampling.NewLatency(componenttest.NewNopTelemetrySettings(), 100, 0),
+		})
+		assert.Equal(t, expected, actual)
+	})
+
+	t.Run("valid nested not policy", func(t *testing.T) {
+		actual, err := getNewDropPolicy(componenttest.NewNopTelemetrySettings(), &DropCfg{
+			SubPolicyCfg: []AndSubPolicyCfg{
+				{
+					sharedPolicyCfg: sharedPolicyCfg{
+						Name: "test-drop-policy-1",
+						Type: Not,
+					},
+					NotCfg: NotCfg{
+						SubPolicy: NotSubPolicyCfg{
+							sharedPolicyCfg: sharedPolicyCfg{
+								Name:       "test-not-policy-1",
+								Type:       Latency,
+								LatencyCfg: LatencyCfg{ThresholdMs: 100},
+							},
+						},
+					},
+				},
+			},
+		}, nil)
+		require.NoError(t, err)
+
+		expected := sampling.NewDrop(zap.NewNop(), []samplingpolicy.Evaluator{
+			sampling.NewNot(zap.NewNop(), sampling.NewLatency(componenttest.NewNopTelemetrySettings(), 100, 0)),
 		})
 		assert.Equal(t, expected, actual)
 	})
@@ -45,7 +74,7 @@ func TestDropHelper(t *testing.T) {
 					},
 				},
 			},
-		})
+		}, nil)
 		require.EqualError(t, err, "unknown sampling policy type drop")
 	})
 }

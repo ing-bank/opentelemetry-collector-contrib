@@ -10,12 +10,12 @@ package hostmetadata // import "github.com/open-telemetry/opentelemetry-collecto
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
 
-	"golang.org/x/net/context"
 	"golang.org/x/sys/unix"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/gopsutilenv"
@@ -72,7 +72,7 @@ func getLinuxVersion(ctx context.Context) (string, error) {
 	return "", errors.New("unable to find linux version")
 }
 
-func getStringFromFile(pattern string, path string) (string, error) {
+func getStringFromFile(pattern, path string) (string, error) {
 	var err error
 	var file []byte
 	reg := regexp.MustCompile(pattern)

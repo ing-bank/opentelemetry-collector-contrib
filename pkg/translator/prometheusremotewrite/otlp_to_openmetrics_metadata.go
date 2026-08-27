@@ -5,8 +5,11 @@ package prometheusremotewrite // import "github.com/open-telemetry/opentelemetry
 
 import (
 	"github.com/prometheus/common/model"
+	"github.com/prometheus/otlptranslator"
 	"github.com/prometheus/prometheus/prompb"
+	prom "github.com/prometheus/prometheus/storage/remote/otlptranslator/prometheusremotewrite"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.uber.org/multierr"
 
 	prometheustranslator "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/prometheus"
 )
@@ -42,7 +45,7 @@ func otelMetricTypeToPromMetricType(otelMetric pmetric.Metric) prompb.MetricMeta
 	return prompb.MetricMetadata_UNKNOWN
 }
 
-func OtelMetricsToMetadata(md pmetric.Metrics, addMetricSuffixes bool, namespace string) []*prompb.MetricMetadata {
+func OtelMetricsToMetadata(md pmetric.Metrics, settings Settings) ([]*prompb.MetricMetadata, error) {
 	resourceMetricsSlice := md.ResourceMetrics()
 
 	metadataLength := 0
@@ -53,7 +56,11 @@ func OtelMetricsToMetadata(md pmetric.Metrics, addMetricSuffixes bool, namespace
 		}
 	}
 
+	withSuffixes, utf8Allowed := getTranslationConfiguration(settings)
+	metricNamer := otlptranslator.MetricNamer{WithMetricSuffixes: withSuffixes, Namespace: settings.Namespace, UTF8Allowed: utf8Allowed}
+	unitNamer := otlptranslator.UnitNamer{UTF8Allowed: utf8Allowed}
 	metadata := make([]*prompb.MetricMetadata, 0, metadataLength)
+	var errs error
 	for i := 0; i < resourceMetricsSlice.Len(); i++ {
 		resourceMetrics := resourceMetricsSlice.At(i)
 		scopeMetricsSlice := resourceMetrics.ScopeMetrics()
@@ -62,10 +69,15 @@ func OtelMetricsToMetadata(md pmetric.Metrics, addMetricSuffixes bool, namespace
 			scopeMetrics := scopeMetricsSlice.At(j)
 			for k := 0; k < scopeMetrics.Metrics().Len(); k++ {
 				metric := scopeMetrics.Metrics().At(k)
+				metricName, err := metricNamer.Build(prom.TranslatorMetricFromOtelMetric(metric))
+				if err != nil {
+					errs = multierr.Append(errs, err)
+					continue
+				}
 				entry := prompb.MetricMetadata{
 					Type:             otelMetricTypeToPromMetricType(metric),
-					MetricFamilyName: prometheustranslator.BuildCompliantName(metric, namespace, addMetricSuffixes),
-					Unit:             prometheustranslator.BuildCompliantPrometheusUnit(metric.Unit()),
+					MetricFamilyName: metricName,
+					Unit:             unitNamer.Build(metric.Unit()),
 					Help:             metric.Description(),
 				}
 				metadata = append(metadata, &entry)
@@ -73,5 +85,5 @@ func OtelMetricsToMetadata(md pmetric.Metrics, addMetricSuffixes bool, namespace
 		}
 	}
 
-	return metadata
+	return metadata, errs
 }

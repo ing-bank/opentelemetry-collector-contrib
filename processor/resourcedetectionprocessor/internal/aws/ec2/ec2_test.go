@@ -33,6 +33,11 @@ type mockMetadata struct {
 	retHostname    string
 	retErrHostname error
 
+	retTags    map[string]string
+	retErrTags error
+	// retTagKeys overrides the keys returned by Tags(); if nil, keys are derived from retTags.
+	retTagKeys []string
+
 	isAvailable bool
 }
 
@@ -40,17 +45,17 @@ var _ ec2provider.Provider = (*mockMetadata)(nil)
 
 type mockClientBuilder struct{}
 
-func (e *mockClientBuilder) buildClient(_ context.Context, _ string, _ *http.Client) (ec2.DescribeTagsAPIClient, error) {
+func (*mockClientBuilder) buildClient(context.Context, string, *http.Client) (ec2.DescribeTagsAPIClient, error) {
 	return &mockEC2Client{}, nil
 }
 
 type mockClientBuilderError struct{}
 
-func (e *mockClientBuilderError) buildClient(_ context.Context, _ string, _ *http.Client) (ec2.DescribeTagsAPIClient, error) {
+func (*mockClientBuilderError) buildClient(context.Context, string, *http.Client) (ec2.DescribeTagsAPIClient, error) {
 	return &mockEC2ClientError{}, nil
 }
 
-func (mm mockMetadata) InstanceID(_ context.Context) (string, error) {
+func (mm mockMetadata) InstanceID(context.Context) (string, error) {
 	if !mm.isAvailable {
 		return "", errUnavailable
 	}
@@ -69,6 +74,27 @@ func (mm mockMetadata) Hostname(_ context.Context) (string, error) {
 		return "", mm.retErrHostname
 	}
 	return mm.retHostname, nil
+}
+
+func (mm mockMetadata) Tags(_ context.Context) ([]string, error) {
+	if mm.retErrTags != nil {
+		return nil, mm.retErrTags
+	}
+	if mm.retTagKeys != nil {
+		return mm.retTagKeys, nil
+	}
+	keys := make([]string, 0, len(mm.retTags))
+	for k := range mm.retTags {
+		keys = append(keys, k)
+	}
+	return keys, nil
+}
+
+func (mm mockMetadata) Tag(_ context.Context, key string) (string, error) {
+	if val, ok := mm.retTags[key]; ok {
+		return val, nil
+	}
+	return "", errors.New("tag not found: " + key)
 }
 
 func TestNewDetector(t *testing.T) {
@@ -99,7 +125,7 @@ func TestNewDetector(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			detector, err := NewDetector(processortest.NewNopSettings(processortest.NopType), tt.cfg)
+			detector, err := NewDetector(processortest.NewNopSettings(processortest.NopType), tt.cfg, false)
 			if tt.shouldError {
 				assert.Error(t, err)
 				assert.Nil(t, detector)
@@ -111,18 +137,42 @@ func TestNewDetector(t *testing.T) {
 	}
 }
 
+// TestNewDetector_FailOnMissingMetadataResolution verifies the effective flag is
+// the top-level value OR this detector's own deprecated field. It never depends on
+// another detector's flag, so a per-detector setting stays scoped to that detector.
+func TestNewDetector_FailOnMissingMetadataResolution(t *testing.T) {
+	tests := []struct {
+		name        string
+		topLevel    bool
+		perDetector bool
+		want        bool
+	}{
+		{"neither set", false, false, false},
+		{"per-detector only (backward compat, stays scoped)", false, true, true},
+		{"top-level only", true, false, true},
+		{"both set", true, true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, err := NewDetector(processortest.NewNopSettings(processortest.NopType), Config{FailOnMissingMetadata: tt.perDetector}, tt.topLevel)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, d.(*Detector).failOnMissingMetadata)
+		})
+	}
+}
+
 // Define a mock client to mock connecting to an EC2 instance
 type mockEC2ClientError struct{}
 
 // override the DescribeTags function to mock the output from an actual EC2 instance
-func (m *mockEC2ClientError) DescribeTags(_ context.Context, _ *ec2.DescribeTagsInput, _ ...func(*ec2.Options)) (*ec2.DescribeTagsOutput, error) {
+func (*mockEC2ClientError) DescribeTags(context.Context, *ec2.DescribeTagsInput, ...func(*ec2.Options)) (*ec2.DescribeTagsOutput, error) {
 	return nil, errors.New("Error fetching tags")
 }
 
 type mockEC2Client struct{}
 
 // override the DescribeTags function to mock the output from an actual EC2 instance
-func (m *mockEC2Client) DescribeTags(_ context.Context, input *ec2.DescribeTagsInput, _ ...func(*ec2.Options)) (*ec2.DescribeTagsOutput, error) {
+func (*mockEC2Client) DescribeTags(_ context.Context, input *ec2.DescribeTagsInput, _ ...func(*ec2.Options)) (*ec2.DescribeTagsOutput, error) {
 	if len(input.Filters) > 0 && len(input.Filters[0].Values) > 0 && input.Filters[0].Values[0] == "error" {
 		return nil, errors.New("error")
 	}
@@ -161,6 +211,7 @@ func TestDetector_Detect(t *testing.T) {
 		wantErr               bool
 		tagsProvider          ec2ifaceBuilder
 		failOnMissingMetadata bool
+		tagsFromIMDS          bool
 	}{
 		{
 			name: "success",
@@ -176,7 +227,7 @@ func TestDetector_Detect(t *testing.T) {
 				retHostname: "example-hostname",
 				isAvailable: true,
 			}},
-			args: args{ctx: context.Background()},
+			args: args{ctx: t.Context()},
 			want: func() pcommon.Resource {
 				res := pcommon.NewResource()
 				attr := res.Attributes()
@@ -193,7 +244,112 @@ func TestDetector_Detect(t *testing.T) {
 			}(),
 		},
 		{
-			name: "success with tags",
+			name: "success with tags via IMDS",
+			fields: fields{metadataProvider: &mockMetadata{
+				retIDDoc: imds.InstanceIdentityDocument{
+					Region:           "us-west-2",
+					AccountID:        "account1234",
+					AvailabilityZone: "us-west-2a",
+					InstanceID:       "i-abcd1234",
+					ImageID:          "abcdef",
+					InstanceType:     "c4.xlarge",
+				},
+				retHostname: "example-hostname",
+				retTags:     map[string]string{"tag1": "val1", "tag2": "val2"},
+				isAvailable: true,
+			}},
+			tagKeyRegexes: []*regexp.Regexp{regexp.MustCompile("^tag1$"), regexp.MustCompile("^tag2$")},
+			args:          args{ctx: t.Context()},
+			want: func() pcommon.Resource {
+				res := pcommon.NewResource()
+				attr := res.Attributes()
+				attr.PutStr("cloud.account.id", "account1234")
+				attr.PutStr("cloud.provider", "aws")
+				attr.PutStr("cloud.platform", "aws_ec2")
+				attr.PutStr("cloud.region", "us-west-2")
+				attr.PutStr("cloud.availability_zone", "us-west-2a")
+				attr.PutStr("host.id", "i-abcd1234")
+				attr.PutStr("host.image.id", "abcdef")
+				attr.PutStr("host.type", "c4.xlarge")
+				attr.PutStr("host.name", "example-hostname")
+				attr.PutStr("ec2.tag.tag1", "val1")
+				attr.PutStr("ec2.tag.tag2", "val2")
+				return res
+			}(),
+			tagsFromIMDS: true,
+		},
+		{
+			name: "partial IMDS tag failure returns resource with successfully fetched tags",
+			fields: fields{metadataProvider: &mockMetadata{
+				retIDDoc: imds.InstanceIdentityDocument{
+					Region:           "us-west-2",
+					AccountID:        "account1234",
+					AvailabilityZone: "us-west-2a",
+					InstanceID:       "i-abcd1234",
+					ImageID:          "abcdef",
+					InstanceType:     "c4.xlarge",
+				},
+				retHostname: "example-hostname",
+				// retTagKeys returns tag1 and missing_tag; retTags only has tag1,
+				// so Tag("missing_tag") will error — simulating a partial fetch failure.
+				retTags:     map[string]string{"tag1": "val1"},
+				retTagKeys:  []string{"tag1", "missing_tag"},
+				isAvailable: true,
+			}},
+			tagKeyRegexes: []*regexp.Regexp{regexp.MustCompile(".*")},
+			args:          args{ctx: t.Context()},
+			want: func() pcommon.Resource {
+				res := pcommon.NewResource()
+				attr := res.Attributes()
+				attr.PutStr("cloud.account.id", "account1234")
+				attr.PutStr("cloud.provider", "aws")
+				attr.PutStr("cloud.platform", "aws_ec2")
+				attr.PutStr("cloud.region", "us-west-2")
+				attr.PutStr("cloud.availability_zone", "us-west-2a")
+				attr.PutStr("host.id", "i-abcd1234")
+				attr.PutStr("host.image.id", "abcdef")
+				attr.PutStr("host.type", "c4.xlarge")
+				attr.PutStr("host.name", "example-hostname")
+				attr.PutStr("ec2.tag.tag1", "val1")
+				return res
+			}(),
+			tagsFromIMDS: true,
+		},
+		{
+			name: "IMDS fails returns resource without tags",
+			fields: fields{metadataProvider: &mockMetadata{
+				retIDDoc: imds.InstanceIdentityDocument{
+					Region:           "us-west-2",
+					AccountID:        "account1234",
+					AvailabilityZone: "us-west-2a",
+					InstanceID:       "i-abcd1234",
+					ImageID:          "abcdef",
+					InstanceType:     "c4.xlarge",
+				},
+				retHostname: "example-hostname",
+				retErrTags:  errors.New("IMDS tags not enabled"),
+				isAvailable: true,
+			}},
+			tagKeyRegexes: []*regexp.Regexp{regexp.MustCompile("^tag1$")},
+			args:          args{ctx: t.Context()},
+			want: func() pcommon.Resource {
+				res := pcommon.NewResource()
+				attr := res.Attributes()
+				attr.PutStr("cloud.account.id", "account1234")
+				attr.PutStr("cloud.provider", "aws")
+				attr.PutStr("cloud.platform", "aws_ec2")
+				attr.PutStr("cloud.region", "us-west-2")
+				attr.PutStr("cloud.availability_zone", "us-west-2a")
+				attr.PutStr("host.id", "i-abcd1234")
+				attr.PutStr("host.image.id", "abcdef")
+				attr.PutStr("host.type", "c4.xlarge")
+				attr.PutStr("host.name", "example-hostname")
+				return res
+			}(),
+			tagsFromIMDS: true,
+		},
+		{
+			name: "success with tags via EC2 API",
 			fields: fields{metadataProvider: &mockMetadata{
 				retIDDoc: imds.InstanceIdentityDocument{
 					Region:           "us-west-2",
@@ -207,7 +363,7 @@ func TestDetector_Detect(t *testing.T) {
 				isAvailable: true,
 			}},
 			tagKeyRegexes: []*regexp.Regexp{regexp.MustCompile("^tag1$"), regexp.MustCompile("^tag2$")},
-			args:          args{ctx: context.Background()},
+			args:          args{ctx: t.Context()},
 			want: func() pcommon.Resource {
 				res := pcommon.NewResource()
 				attr := res.Attributes()
@@ -227,7 +383,7 @@ func TestDetector_Detect(t *testing.T) {
 			tagsProvider: &mockClientBuilder{},
 		},
 		{
-			name: "success without tags returned from describeTags",
+			name: "EC2 API fails returns resource without tags",
 			fields: fields{metadataProvider: &mockMetadata{
 				retIDDoc: imds.InstanceIdentityDocument{
 					Region:           "us-west-2",
@@ -240,7 +396,8 @@ func TestDetector_Detect(t *testing.T) {
 				retHostname: "example-hostname",
 				isAvailable: true,
 			}},
-			args: args{ctx: context.Background()},
+			tagKeyRegexes: []*regexp.Regexp{regexp.MustCompile("^tag1$")},
+			args:          args{ctx: t.Context()},
 			want: func() pcommon.Resource {
 				res := pcommon.NewResource()
 				attr := res.Attributes()
@@ -264,7 +421,7 @@ func TestDetector_Detect(t *testing.T) {
 				retErrIDDoc: errors.New("should not be called"),
 				isAvailable: false,
 			}},
-			args:    args{ctx: context.Background()},
+			args:    args{ctx: t.Context()},
 			want:    pcommon.NewResource(),
 			wantErr: false,
 		},
@@ -275,7 +432,7 @@ func TestDetector_Detect(t *testing.T) {
 				retErrIDDoc: errors.New("should not be called"),
 				isAvailable: false,
 			}},
-			args:                  args{ctx: context.Background()},
+			args:                  args{ctx: t.Context()},
 			want:                  pcommon.NewResource(),
 			wantErr:               true,
 			failOnMissingMetadata: true,
@@ -287,7 +444,7 @@ func TestDetector_Detect(t *testing.T) {
 				retErrIDDoc: errors.New("get failed"),
 				isAvailable: true,
 			}},
-			args:    args{ctx: context.Background()},
+			args:    args{ctx: t.Context()},
 			want:    pcommon.NewResource(),
 			wantErr: true,
 		},
@@ -299,7 +456,7 @@ func TestDetector_Detect(t *testing.T) {
 				retErrHostname: errors.New("hostname failed"),
 				isAvailable:    true,
 			}},
-			args:    args{ctx: context.Background()},
+			args:    args{ctx: t.Context()},
 			want:    pcommon.NewResource(),
 			wantErr: true,
 		},
@@ -313,6 +470,7 @@ func TestDetector_Detect(t *testing.T) {
 				tagKeyRegexes:         tt.tagKeyRegexes,
 				ec2ClientBuilder:      tt.tagsProvider,
 				failOnMissingMetadata: tt.failOnMissingMetadata,
+				tagsFromIMDS:          tt.tagsFromIMDS,
 			}
 			got, _, err := d.Detect(tt.args.ctx)
 
@@ -368,7 +526,7 @@ func TestEC2Tags(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := &mockEC2Client{}
-			output, err := fetchEC2Tags(context.Background(), m, tt.resourceID, tt.tagKeyRegexes)
+			output, err := fetchEC2Tags(t.Context(), m, tt.resourceID, tt.tagKeyRegexes)
 			if tt.shouldError {
 				assert.Error(t, err)
 				return

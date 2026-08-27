@@ -4,7 +4,7 @@
 package receivercreator
 
 import (
-	"context"
+	"maps"
 	"strings"
 	"testing"
 
@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/pdata/pprofile"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/observer"
@@ -83,9 +84,12 @@ func TestNewEnhancingConsumer(t *testing.T) {
 				metrics: &consumertest.MetricsSink{},
 				traces:  &consumertest.TracesSink{},
 				attrs: map[string]string{
-					"k8s.pod.uid":        "uid-1",
-					"k8s.pod.name":       "pod-1",
-					"k8s.namespace.name": "default",
+					"k8s.pod.uid":          "uid-1",
+					"k8s.pod.name":         "pod-1",
+					"k8s.namespace.name":   "default",
+					"k8s.container.name":   "container-1",
+					"container.id":         "container-id-1",
+					"container.image.name": "redis:latest",
 				},
 			},
 		},
@@ -140,9 +144,7 @@ func TestNewEnhancingConsumer(t *testing.T) {
 			args: args{
 				resources: func() resourceAttributes {
 					res := map[observer.EndpointType]map[string]string{observer.PodType: {}}
-					for k, v := range cfg.ResourceAttributes[observer.PodType] {
-						res[observer.PodType][k] = v
-					}
+					maps.Copy(res[observer.PodType], cfg.ResourceAttributes[observer.PodType])
 					res[observer.PodType]["duplicate.resource.attribute"] = "pod.value"
 					res[observer.PodType]["delete.me"] = "pod.value"
 					return res
@@ -191,7 +193,7 @@ func TestNewEnhancingConsumer(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := newEnhancingConsumer(tt.args.resources, tt.args.resourceAttributes, tt.args.env, tt.args.endpoint, tt.args.nextLogs, tt.args.nextMetrics, tt.args.nextTraces)
+			got, err := newEnhancingConsumer(tt.args.resources, tt.args.resourceAttributes, tt.args.env, tt.args.endpoint, tt.args.nextLogs, tt.args.nextMetrics, tt.args.nextTraces, nil)
 			if tt.expectedError != "" {
 				assert.EqualError(t, err, tt.expectedError)
 				assert.Nil(t, got)
@@ -310,31 +312,73 @@ func TestEnhancingConsumerConsumeFunctions(t *testing.T) {
 			}
 
 			if tt.expectedLogs != nil {
-				require.NoError(t, ec.ConsumeLogs(context.Background(), tt.args.ld))
+				require.NoError(t, ec.ConsumeLogs(t.Context(), tt.args.ld))
 				logs := tt.consumers.nextLogs.AllLogs()
 				require.Len(t, logs, 1)
 				require.NoError(t, plogtest.CompareLogs(*tt.expectedLogs, logs[0]))
 			} else {
-				require.EqualError(t, ec.ConsumeLogs(context.Background(), plog.NewLogs()), "no log consumer available")
+				require.EqualError(t, ec.ConsumeLogs(t.Context(), plog.NewLogs()), "no log consumer available")
 			}
 
 			if tt.expectedMetrics != nil {
-				require.NoError(t, ec.ConsumeMetrics(context.Background(), tt.args.md))
+				require.NoError(t, ec.ConsumeMetrics(t.Context(), tt.args.md))
 				metrics := tt.consumers.nextMetrics.AllMetrics()
 				require.Len(t, metrics, 1)
 				require.NoError(t, pmetrictest.CompareMetrics(*tt.expectedMetrics, metrics[0]))
 			} else {
-				require.EqualError(t, ec.ConsumeMetrics(context.Background(), pmetric.NewMetrics()), "no metric consumer available")
+				require.EqualError(t, ec.ConsumeMetrics(t.Context(), pmetric.NewMetrics()), "no metric consumer available")
 			}
 
 			if tt.expectedTraces != nil {
-				require.NoError(t, ec.ConsumeTraces(context.Background(), tt.args.td))
+				require.NoError(t, ec.ConsumeTraces(t.Context(), tt.args.td))
 				traces := tt.consumers.nextTraces.AllTraces()
 				require.Len(t, traces, 1)
 				require.NoError(t, ptracetest.CompareTraces(*tt.expectedTraces, traces[0]))
 			} else {
-				require.EqualError(t, ec.ConsumeTraces(context.Background(), ptrace.NewTraces()), "no trace consumer available")
+				require.EqualError(t, ec.ConsumeTraces(t.Context(), ptrace.NewTraces()), "no trace consumer available")
 			}
+
+			// Profiles consumer is never set in these combinatorial tests
+			require.EqualError(t, ec.ConsumeProfiles(t.Context(), pprofile.NewProfiles()), "no profile consumer available")
 		})
 	}
+}
+
+func TestEnhancingConsumerConsumeProfiles(t *testing.T) {
+	profilesFn := func() pprofile.Profiles {
+		pd := pprofile.NewProfiles()
+		pd.ResourceProfiles().AppendEmpty().ScopeProfiles().AppendEmpty()
+		return pd
+	}
+
+	t.Run("with consumer", func(t *testing.T) {
+		sink := &consumertest.ProfilesSink{}
+		ec := &enhancingConsumer{
+			profiles: sink,
+			attrs: map[string]string{
+				"key1": "value1",
+				"key2": "value2",
+			},
+		}
+		require.NoError(t, ec.ConsumeProfiles(t.Context(), profilesFn()))
+		profiles := sink.AllProfiles()
+		require.Len(t, profiles, 1)
+		attrs := profiles[0].ResourceProfiles().At(0).Resource().Attributes()
+		val, ok := attrs.Get("key1")
+		require.True(t, ok)
+		require.Equal(t, "value1", val.Str())
+		val, ok = attrs.Get("key2")
+		require.True(t, ok)
+		require.Equal(t, "value2", val.Str())
+	})
+
+	t.Run("without consumer", func(t *testing.T) {
+		ec := &enhancingConsumer{
+			attrs: map[string]string{
+				"key1": "value1",
+				"key2": "value2",
+			},
+		}
+		require.EqualError(t, ec.ConsumeProfiles(t.Context(), pprofile.NewProfiles()), "no profile consumer available")
+	})
 }

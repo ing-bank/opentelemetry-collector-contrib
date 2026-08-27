@@ -4,7 +4,6 @@
 package nginxreceiver
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -16,11 +15,10 @@ import (
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/configtls"
-	"go.opentelemetry.io/collector/confmap/xconfmap"
+	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/receiver/receivertest"
 
-	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/golden"
-	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatatest/pmetrictest"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatatest/pmetricassert"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/nginxreceiver/internal/metadata"
 )
 
@@ -29,26 +27,22 @@ func TestScraper(t *testing.T) {
 	defer nginxMock.Close()
 
 	cfg := createDefaultConfig().(*Config)
-	cfg.Endpoint = nginxMock.URL + "/status"
-	require.NoError(t, xconfmap.Validate(cfg))
+	cfg.ClientConfig.Endpoint = nginxMock.URL + "/status"
+	require.NoError(t, confmap.Validate(cfg))
 
 	scraper := newNginxScraper(receivertest.NewNopSettings(metadata.Type), cfg)
 
-	err := scraper.start(context.Background(), componenttest.NewNopHost())
+	err := scraper.start(t.Context(), componenttest.NewNopHost())
 	require.NoError(t, err)
 
-	actualMetrics, err := scraper.scrape(context.Background())
+	actualMetrics, err := scraper.scrape(t.Context())
 	require.NoError(t, err)
 
-	expectedFile := filepath.Join("testdata", "scraper", "expected.yaml")
-	expectedMetrics, err := golden.ReadMetrics(expectedFile)
-	require.NoError(t, err)
+	expectedFile := filepath.Join("testdata", "scraper", "metrics.assert.yaml")
+	// To regenerate: uncomment, run the test once, re-comment.
+	// require.NoError(t, pmetricassert.WriteAssertionFile(t, expectedFile, actualMetrics, pmetricassert.IncludeValues()))
 
-	require.NoError(t, pmetrictest.CompareMetrics(expectedMetrics, actualMetrics,
-		pmetrictest.IgnoreStartTimestamp(),
-		pmetrictest.IgnoreMetricDataPointsOrder(),
-		pmetrictest.IgnoreTimestamp(),
-		pmetrictest.IgnoreMetricsOrder()))
+	require.NoError(t, pmetricassert.AssertMetrics(expectedFile, actualMetrics))
 }
 
 func TestScraperError(t *testing.T) {
@@ -61,43 +55,55 @@ func TestScraperError(t *testing.T) {
 		rw.WriteHeader(http.StatusNotFound)
 	}))
 	t.Run("404", func(t *testing.T) {
+		clientConfig := confighttp.NewDefaultClientConfig()
+		// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+		clientConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+		clientConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+		clientConfig.ForceAttemptHTTP2 = false
+		clientConfig.Endpoint = nginxMock.URL + "/badpath"
 		sc := newNginxScraper(receivertest.NewNopSettings(metadata.Type), &Config{
-			ClientConfig: confighttp.ClientConfig{
-				Endpoint: nginxMock.URL + "/badpath",
-			},
+			ClientConfig: clientConfig,
 		})
-		err := sc.start(context.Background(), componenttest.NewNopHost())
+		err := sc.start(t.Context(), componenttest.NewNopHost())
 		require.NoError(t, err)
-		_, err = sc.scrape(context.Background())
+		_, err = sc.scrape(t.Context())
 		require.Equal(t, errors.New("expected 200 response, got 404"), err)
 	})
 
 	t.Run("parse error", func(t *testing.T) {
+		clientConfig := confighttp.NewDefaultClientConfig()
+		// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+		clientConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+		clientConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+		clientConfig.ForceAttemptHTTP2 = false
+		clientConfig.Endpoint = nginxMock.URL + "/status"
 		sc := newNginxScraper(receivertest.NewNopSettings(metadata.Type), &Config{
-			ClientConfig: confighttp.ClientConfig{
-				Endpoint: nginxMock.URL + "/status",
-			},
+			ClientConfig: clientConfig,
 		})
-		err := sc.start(context.Background(), componenttest.NewNopHost())
+		err := sc.start(t.Context(), componenttest.NewNopHost())
 		require.NoError(t, err)
-		_, err = sc.scrape(context.Background())
+		_, err = sc.scrape(t.Context())
 		require.ErrorContains(t, err, "Bad status page")
 	})
 	nginxMock.Close()
 }
 
 func TestScraperFailedStart(t *testing.T) {
-	sc := newNginxScraper(receivertest.NewNopSettings(metadata.Type), &Config{
-		ClientConfig: confighttp.ClientConfig{
-			Endpoint: "localhost:8080",
-			TLS: configtls.ClientConfig{
-				Config: configtls.Config{
-					CAFile: "/non/existent",
-				},
-			},
+	clientConfig := confighttp.NewDefaultClientConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	clientConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+	clientConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+	clientConfig.ForceAttemptHTTP2 = false
+	clientConfig.Endpoint = "localhost:8080"
+	clientConfig.TLS = configtls.ClientConfig{
+		Config: configtls.Config{
+			CAFile: "/non/existent",
 		},
+	}
+	sc := newNginxScraper(receivertest.NewNopSettings(metadata.Type), &Config{
+		ClientConfig: clientConfig,
 	})
-	err := sc.start(context.Background(), componenttest.NewNopHost())
+	err := sc.start(t.Context(), componenttest.NewNopHost())
 	require.Error(t, err)
 }
 

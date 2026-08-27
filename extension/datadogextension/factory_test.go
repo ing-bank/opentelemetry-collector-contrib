@@ -1,10 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build !aix
+
 package datadogextension
 
 import (
-	"context"
 	"errors"
 	"testing"
 	"time"
@@ -37,7 +38,7 @@ func TestFactory_CreateDefaultConfig(t *testing.T) {
 
 	assert.Equal(t, datadogconfig.DefaultSite, extCfg.API.Site)
 	assert.True(t, extCfg.API.FailOnInvalidKey)
-	assert.Equal(t, httpserver.DefaultServerEndpoint, extCfg.HTTPConfig.Endpoint)
+	assert.Equal(t, httpserver.DefaultServerEndpoint, extCfg.HTTPConfig.ServerConfig.NetAddr.Endpoint)
 	assert.Equal(t, "/metadata", extCfg.HTTPConfig.Path)
 	assert.Equal(t, confighttp.NewDefaultClientConfig(), extCfg.ClientConfig)
 }
@@ -47,16 +48,18 @@ func TestFactory_Create(t *testing.T) {
 	cfg := f.CreateDefaultConfig()
 	// The API key is required for the config to be valid, but create doesn't validate.
 	cfg.(*Config).API.Key = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	// Disable API key validation for tests since we're using a fake key
+	cfg.(*Config).API.FailOnInvalidKey = false
 	set := extensiontest.NewNopSettings(component.MustNewType("datadog"))
 
 	t.Run("success", func(t *testing.T) {
-		ext, err := f.Create(context.Background(), set, cfg)
+		ext, err := f.Create(t.Context(), set, cfg)
 		require.NoError(t, err)
 		require.NotNil(t, ext)
 	})
 
 	t.Run("invalid config type", func(t *testing.T) {
-		_, err := f.Create(context.Background(), set, &struct{}{})
+		_, err := f.Create(t.Context(), set, &struct{}{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid config type")
 	})
@@ -106,7 +109,7 @@ func TestFactory_CreateErrorPaths(t *testing.T) {
 
 	t.Run("invalid config type", func(t *testing.T) {
 		set := extensiontest.NewNopSettings(component.MustNewType("datadog"))
-		_, err := f.Create(context.Background(), set, &struct{}{})
+		_, err := f.Create(t.Context(), set, &struct{}{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid config type")
 	})
@@ -123,7 +126,7 @@ func TestFactory_CreateErrorPaths(t *testing.T) {
 		}
 		set := extensiontest.NewNopSettings(component.MustNewType("datadog"))
 
-		_, err := internalFactory.create(context.Background(), set, cfg)
+		_, err := internalFactory.create(t.Context(), set, cfg)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "source provider creation failed")
 	})
@@ -143,7 +146,7 @@ func TestFactory_CreateErrorPaths(t *testing.T) {
 		}
 		set := extensiontest.NewNopSettings(component.MustNewType("datadog"))
 
-		_, err := internalFactory.create(context.Background(), set, cfg)
+		_, err := internalFactory.create(t.Context(), set, cfg)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "host provider error")
 	})

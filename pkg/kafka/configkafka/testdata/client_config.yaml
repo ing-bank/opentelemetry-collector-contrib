@@ -1,9 +1,9 @@
 kafka: {}
 kafka/full:
   brokers: ["foo:123", "bar:456"]
-  resolve_canonical_bootstrap_servers_only: true
   client_id: vip
-  protocol_version: 1.2.3
+  protocol_version: 3.1.2
+  rack_id: rack1
   tls:
     ca_file: ca.pem
     cert_file: cert.pem
@@ -18,17 +18,23 @@ kafka/full:
     retry:
       max: 10
       backoff: 5s
+  conn_idle_timeout: 5m
 kafka/sasl_aws_msk_iam_oauthbearer:
   auth:
     sasl:
       mechanism: AWS_MSK_IAM_OAUTHBEARER
+kafka/sasl_aws_msk_iam_oauthbearer_with_region:
+  auth:
+    sasl:
+      mechanism: AWS_MSK_IAM_OAUTHBEARER
+      aws_msk:
+        region: us-east-1
 kafka/sasl_plain:
   auth:
     sasl:
       mechanism: PLAIN
       username: abc
       password: def
-      version: 1
 kafka/legacy_auth_tls:
   auth:
     tls:
@@ -53,14 +59,6 @@ kafka/sasl_invalid_mechanism:
     sasl:
       mechanism: FANCY
 
-kafka/sasl_invalid_version:
-  auth:
-    sasl:
-      mechanism: PLAIN
-      username: abc
-      password: def
-      version: -1
-
 kafka/sasl_plain_username_required:
   auth:
     sasl:
@@ -77,7 +75,6 @@ kafka/foo:
   brokers:
     - "foo:123"
     - "bar:456"
-  resolve_canonical_bootstrap_servers_only: true
   client_id: otel-collector
   auth:
     tls:
@@ -88,3 +85,9 @@ kafka/foo:
     retry:
       max: 10
       backoff: 5s
+
+kafka/not_use_leader_epoch:
+  use_leader_epoch: false
+
+kafka/conn_idle_timeout:
+  conn_idle_timeout: 5m

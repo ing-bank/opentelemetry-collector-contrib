@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build integration
+
 package dbstorage
 
 import (
@@ -31,11 +33,11 @@ func BenchmarkBatchGet(b *testing.B) {
 
 	for _, bench := range benchmarks {
 		b.Run(fmt.Sprintf("backend=%s/op=%s/rows=%d", bench.backend, bench.name, bench.records), func(b *testing.B) {
-			client, err := backends[bench.backend].GetClient(context.Background(), component.KindExporter, newTestEntity(bench.name), fmt.Sprintf("%d", bench.records))
+			client, err := backends[bench.backend].GetClient(b.Context(), component.KindExporter, newTestEntity(bench.name), fmt.Sprintf("%d", bench.records))
 			if err != nil {
 				b.Fatal(err)
 			}
-			defer client.Close(context.Background())
+			defer client.Close(b.Context())
 
 			// Populate records and create set of Get Operations
 			ops := getBatchBenchmarkOps(storage.Get, bench.records, bench.singleBatch)
@@ -44,8 +46,8 @@ func BenchmarkBatchGet(b *testing.B) {
 			b.ResetTimer()
 
 			// Run Benchmark
-			for i := 0; i < b.N; i++ {
-				if err := client.Batch(context.Background(), ops...); err != nil {
+			for b.Loop() {
+				if err := client.Batch(b.Context(), ops...); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -59,11 +61,11 @@ func BenchmarkBatchSet(b *testing.B) {
 
 	for _, bench := range benchmarks {
 		b.Run(fmt.Sprintf("backend=%s/op=%s/rows=%d", bench.backend, bench.name, bench.records), func(b *testing.B) {
-			client, err := backends[bench.backend].GetClient(context.Background(), component.KindExporter, newTestEntity(bench.name), fmt.Sprintf("%d", bench.records))
+			client, err := backends[bench.backend].GetClient(b.Context(), component.KindExporter, newTestEntity(bench.name), fmt.Sprintf("%d", bench.records))
 			if err != nil {
 				b.Fatal(err)
 			}
-			defer client.Close(context.Background())
+			defer client.Close(b.Context())
 
 			// Populate records and create set of Get Operations
 			ops := getBatchBenchmarkOps(storage.Get, bench.records, bench.singleBatch)
@@ -72,8 +74,8 @@ func BenchmarkBatchSet(b *testing.B) {
 			b.ResetTimer()
 
 			// Run Benchmark
-			for i := 0; i < b.N; i++ {
-				if err := client.Batch(context.Background(), ops...); err != nil {
+			for b.Loop() {
+				if err := client.Batch(b.Context(), ops...); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -87,11 +89,11 @@ func BenchmarkBatchDelete(b *testing.B) {
 
 	for _, bench := range benchmarks {
 		b.Run(fmt.Sprintf("backend=%s/op=%s/rows=%d", bench.backend, bench.name, bench.records), func(b *testing.B) {
-			client, err := backends[bench.backend].GetClient(context.Background(), component.KindExporter, newTestEntity(bench.name), fmt.Sprintf("%d", bench.records))
+			client, err := backends[bench.backend].GetClient(b.Context(), component.KindExporter, newTestEntity(bench.name), fmt.Sprintf("%d", bench.records))
 			if err != nil {
 				b.Fatal(err)
 			}
-			defer client.Close(context.Background())
+			defer client.Close(b.Context())
 
 			// Populate records and create set of Get Operations
 			ops := getBatchBenchmarkOps(storage.Get, bench.records, bench.singleBatch)
@@ -100,8 +102,8 @@ func BenchmarkBatchDelete(b *testing.B) {
 			b.ResetTimer()
 
 			// Run Benchmark
-			for i := 0; i < b.N; i++ {
-				if err := client.Batch(context.Background(), ops...); err != nil {
+			for b.Loop() {
+				if err := client.Batch(b.Context(), ops...); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -174,7 +176,7 @@ func getBatchBenchExtensions(b *testing.B, batchType string) map[string]storage.
 
 	sePostgreSQL, ctr, err := newPostgresTestExtension()
 	b.Cleanup(func() {
-		if ctrErr := ctr.Terminate(context.Background()); ctrErr != nil {
+		if ctrErr := ctr.Terminate(context.Background()); ctrErr != nil { //nolint:usetesting
 			b.Fatal(ctrErr)
 		}
 	})
@@ -184,12 +186,12 @@ func getBatchBenchExtensions(b *testing.B, batchType string) map[string]storage.
 	backends[driverPostgreSQL] = sePostgreSQL
 
 	for _, se := range backends {
-		err = se.Start(context.Background(), componenttest.NewNopHost())
+		err = se.Start(b.Context(), componenttest.NewNopHost())
 		if err != nil {
 			b.Fatal(err)
 		}
 		b.Cleanup(func() {
-			err = se.Shutdown(context.Background())
+			err = se.Shutdown(context.Background()) //nolint:usetesting
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -203,7 +205,6 @@ func randBytes(n int) []byte {
 	const alphanum = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
 	bytes := make([]byte, n)
-	//nolint:errcheck
 	rand.Read(bytes)
 	for i, b := range bytes {
 		bytes[i] = alphanum[b%byte(len(alphanum))]

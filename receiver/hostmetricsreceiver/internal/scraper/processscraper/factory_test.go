@@ -4,8 +4,8 @@
 package processscraper
 
 import (
-	"context"
 	"runtime"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -24,13 +24,13 @@ func TestCreateResourceMetricsScraper(t *testing.T) {
 	factory := NewFactory()
 	cfg := &Config{}
 
-	scraper, err := factory.CreateMetrics(context.Background(), scrapertest.NewNopSettings(metadata.Type), cfg)
+	scraper, err := factory.CreateMetrics(t.Context(), scrapertest.NewNopSettings(metadata.Type), cfg)
 
-	if runtime.GOOS == "linux" || runtime.GOOS == "windows" || runtime.GOOS == "darwin" || runtime.GOOS == "freebsd" {
+	if slices.Contains(supportedPlatforms, runtime.GOOS) {
 		assert.NoError(t, err)
 		assert.NotNil(t, scraper)
 	} else {
-		assert.Error(t, err)
+		assert.ErrorIs(t, err, errUnsupportedPlatform)
 		assert.Nil(t, scraper)
 	}
 }

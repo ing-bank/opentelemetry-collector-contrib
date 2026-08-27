@@ -161,7 +161,7 @@ func (k *K8sAPIServer) GetMetrics() []pmetric.Metrics {
 			attributes["NodeName"] = k.nodeName
 		}
 		attributes[ci.SourcesKey] = "[\"apiserver\"]"
-		attributes[ci.Kubernetes] = fmt.Sprintf("{\"namespace_name\":\"%s\",\"service_name\":\"%s\"}",
+		attributes[ci.Kubernetes] = fmt.Sprintf("{\"namespace_name\":\"%s\",\"service_name\":\"%s\"}", //nolint:gocritic //sprintfQuotedString for JSON
 			service.Namespace, service.ServiceName)
 		md := ci.ConvertToOTLPMetrics(fields, attributes, k.logger)
 		result = append(result, md)
@@ -182,7 +182,7 @@ func (k *K8sAPIServer) GetMetrics() []pmetric.Metrics {
 			attributes["NodeName"] = k.nodeName
 		}
 		attributes[ci.SourcesKey] = "[\"apiserver\"]"
-		attributes[ci.Kubernetes] = fmt.Sprintf("{\"namespace_name\":\"%s\"}", namespace)
+		attributes[ci.Kubernetes] = fmt.Sprintf("{\"namespace_name\":\"%s\"}", namespace) //nolint:gocritic //sprintfQuotedString for JSON
 		md := ci.ConvertToOTLPMetrics(fields, attributes, k.logger)
 		result = append(result, md)
 	}
@@ -226,7 +226,8 @@ func (k *K8sAPIServer) init() error {
 		resourcelock.ResourceLockConfig{
 			Identity:      k.nodeName,
 			EventRecorder: k.createRecorder(lockName, lockNamespace),
-		})
+		},
+	)
 	if err != nil {
 		k.logger.Warn("Failed to create resource lock", zap.Error(err))
 		return err

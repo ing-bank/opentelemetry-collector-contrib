@@ -4,13 +4,11 @@
 package heroku
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/processor/processortest"
-	conventions "go.opentelemetry.io/otel/semconv/v1.6.1"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourcedetectionprocessor/internal"
 )
@@ -23,10 +21,10 @@ func TestDetectTrue(t *testing.T) {
 	t.Setenv("HEROKU_RELEASE_VERSION", "v1")
 	t.Setenv("HEROKU_SLUG_COMMIT", "23456")
 
-	detector, err := NewDetector(processortest.NewNopSettings(processortest.NopType), CreateDefaultConfig())
+	detector, err := NewDetector(processortest.NewNopSettings(processortest.NopType), CreateDefaultConfig(), false)
 	require.NoError(t, err)
-	res, schemaURL, err := detector.Detect(context.Background())
-	assert.Equal(t, conventions.SchemaURL, schemaURL)
+	res, schemaURL, err := detector.Detect(t.Context())
+	assert.Contains(t, schemaURL, "https://opentelemetry.io/schemas/")
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{
 		"heroku.app.id":                     "appid",
@@ -46,10 +44,10 @@ func TestDetectTruePartial(t *testing.T) {
 	t.Setenv("HEROKU_APP_NAME", "appname")
 	t.Setenv("HEROKU_RELEASE_VERSION", "v1")
 
-	detector, err := NewDetector(processortest.NewNopSettings(processortest.NopType), CreateDefaultConfig())
+	detector, err := NewDetector(processortest.NewNopSettings(processortest.NopType), CreateDefaultConfig(), false)
 	require.NoError(t, err)
-	res, schemaURL, err := detector.Detect(context.Background())
-	assert.Equal(t, conventions.SchemaURL, schemaURL)
+	res, schemaURL, err := detector.Detect(t.Context())
+	assert.Contains(t, schemaURL, "https://opentelemetry.io/schemas/")
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{
 		"heroku.app.id":       "appid",
@@ -66,10 +64,10 @@ func TestDetectTruePartialMissingDynoId(t *testing.T) {
 	t.Setenv("HEROKU_APP_NAME", "appname")
 	t.Setenv("HEROKU_RELEASE_VERSION", "v1")
 
-	detector, err := NewDetector(processortest.NewNopSettings(processortest.NopType), CreateDefaultConfig())
+	detector, err := NewDetector(processortest.NewNopSettings(processortest.NopType), CreateDefaultConfig(), false)
 	require.NoError(t, err)
-	res, schemaURL, err := detector.Detect(context.Background())
-	assert.Equal(t, conventions.SchemaURL, schemaURL)
+	res, schemaURL, err := detector.Detect(t.Context())
+	assert.Contains(t, schemaURL, "https://opentelemetry.io/schemas/")
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{
 		"heroku.app.id":   "appid",
@@ -81,10 +79,10 @@ func TestDetectTruePartialMissingDynoId(t *testing.T) {
 }
 
 func TestDetectFalse(t *testing.T) {
-	detector, err := NewDetector(processortest.NewNopSettings(processortest.NopType), CreateDefaultConfig())
+	detector, err := NewDetector(processortest.NewNopSettings(processortest.NopType), CreateDefaultConfig(), false)
 	require.NoError(t, err)
-	res, schemaURL, err := detector.Detect(context.Background())
+	res, schemaURL, err := detector.Detect(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, "https://opentelemetry.io/schemas/1.6.1", schemaURL)
+	assert.Contains(t, schemaURL, "https://opentelemetry.io/schemas/")
 	assert.True(t, internal.IsEmptyResource(res))
 }

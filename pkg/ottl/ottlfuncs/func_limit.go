@@ -9,12 +9,13 @@ import (
 	"fmt"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.uber.org/zap"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 )
 
 type LimitArguments[K any] struct {
-	Target       ottl.PMapGetter[K]
+	Target       ottl.PMapGetSetter[K]
 	Limit        int64
 	PriorityKeys []string
 }
@@ -23,17 +24,17 @@ func NewLimitFactory[K any]() ottl.Factory[K] {
 	return ottl.NewFactory("limit", &LimitArguments[K]{}, createLimitFunction[K])
 }
 
-func createLimitFunction[K any](_ ottl.FunctionContext, oArgs ottl.Arguments) (ottl.ExprFunc[K], error) {
+func createLimitFunction[K any](fCtx ottl.FunctionContext, oArgs ottl.Arguments) (ottl.ExprFunc[K], error) {
 	args, ok := oArgs.(*LimitArguments[K])
 
 	if !ok {
 		return nil, errors.New("LimitFactory args must be of type *LimitArguments[K]")
 	}
 
-	return limit(args.Target, args.Limit, args.PriorityKeys)
+	return limit(args.Target, args.Limit, args.PriorityKeys, fCtx.Set.Logger)
 }
 
-func limit[K any](target ottl.PMapGetter[K], limit int64, priorityKeys []string) (ottl.ExprFunc[K], error) {
+func limit[K any](target ottl.PMapGetSetter[K], limit int64, priorityKeys []string, logger *zap.Logger) (ottl.ExprFunc[K], error) {
 	if limit < 0 {
 		return nil, fmt.Errorf("invalid limit for limit function, %d cannot be negative", limit)
 	}
@@ -65,6 +66,8 @@ func limit[K any](target ottl.PMapGetter[K], limit int64, priorityKeys []string)
 			}
 		}
 
+		var removed []string
+		debugEnabled := logger.Core().Enabled(zap.DebugLevel)
 		val.RemoveIf(func(key string, _ pcommon.Value) bool {
 			if _, ok := keep[key]; ok {
 				return false
@@ -73,10 +76,14 @@ func limit[K any](target ottl.PMapGetter[K], limit int64, priorityKeys []string)
 				count++
 				return false
 			}
+			if debugEnabled {
+				removed = append(removed, key)
+			}
 			return true
 		})
-		// TODO: Write log when limiting is performed
-		// https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/9730
-		return nil, nil
+		if len(removed) != 0 {
+			logger.Debug(fmt.Sprintf("discarded %d values", len(removed)), zap.Strings("keys", removed))
+		}
+		return nil, target.Set(ctx, tCtx, val)
 	}, nil
 }

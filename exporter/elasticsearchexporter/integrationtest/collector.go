@@ -25,6 +25,7 @@ import (
 	"go.opentelemetry.io/collector/processor"
 	"go.opentelemetry.io/collector/receiver"
 	"go.opentelemetry.io/collector/receiver/otlpreceiver"
+	"go.opentelemetry.io/collector/service/telemetry/otelconftelemetry"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/elasticsearchexporter"
@@ -70,12 +71,7 @@ extensions:
 service:
   telemetry:
     metrics:
-      readers:
-        - pull:
-            exporter:
-              prometheus:
-                host: '127.0.0.1'
-                port: %d
+      level: none
     logs:
       level: %s
       sampling:
@@ -95,7 +91,6 @@ service:
 		debugVerbosity,
 		processorSection,
 		extensionSection,
-		testutil.GetAvailablePort(tb),
 		logLevel,
 		extensionList,
 		pipelineType,
@@ -117,7 +112,7 @@ func createConfigSection(m map[string]string) (sections, list string) {
 			first = false
 		}
 	}
-	return
+	return sections, list
 }
 
 // recreatableOtelCol creates an otel collector that can be used to simulate
@@ -154,8 +149,9 @@ func newRecreatableOtelCol(tb testing.TB) *recreatableOtelCol {
 		debugexporter.NewFactory(),
 	)
 	require.NoError(tb, err)
+	factories.Telemetry = otelconftelemetry.NewFactory()
 	return &recreatableOtelCol{
-		tempDir:   tb.TempDir(),
+		tempDir:   testutil.TempDir(tb),
 		factories: factories,
 	}
 }
@@ -176,7 +172,7 @@ func (c *recreatableOtelCol) Start(_ testbed.StartParams) error {
 		return err
 	}
 
-	if _, err = confFile.Write([]byte(c.configStr)); err != nil {
+	if _, err = confFile.WriteString(c.configStr); err != nil {
 		os.Remove(confFile.Name())
 		return err
 	}
@@ -247,15 +243,15 @@ func (c *recreatableOtelCol) Restart(graceful bool, shutdownFor time.Duration) e
 	return c.run()
 }
 
-func (c *recreatableOtelCol) WatchResourceConsumption() error {
+func (*recreatableOtelCol) WatchResourceConsumption() error {
 	return nil
 }
 
-func (c *recreatableOtelCol) GetProcessMon() *process.Process {
+func (*recreatableOtelCol) GetProcessMon() *process.Process {
 	return nil
 }
 
-func (c *recreatableOtelCol) GetTotalConsumption() *testbed.ResourceConsumption {
+func (*recreatableOtelCol) GetTotalConsumption() *testbed.ResourceConsumption {
 	return &testbed.ResourceConsumption{
 		CPUPercentAvg: 0,
 		CPUPercentMax: 0,
@@ -264,7 +260,7 @@ func (c *recreatableOtelCol) GetTotalConsumption() *testbed.ResourceConsumption 
 	}
 }
 
-func (c *recreatableOtelCol) GetResourceConsumption() string {
+func (*recreatableOtelCol) GetResourceConsumption() string {
 	return ""
 }
 

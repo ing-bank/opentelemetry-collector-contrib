@@ -36,7 +36,7 @@ func (m *testResultWrapper) Scan(dest ...any) error {
 	return nil
 }
 
-func (m *testResultWrapper) Close() error {
+func (*testResultWrapper) Close() error {
 	return nil
 }
 
@@ -89,10 +89,6 @@ func (m *testConnectionFactory) getConnection(_ driver.Connector) dbWrapper {
 	return m.dbWrapper
 }
 
-func str(str string) *string {
-	return &str
-}
-
 func TestBasicConnectAndClose(t *testing.T) {
 	dbWrapper := &testDBWrapper{}
 	dbWrapper.On("PingContext").Return(nil)
@@ -101,7 +97,7 @@ func TestBasicConnectAndClose(t *testing.T) {
 	factory := &testConnectionFactory{dbWrapper}
 	client := newSapHanaClient(createDefaultConfig().(*Config), factory)
 
-	require.NoError(t, client.Connect(context.TODO()))
+	require.NoError(t, client.Connect(t.Context()))
 	require.NoError(t, client.Close())
 }
 
@@ -113,7 +109,7 @@ func TestFailedPing(t *testing.T) {
 	factory := &testConnectionFactory{dbWrapper}
 	client := newSapHanaClient(createDefaultConfig().(*Config), factory)
 
-	require.Error(t, client.Connect(context.TODO()))
+	require.Error(t, client.Connect(t.Context()))
 	require.NoError(t, client.Close())
 }
 
@@ -123,12 +119,12 @@ func TestSimpleQueryOutput(t *testing.T) {
 	dbWrapper.On("Close").Return(nil)
 
 	dbWrapper.mockQueryResult("SELECT 1=1", [][]*string{
-		{str("my_id"), str("dead"), str("1"), str("8.044")},
-		{str("your_id"), str("alive"), str("2"), str("600.1")},
+		{new("my_id"), new("dead"), new("1"), new("8.044")},
+		{new("your_id"), new("alive"), new("2"), new("600.1")},
 	}, nil)
 
 	client := newSapHanaClient(createDefaultConfig().(*Config), &testConnectionFactory{dbWrapper})
-	require.NoError(t, client.Connect(context.TODO()))
+	require.NoError(t, client.Connect(t.Context()))
 
 	query := &monitoringQuery{
 		query:               "SELECT 1=1",
@@ -155,7 +151,7 @@ func TestSimpleQueryOutput(t *testing.T) {
 		},
 	}
 
-	results, err := client.collectDataFromQuery(context.TODO(), query)
+	results, err := client.collectDataFromQuery(t.Context(), query)
 	require.NoError(t, err)
 	require.Equal(t, []map[string]string{
 		{
@@ -181,12 +177,12 @@ func TestNullOutput(t *testing.T) {
 	dbWrapper.On("Close").Return(nil)
 
 	dbWrapper.mockQueryResult("SELECT 1=1", [][]*string{
-		{str("my_id"), str("dead"), str("1"), nil},
-		{nil, str("live"), str("3"), str("123.123")},
+		{new("my_id"), new("dead"), new("1"), nil},
+		{nil, new("live"), new("3"), new("123.123")},
 	}, nil)
 
 	client := newSapHanaClient(createDefaultConfig().(*Config), &testConnectionFactory{dbWrapper})
-	require.NoError(t, client.Connect(context.TODO()))
+	require.NoError(t, client.Connect(t.Context()))
 
 	query := &monitoringQuery{
 		query:               "SELECT 1=1",
@@ -213,7 +209,7 @@ func TestNullOutput(t *testing.T) {
 		},
 	}
 
-	results, err := client.collectDataFromQuery(context.TODO(), query)
+	results, err := client.collectDataFromQuery(t.Context(), query)
 	// Error expected for second row, but data is also returned
 	require.ErrorContains(t, err, "database row NULL value for required metric label id")
 	require.Equal(t, []map[string]string{

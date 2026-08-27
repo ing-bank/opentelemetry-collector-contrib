@@ -46,7 +46,7 @@ func getConnectionState(tcpConfig *confignet.TCPAddrConfig) (tcpConnectionState,
 	return state, nil
 }
 
-func (s *scraper) errorListener(ctx context.Context, eQueue <-chan error, eOut chan<- *scrapererror.ScrapeErrors) {
+func (*scraper) errorListener(ctx context.Context, eQueue <-chan error, eOut chan<- *scrapererror.ScrapeErrors) {
 	errs := &scrapererror.ScrapeErrors{}
 
 	for {
@@ -175,7 +175,7 @@ func newScraper(cfg *Config, settings receiver.Settings) *scraper {
 	return &scraper{
 		cfg:                cfg,
 		settings:           settings.TelemetrySettings,
-		mb:                 metadata.NewMetricsBuilder(metadata.DefaultMetricsBuilderConfig(), settings),
+		mb:                 metadata.NewMetricsBuilder(metadata.NewDefaultMetricsBuilderConfig(), settings),
 		getConnectionState: getConnectionState,
 	}
 }

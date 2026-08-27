@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
@@ -70,7 +71,7 @@ func TestExport_Success(t *testing.T) {
 	metricsClient, selfExp, selfProv := makeMetricsServiceClient(t, metricsSink)
 
 	go metricsSink.unblock()
-	resp, err := metricsClient.Export(context.Background(), req)
+	resp, err := metricsClient.Export(t.Context(), req)
 	require.NoError(t, err, "Failed to export trace: %v", err)
 	require.NotNil(t, resp, "The response is missing")
 
@@ -78,7 +79,7 @@ func TestExport_Success(t *testing.T) {
 	assert.Equal(t, md, metricsSink.AllMetrics()[0])
 
 	// One self-tracing spans is issued.
-	require.NoError(t, selfProv.ForceFlush(context.Background()))
+	require.NoError(t, selfProv.ForceFlush(t.Context()))
 	require.Len(t, selfExp.GetSpans(), 1)
 }
 
@@ -88,14 +89,14 @@ func TestExport_EmptyRequest(t *testing.T) {
 	empty := pmetricotlp.NewExportRequest()
 
 	go metricsSink.unblock()
-	resp, err := metricsClient.Export(context.Background(), empty)
+	resp, err := metricsClient.Export(t.Context(), empty)
 	assert.NoError(t, err, "Failed to export trace: %v", err)
 	assert.NotNil(t, resp, "The response is missing")
 
 	require.Empty(t, metricsSink.AllMetrics())
 
 	// No self-tracing spans are issued.
-	require.NoError(t, selfProv.ForceFlush(context.Background()))
+	require.NoError(t, selfProv.ForceFlush(t.Context()))
 	require.Empty(t, selfExp.GetSpans())
 }
 
@@ -104,29 +105,82 @@ func TestExport_ErrorConsumer(t *testing.T) {
 	req := pmetricotlp.NewExportRequestFromMetrics(md)
 
 	metricsClient, selfExp, selfProv := makeMetricsServiceClient(t, consumertest.NewErr(errors.New("my error")))
-	resp, err := metricsClient.Export(context.Background(), req)
-	assert.EqualError(t, err, "rpc error: code = Unknown desc = my error")
+	resp, err := metricsClient.Export(t.Context(), req)
+	// Non-permanent errors should be mapped to Unavailable (retryable), not Unknown.
+	assert.EqualError(t, err, "rpc error: code = Unavailable desc = my error")
 	assert.Equal(t, pmetricotlp.ExportResponse{}, resp)
 
 	// One self-tracing spans is issued.
-	require.NoError(t, selfProv.ForceFlush(context.Background()))
+	require.NoError(t, selfProv.ForceFlush(t.Context()))
+	require.Len(t, selfExp.GetSpans(), 1)
+}
+
+func TestExport_PermanentErrorConsumer(t *testing.T) {
+	md := testdata.GenerateMetrics(1)
+	req := pmetricotlp.NewExportRequestFromMetrics(md)
+
+	metricsClient, selfExp, selfProv := makeMetricsServiceClient(t, consumertest.NewErr(consumererror.NewPermanent(errors.New("bad data"))))
+	resp, err := metricsClient.Export(t.Context(), req)
+	// Permanent errors should be mapped to Internal, not Unknown.
+	assert.EqualError(t, err, "rpc error: code = Internal desc = Permanent error: bad data")
+	assert.Equal(t, pmetricotlp.ExportResponse{}, resp)
+
+	// One self-tracing spans is issued.
+	require.NoError(t, selfProv.ForceFlush(t.Context()))
 	require.Len(t, selfExp.GetSpans(), 1)
 }
 
 func TestExport_AdmissionRequestTooLarge(t *testing.T) {
-	md := testdata.GenerateMetrics(10)
-	metricsSink := newTestSink()
-	req := pmetricotlp.NewExportRequestFromMetrics(md)
-	metricsClient, selfExp, selfProv := makeMetricsServiceClient(t, metricsSink)
+	t.Run("with data points", func(t *testing.T) {
+		md := testdata.GenerateMetrics(10)
+		metricsSink := newTestSink()
+		req := pmetricotlp.NewExportRequestFromMetrics(md)
+		metricsClient, selfExp, selfProv := makeMetricsServiceClient(t, metricsSink)
 
-	go metricsSink.unblock()
-	resp, err := metricsClient.Export(context.Background(), req)
-	assert.EqualError(t, err, "rpc error: code = InvalidArgument desc = rejecting request, request is too large")
-	assert.Equal(t, pmetricotlp.ExportResponse{}, resp)
+		go metricsSink.unblock()
+		resp, err := metricsClient.Export(t.Context(), req)
+		assert.EqualError(t, err, "rpc error: code = InvalidArgument desc = rejecting request, request is too large")
+		assert.Equal(t, pmetricotlp.ExportResponse{}, resp)
 
-	// One self-tracing spans is issued.
-	require.NoError(t, selfProv.ForceFlush(context.Background()))
-	require.Len(t, selfExp.GetSpans(), 1)
+		// One self-tracing spans is issued.
+		require.NoError(t, selfProv.ForceFlush(t.Context()))
+		require.Len(t, selfExp.GetSpans(), 1)
+	})
+
+	t.Run("with metadata only", func(t *testing.T) {
+		// Create metrics with metadata but no actual data points.
+		// This should still go through admission control based on size.
+		md := pmetric.NewMetrics()
+		for range 100 {
+			rm := md.ResourceMetrics().AppendEmpty()
+			// Add large attributes to the resource.
+			for range 10 {
+				rm.Resource().Attributes().PutStr(
+					"large.attribute.key.that.takes.space",
+					"This is a large attribute value that demonstrates metadata can be significant even without data points",
+				)
+			}
+			// Add scope but no metrics.
+			sm := rm.ScopeMetrics().AppendEmpty()
+			sm.Scope().SetName("test-scope")
+		}
+
+		require.Equal(t, 0, md.DataPointCount(), "Test setup: should have no data points")
+
+		sizer := &pmetric.ProtoMarshaler{}
+		sizeBytes := sizer.MetricsSize(md)
+		require.Greater(t, sizeBytes, maxBytes, "Test setup: metadata size should exceed admission limit")
+
+		req := pmetricotlp.NewExportRequestFromMetrics(md)
+		metricsSink := newTestSink()
+		metricsClient, _, _ := makeMetricsServiceClient(t, metricsSink)
+
+		// No need to call unblock() - request is rejected by admission control
+		// before ConsumeMetrics is ever called.
+		_, err := metricsClient.Export(t.Context(), req)
+		// Should be rejected by admission control due to size, not accepted with early return.
+		assert.ErrorContains(t, err, "rejecting request", "Should be rejected by admission control")
+	})
 }
 
 func TestExport_AdmissionLimitExceeded(t *testing.T) {
@@ -141,10 +195,10 @@ func TestExport_AdmissionLimitExceeded(t *testing.T) {
 
 	var expectSuccess atomic.Int32
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		go func() {
 			defer wait.Done()
-			_, err := metricsClient.Export(context.Background(), req)
+			_, err := metricsClient.Export(t.Context(), req)
 			if err == nil {
 				// some succeed!
 				expectSuccess.Add(1)
@@ -158,7 +212,7 @@ func TestExport_AdmissionLimitExceeded(t *testing.T) {
 	wait.Wait()
 
 	// 10 self-tracing spans are issued
-	require.NoError(t, selfProv.ForceFlush(context.Background()))
+	require.NoError(t, selfProv.ForceFlush(t.Context()))
 	require.Len(t, selfExp.GetSpans(), 10)
 
 	// Expect the correct number of success and failure.

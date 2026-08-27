@@ -12,12 +12,10 @@ import (
 	"io"
 	"strings"
 	"sync"
-	"time"
 
-	"cloud.google.com/go/pubsub/apiv1/pubsubpb"
+	"cloud.google.com/go/pubsub/v2/apiv1/pubsubpb"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
-	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -25,6 +23,7 @@ import (
 	"go.opentelemetry.io/collector/receiver/receiverhelper"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.uber.org/zap"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/encoding"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/googlecloudpubsubreceiver/internal"
@@ -183,11 +182,9 @@ func (receiver *pubsubReceiver) setMarshallerFromEncodingID(encodingID buildInEn
 		case otlpProtoLog:
 			receiver.logsUnmarshaler = &plog.ProtoUnmarshaler{}
 		case rawTextLog:
-			receiver.settings.Logger.Warn("build-in raw_text encoding is deprecated and will be removed in v0.132.0, use the text encoding extension instead")
-			receiver.logsUnmarshaler = unmarshalLogStrings{}
+			return errors.New("build-in raw_text encoding is removed since v0.132.0, use the text encoding extension instead")
 		case cloudLogging:
-			receiver.settings.Logger.Warn("build-in cloud_logging encoding is deprecated and will be removed in v0.132.0, use the googlecloudlogentry encoding extension instead")
-			receiver.logsUnmarshaler = unmarshalCloudLoggingLogEntry{}
+			return errors.New("build-in cloud_logging encoding is removed since v0.132.0, use the googlecloudlogentry encoding extension instead")
 		default:
 			return fmt.Errorf("cannot start receiver: build in encoding %s is not supported for logs", receiver.config.Encoding)
 		}
@@ -218,54 +215,6 @@ func (receiver *pubsubReceiver) Shutdown(_ context.Context) error {
 	return client.Close()
 }
 
-type unmarshalLogStrings struct{}
-
-func (unmarshalLogStrings) UnmarshalLogs(data []byte) (plog.Logs, error) {
-	out := plog.NewLogs()
-	logs := out.ResourceLogs()
-	rls := logs.AppendEmpty()
-
-	ills := rls.ScopeLogs().AppendEmpty()
-	lr := ills.LogRecords().AppendEmpty()
-
-	lr.Body().SetStr(string(data))
-	return out, nil
-}
-
-func (receiver *pubsubReceiver) handleLogStrings(ctx context.Context, payload []byte) error {
-	if receiver.logsConsumer == nil {
-		return nil
-	}
-	unmarshall := unmarshalLogStrings{}
-	out, err := unmarshall.UnmarshalLogs(payload)
-	if err != nil {
-		return err
-	}
-	return receiver.logsConsumer.ConsumeLogs(ctx, out)
-}
-
-type unmarshalCloudLoggingLogEntry struct{}
-
-func (unmarshalCloudLoggingLogEntry) UnmarshalLogs(data []byte) (plog.Logs, error) {
-	resource, lr, err := internal.TranslateLogEntry(data)
-	out := plog.NewLogs()
-
-	lr.SetObservedTimestamp(pcommon.NewTimestampFromTime(time.Now()))
-
-	if err != nil {
-		return out, err
-	}
-
-	logs := out.ResourceLogs()
-	rls := logs.AppendEmpty()
-	resource.CopyTo(rls.Resource())
-
-	ills := rls.ScopeLogs().AppendEmpty()
-	lr.CopyTo(ills.LogRecords().AppendEmpty())
-
-	return out, nil
-}
-
 func decompress(payload []byte, compression buildInCompression) ([]byte, error) {
 	if compression == gZip {
 		reader, err := gzip.NewReader(bytes.NewReader(payload))
@@ -277,14 +226,19 @@ func decompress(payload []byte, compression buildInCompression) ([]byte, error) 
 	return payload, nil
 }
 
-func (receiver *pubsubReceiver) handleTrace(ctx context.Context, payload []byte, compression buildInCompression) error {
-	payload, err := decompress(payload, compression)
+func (receiver *pubsubReceiver) handleTrace(ctx context.Context, message *pubsubpb.ReceivedMessage, compression buildInCompression) error {
+	payload, err := decompress(message.Message.Data, compression)
 	if err != nil {
 		return err
 	}
 	otlpData, err := receiver.tracesUnmarshaler.UnmarshalTraces(payload)
 	if err != nil {
 		receiver.increaseEncodingErrorMetric(ctx, "traces")
+		receiver.settings.Logger.Debug("failed to decode pubsub message for traces",
+			zap.String("message_id", message.Message.MessageId),
+			zap.Any("attributes", message.Message.Attributes),
+			zap.Error(err),
+		)
 		if receiver.config.IgnoreEncodingError {
 			return nil
 		}
@@ -297,14 +251,19 @@ func (receiver *pubsubReceiver) handleTrace(ctx context.Context, payload []byte,
 	return nil
 }
 
-func (receiver *pubsubReceiver) handleMetric(ctx context.Context, payload []byte, compression buildInCompression) error {
-	payload, err := decompress(payload, compression)
+func (receiver *pubsubReceiver) handleMetric(ctx context.Context, message *pubsubpb.ReceivedMessage, compression buildInCompression) error {
+	payload, err := decompress(message.Message.Data, compression)
 	if err != nil {
 		return err
 	}
 	otlpData, err := receiver.metricsUnmarshaler.UnmarshalMetrics(payload)
 	if err != nil {
 		receiver.increaseEncodingErrorMetric(ctx, "metrics")
+		receiver.settings.Logger.Debug("failed to decode pubsub message for metrics",
+			zap.String("message_id", message.Message.MessageId),
+			zap.Any("attributes", message.Message.Attributes),
+			zap.Error(err),
+		)
 		if receiver.config.IgnoreEncodingError {
 			return nil
 		}
@@ -317,14 +276,19 @@ func (receiver *pubsubReceiver) handleMetric(ctx context.Context, payload []byte
 	return nil
 }
 
-func (receiver *pubsubReceiver) handleLog(ctx context.Context, payload []byte, compression buildInCompression) error {
-	payload, err := decompress(payload, compression)
+func (receiver *pubsubReceiver) handleLog(ctx context.Context, message *pubsubpb.ReceivedMessage, compression buildInCompression) error {
+	payload, err := decompress(message.Message.Data, compression)
 	if err != nil {
 		return err
 	}
 	otlpData, err := receiver.logsUnmarshaler.UnmarshalLogs(payload)
 	if err != nil {
 		receiver.increaseEncodingErrorMetric(ctx, "logs")
+		receiver.settings.Logger.Debug("failed to decode pubsub message for logs",
+			zap.String("message_id", message.Message.MessageId),
+			zap.Any("attributes", message.Message.Attributes),
+			zap.Error(err),
+		)
 		if receiver.config.IgnoreEncodingError {
 			return nil
 		}
@@ -379,7 +343,7 @@ func (receiver *pubsubReceiver) detectEncoding(attributes map[string]string) (ot
 			otlpCompression = gZip
 		}
 	}
-	return
+	return otlpEncoding, otlpCompression
 }
 
 func convertEncoding(encodingConfig string) (encoding buildInEncoding) {
@@ -407,32 +371,29 @@ func (receiver *pubsubReceiver) createMultiplexingReceiverHandler(ctx context.Co
 		receiver.client,
 		receiver.config.ClientID,
 		receiver.config.Subscription,
+		receiver.config.FlowControlConfig.getInternalConfig(),
 		func(ctx context.Context, message *pubsubpb.ReceivedMessage) error {
-			payload := message.Message.Data
 			encoding, compression := receiver.detectEncoding(message.Message.Attributes)
 
 			switch encoding {
 			case otlpProtoTrace:
 				if receiver.tracesConsumer != nil {
-					return receiver.handleTrace(ctx, payload, compression)
+					return receiver.handleTrace(ctx, message, compression)
 				}
 			case otlpProtoMetric:
 				if receiver.metricsConsumer != nil {
-					return receiver.handleMetric(ctx, payload, compression)
+					return receiver.handleMetric(ctx, message, compression)
 				}
 			case otlpProtoLog:
 				if receiver.logsConsumer != nil {
-					return receiver.handleLog(ctx, payload, compression)
-				}
-			case rawTextLog:
-				if receiver.logsConsumer != nil {
-					return receiver.handleLogStrings(ctx, payload)
+					return receiver.handleLog(ctx, message, compression)
 				}
 			default:
 				return errors.New("unknown encoding")
 			}
 			return nil
-		})
+		},
+	)
 	if err != nil {
 		return err
 	}
@@ -444,22 +405,22 @@ func (receiver *pubsubReceiver) createReceiverHandler(ctx context.Context) error
 	var err error
 	var handlerFn func(context.Context, *pubsubpb.ReceivedMessage) error
 	compression := uncompressed
+	if receiver.config.Compression == "gzip" {
+		compression = gZip
+	}
 	if receiver.tracesConsumer != nil {
 		handlerFn = func(ctx context.Context, message *pubsubpb.ReceivedMessage) error {
-			payload := message.Message.Data
-			return receiver.handleTrace(ctx, payload, compression)
+			return receiver.handleTrace(ctx, message, compression)
 		}
 	}
 	if receiver.logsConsumer != nil {
 		handlerFn = func(ctx context.Context, message *pubsubpb.ReceivedMessage) error {
-			payload := message.Message.Data
-			return receiver.handleLog(ctx, payload, compression)
+			return receiver.handleLog(ctx, message, compression)
 		}
 	}
 	if receiver.metricsConsumer != nil {
 		handlerFn = func(ctx context.Context, message *pubsubpb.ReceivedMessage) error {
-			payload := message.Message.Data
-			return receiver.handleMetric(ctx, payload, compression)
+			return receiver.handleMetric(ctx, message, compression)
 		}
 	}
 
@@ -470,7 +431,9 @@ func (receiver *pubsubReceiver) createReceiverHandler(ctx context.Context) error
 		receiver.client,
 		receiver.config.ClientID,
 		receiver.config.Subscription,
-		handlerFn)
+		receiver.config.FlowControlConfig.getInternalConfig(),
+		handlerFn,
+	)
 	if err != nil {
 		return err
 	}

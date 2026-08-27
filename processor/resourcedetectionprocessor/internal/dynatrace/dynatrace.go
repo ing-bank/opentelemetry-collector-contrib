@@ -27,14 +27,14 @@ const TypeStr = "dynatrace"
 
 const dtHostMetadataProperties = "dt_host_metadata.properties"
 
-var dtHostProperties = []string{"dt.entity.host", "host.name"}
+var dtHostProperties = []string{"dt.entity.host", "host.name", "dt.smartscape.host"}
 
 type Detector struct {
 	enrichmentDirectory string
 	logger              *zap.Logger
 }
 
-func NewDetector(set processor.Settings, _ internal.DetectorConfig) (internal.Detector, error) {
+func NewDetector(set processor.Settings, _ internal.DetectorConfig, _ bool) (internal.Detector, error) {
 	enrichmentDir := "/var/lib/dynatrace/enrichment"
 	if runtime.GOOS == "windows" {
 		// Windows default is "%ProgramData%\dynatrace\enrichment"

@@ -1,0 +1,242 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+package healthcheck
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/component/componentstatus"
+	"go.opentelemetry.io/collector/component/componenttest"
+	"go.opentelemetry.io/collector/confmap/confmaptest"
+	"go.opentelemetry.io/collector/extension/extensiontest"
+	"go.opentelemetry.io/collector/pipeline"
+
+	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/common/testutil"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/status"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/status/testhelpers"
+)
+
+func TestComponentStatus(t *testing.T) {
+	cfg := NewDefaultConfig().(*Config)
+	cfg.HTTPConfig.ServerConfig.NetAddr.Endpoint = testutil.GetAvailableLocalAddress(t)
+	cfg.GRPCConfig.ServerConfig.NetAddr.Endpoint = testutil.GetAvailableLocalAddress(t)
+	cfg.UseV2 = true
+	ext := NewHealthCheckExtension(*cfg, extensiontest.NewNopSettings(extensiontest.NopType))
+
+	//nolint:usetesting // Background context is used to avoid cancellation issues during cleanup
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(func() {
+		cancel()
+		// Shutdown may have already been called in the test, but calling it again is safe
+		//nolint:usetesting // Background context is used to ensure shutdown completes even after test ends
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		_ = ext.Shutdown(shutdownCtx)
+	})
+
+	// Status before Start will be StatusNone
+	st, ok := ext.aggregator.AggregateStatus(status.ScopeAll, status.Concise)
+	require.True(t, ok)
+	assert.Equal(t, componentstatus.StatusNone, st.Status())
+
+	require.NoError(t, ext.Start(ctx, componenttest.NewNopHost()))
+
+	traces := testhelpers.NewPipelineMetadata(pipeline.SignalTraces)
+
+	// StatusStarting will be sent immediately.
+	for _, id := range traces.InstanceIDs() {
+		ext.ComponentStatusChanged(id, componentstatus.NewEvent(componentstatus.StatusStarting))
+	}
+
+	// StatusOK will be queued until the PipelineWatcher Ready method is called.
+	for _, id := range traces.InstanceIDs() {
+		ext.ComponentStatusChanged(id, componentstatus.NewEvent(componentstatus.StatusOK))
+	}
+
+	// Note the use of assert.Eventually here and throughout this test is because
+	// status events are processed asynchronously in the background.
+	assert.EventuallyWithT(t, func(tt *assert.CollectT) {
+		st, ok = ext.aggregator.AggregateStatus(status.ScopeAll, status.Concise)
+		require.True(tt, ok)
+		assert.Equal(tt, componentstatus.StatusStarting, st.Status())
+	}, time.Second, 10*time.Millisecond)
+
+	require.NoError(t, ext.Ready())
+
+	assert.EventuallyWithT(t, func(tt *assert.CollectT) {
+		st, ok = ext.aggregator.AggregateStatus(status.ScopeAll, status.Concise)
+		require.True(tt, ok)
+		assert.Equal(tt, componentstatus.StatusOK, st.Status())
+	}, time.Second, 10*time.Millisecond)
+
+	// StatusStopping will be sent immediately.
+	for _, id := range traces.InstanceIDs() {
+		ext.ComponentStatusChanged(id, componentstatus.NewEvent(componentstatus.StatusStopping))
+	}
+
+	assert.EventuallyWithT(t, func(tt *assert.CollectT) {
+		st, ok = ext.aggregator.AggregateStatus(status.ScopeAll, status.Concise)
+		require.True(tt, ok)
+		assert.Equal(tt, componentstatus.StatusStopping, st.Status())
+	}, time.Second, 10*time.Millisecond)
+
+	require.NoError(t, ext.NotReady())
+
+	// Shutdown before sending final events to verify they are discarded
+	//nolint:usetesting // Background context is used to ensure shutdown completes properly
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	require.NoError(t, ext.Shutdown(shutdownCtx))
+
+	// Events sent after shutdown will be discarded
+	for _, id := range traces.InstanceIDs() {
+		ext.ComponentStatusChanged(id, componentstatus.NewEvent(componentstatus.StatusStopped))
+	}
+
+	st, ok = ext.aggregator.AggregateStatus(status.ScopeAll, status.Concise)
+	require.True(t, ok)
+	assert.Equal(t, componentstatus.StatusStopping, st.Status())
+}
+
+func TestNotifyConfig(t *testing.T) {
+	confMap, err := confmaptest.LoadConf(
+		filepath.Join("internal", "httpserver", "testdata", "config.yaml"),
+	)
+	require.NoError(t, err)
+	confJSON, err := os.ReadFile(
+		filepath.Clean(filepath.Join("internal", "httpserver", "testdata", "config.json")),
+	)
+	require.NoError(t, err)
+
+	endpoint := testutil.GetAvailableLocalAddress(t)
+
+	cfg := NewDefaultConfig().(*Config)
+	cfg.UseV2 = true
+	cfg.HTTPConfig.ServerConfig.NetAddr.Endpoint = endpoint
+	cfg.HTTPConfig.Config.Enabled = true
+	cfg.HTTPConfig.Config.Path = "/config"
+
+	ext := NewHealthCheckExtension(*cfg, extensiontest.NewNopSettings(extensiontest.NopType))
+
+	//nolint:usetesting // Background context is used to avoid cancellation issues during cleanup
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(func() {
+		cancel()
+		//nolint:usetesting // Background context is used to ensure shutdown completes even after test ends
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		require.NoError(t, ext.Shutdown(shutdownCtx))
+	})
+
+	require.NoError(t, ext.Start(ctx, componenttest.NewNopHost()))
+
+	client := &http.Client{}
+	defer client.CloseIdleConnections()
+	url := fmt.Sprintf("http://%s/config", endpoint)
+
+	var resp *http.Response
+
+	resp, err = client.Get(url)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	require.NoError(t, resp.Body.Close())
+
+	require.NoError(t, ext.NotifyConfig(ctx, confMap))
+
+	resp, err = client.Get(url)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.JSONEq(t, string(confJSON), string(body))
+}
+
+// TestComponentStatusChangedAfterShutdownDoesNotDeadlock verifies that calling
+// ComponentStatusChanged after Shutdown does not block. This is a regression
+// test for https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/47591.
+func TestComponentStatusChangedAfterShutdownDoesNotDeadlock(t *testing.T) {
+	cfg := NewDefaultConfig().(*Config)
+	cfg.HTTPConfig.ServerConfig.NetAddr.Endpoint = testutil.GetAvailableLocalAddress(t)
+	cfg.GRPCConfig.ServerConfig.NetAddr.Endpoint = testutil.GetAvailableLocalAddress(t)
+	cfg.UseV2 = true
+	ext := NewHealthCheckExtension(*cfg, extensiontest.NewNopSettings(extensiontest.NopType))
+
+	//nolint:usetesting // Background context is used to avoid cancellation issues during cleanup
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	require.NoError(t, ext.Start(ctx, componenttest.NewNopHost()))
+
+	traces := testhelpers.NewPipelineMetadata(pipeline.SignalTraces)
+	for _, id := range traces.InstanceIDs() {
+		ext.ComponentStatusChanged(id, componentstatus.NewEvent(componentstatus.StatusStarting))
+	}
+	require.NoError(t, ext.Ready())
+	for _, id := range traces.InstanceIDs() {
+		ext.ComponentStatusChanged(id, componentstatus.NewEvent(componentstatus.StatusOK))
+	}
+
+	//nolint:usetesting // Background context is used to ensure shutdown completes even after test ends
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	require.NoError(t, ext.Shutdown(shutdownCtx))
+
+	// These calls must not block. Before the fix, if eventLoop exited due to
+	// context cancellation, these sends to the unbuffered eventCh would deadlock.
+	done := make(chan struct{})
+	go func() {
+		for _, id := range traces.InstanceIDs() {
+			ext.ComponentStatusChanged(id, componentstatus.NewEvent(componentstatus.StatusStopping))
+			ext.ComponentStatusChanged(id, componentstatus.NewEvent(componentstatus.StatusStopped))
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// success
+	case <-time.After(time.Second):
+		t.Fatal("ComponentStatusChanged blocked after Shutdown - deadlock")
+	}
+}
+
+func TestShutdown(t *testing.T) {
+	t.Run("error in http server start", func(t *testing.T) {
+		// Want to get error in http server start
+		endpoint := testutil.GetAvailableLocalAddress(t)
+		l, err := net.Listen("tcp", endpoint)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, l.Close()) })
+
+		cfg := NewDefaultConfig().(*Config)
+		cfg.UseV2 = true
+		cfg.HTTPConfig.ServerConfig.NetAddr.Endpoint = endpoint
+
+		ext := NewHealthCheckExtension(*cfg, extensiontest.NewNopSettings(extensiontest.NopType))
+
+		//nolint:usetesting // Background context is used to avoid cancellation issues during cleanup
+		startCtx, startCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer startCancel()
+
+		// Get address already in use here
+		require.Error(t, ext.Start(startCtx, componenttest.NewNopHost()))
+
+		//nolint:usetesting // Background context is used to ensure shutdown completes even after test ends
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		require.NoError(t, ext.Shutdown(shutdownCtx))
+	})
+}

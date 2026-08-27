@@ -4,13 +4,12 @@
 package docker
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,11 +31,11 @@ func TestDocker(t *testing.T) {
 	provider, err := NewProvider(client.WithHost(ts.URL))
 	require.NoError(t, err)
 
-	hostname, err := provider.Hostname(context.Background())
+	hostname, err := provider.Hostname(t.Context())
 	assert.NoError(t, err)
 	assert.Equal(t, "hostname", hostname)
 
-	osType, err := provider.OSType(context.Background())
+	osType, err := provider.OSType(t.Context())
 	assert.NoError(t, err)
 	assert.Equal(t, "linux", osType)
 }

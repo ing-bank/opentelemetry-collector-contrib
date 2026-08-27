@@ -4,7 +4,6 @@
 package metricstransformprocessor
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -49,6 +48,16 @@ func TestCreateProcessors(t *testing.T) {
 			configName:   "config_invalid_newname.yaml",
 			succeed:      false,
 			errorMessage: fmt.Sprintf("missing required field %q while %q is %v", newNameFieldName, actionFieldName, Insert),
+		},
+		{
+			configName:   "config_invalid_combine_newname.yaml",
+			succeed:      false,
+			errorMessage: fmt.Sprintf("missing required field %q while %q is %v", newNameFieldName, actionFieldName, Combine),
+		},
+		{
+			configName:   "config_invalid_combine_aggregationtype.yaml",
+			succeed:      false,
+			errorMessage: fmt.Sprintf("missing required field %q while %q is %v", aggregationTypeFieldName, actionFieldName, Combine),
 		},
 		{
 			configName:   "config_invalid_group.yaml",
@@ -122,19 +131,21 @@ func TestCreateProcessors(t *testing.T) {
 				require.NoError(t, sub.Unmarshal(cfg))
 
 				tp, tErr := factory.CreateTraces(
-					context.Background(),
+					t.Context(),
 					processortest.NewNopSettings(metadata.Type),
 					cfg,
-					consumertest.NewNop())
+					consumertest.NewNop(),
+				)
 				// Not implemented error
 				assert.Error(t, tErr)
 				assert.Nil(t, tp)
 
 				mp, mErr := factory.CreateMetrics(
-					context.Background(),
+					t.Context(),
 					processortest.NewNopSettings(metadata.Type),
 					cfg,
-					consumertest.NewNop())
+					consumertest.NewNop(),
+				)
 				if tt.succeed {
 					assert.NotNil(t, mp)
 					assert.NoError(t, mErr)
@@ -150,12 +161,12 @@ func TestFactory_validateConfiguration(t *testing.T) {
 	v1 := Config{
 		Transforms: []transform{
 			{
-				MetricIncludeFilter: FilterConfig{
+				MetricIncludeFilter: filterConfig{
 					Include:   "mymetric",
 					MatchType: strictMatchType,
 				},
 				Action: Update,
-				Operations: []Operation{
+				Operations: []operation{
 					{
 						Action:   addLabel,
 						NewValue: "bar",
@@ -170,12 +181,12 @@ func TestFactory_validateConfiguration(t *testing.T) {
 	v2 := Config{
 		Transforms: []transform{
 			{
-				MetricIncludeFilter: FilterConfig{
+				MetricIncludeFilter: filterConfig{
 					Include:   "mymetric",
 					MatchType: strictMatchType,
 				},
 				Action: Update,
-				Operations: []Operation{
+				Operations: []operation{
 					{
 						Action:   addLabel,
 						NewLabel: "foo",
@@ -189,6 +200,27 @@ func TestFactory_validateConfiguration(t *testing.T) {
 	assert.EqualError(t, err, "operation 1: missing required field \"new_value\" while \"action\" is add_label")
 }
 
+func TestBuildHelperConfig_SubmatchCaseCopied(t *testing.T) {
+	cfg := &Config{
+		Transforms: []transform{
+			{
+				MetricIncludeFilter: filterConfig{
+					Include:   "^(?P<label>.*)_total$",
+					MatchType: regexpMatchType,
+				},
+				Action:          Combine,
+				NewName:         "combined",
+				AggregationType: aggregateutil.Sum,
+				SubmatchCase:    "lower",
+			},
+		},
+	}
+	helpers, err := buildHelperConfig(cfg, "1.0.0")
+	require.NoError(t, err)
+	require.Len(t, helpers, 1)
+	assert.Equal(t, submatchCase("lower"), helpers[0].SubmatchCase)
+}
+
 func TestCreateProcessorsFilledData(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
@@ -196,13 +228,13 @@ func TestCreateProcessorsFilledData(t *testing.T) {
 
 	oCfg.Transforms = []transform{
 		{
-			MetricIncludeFilter: FilterConfig{
+			MetricIncludeFilter: filterConfig{
 				Include:   "name",
 				MatchType: strictMatchType,
 			},
 			Action:  Update,
 			NewName: "new-name",
-			Operations: []Operation{
+			Operations: []operation{
 				{
 					Action:   addLabel,
 					NewLabel: "new-label",
@@ -212,7 +244,7 @@ func TestCreateProcessorsFilledData(t *testing.T) {
 					Action:   updateLabel,
 					Label:    "label",
 					NewLabel: "new-label",
-					ValueActions: []ValueAction{
+					ValueActions: []valueAction{
 						{
 							Value:    "value",
 							NewValue: "new/value {{version}}",
@@ -242,18 +274,18 @@ func TestCreateProcessorsFilledData(t *testing.T) {
 			NewName:             "new-name",
 			Operations: []internalOperation{
 				{
-					configOperation: Operation{
+					configOperation: &operation{
 						Action:   addLabel,
 						NewLabel: "new-label",
 						NewValue: "new-value v0.0.1",
 					},
 				},
 				{
-					configOperation: Operation{
+					configOperation: &operation{
 						Action:   updateLabel,
 						Label:    "label",
 						NewLabel: "new-label",
-						ValueActions: []ValueAction{
+						ValueActions: []valueAction{
 							{
 								Value:    "value",
 								NewValue: "new/value v0.0.1",
@@ -263,7 +295,7 @@ func TestCreateProcessorsFilledData(t *testing.T) {
 					valueActionsMapping: map[string]string{"value": "new/value v0.0.1"},
 				},
 				{
-					configOperation: Operation{
+					configOperation: &operation{
 						Action:          aggregateLabels,
 						LabelSet:        []string{"label1", "label2"},
 						AggregationType: aggregateutil.Sum,
@@ -274,7 +306,7 @@ func TestCreateProcessorsFilledData(t *testing.T) {
 					},
 				},
 				{
-					configOperation: Operation{
+					configOperation: &operation{
 						Action:           aggregateLabelValues,
 						Label:            "label",
 						AggregatedValues: []string{"value1", "value2"},

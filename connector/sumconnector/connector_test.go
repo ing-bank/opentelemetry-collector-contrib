@@ -4,7 +4,6 @@
 package sumconnector
 
 import (
-	"context"
 	"path/filepath"
 	"testing"
 
@@ -40,8 +39,9 @@ import (
 //   - (no attributes)
 func TestTracesToMetrics(t *testing.T) {
 	testCases := []struct {
-		name string
-		cfg  *Config
+		name   string
+		golden string
+		cfg    *Config
 	}{
 		{
 			name: "zero_conditions",
@@ -130,6 +130,58 @@ func TestTracesToMetrics(t *testing.T) {
 						Conditions: []string{
 							`resource.attributes["resource.optional"] != nil`,
 							`attributes["event.optional"] != nil`,
+						},
+					},
+				},
+			},
+		},
+		{
+			name:   "multiple_conditions_path_context",
+			golden: "multiple_conditions",
+			cfg: &Config{
+				Spans: map[string]MetricInfo{
+					"span.sum.if": {
+						Description:     "Span sum if ...",
+						SourceAttribute: "beep",
+						Conditions: []string{
+							`resource.attributes["resource.optional"] != nil`,
+							`span.attributes["span.optional"] != nil`,
+						},
+					},
+				},
+				SpanEvents: map[string]MetricInfo{
+					"spanevent.sum.if": {
+						Description:     "Span event sum if ...",
+						SourceAttribute: "beep",
+						Conditions: []string{
+							`resource.attributes["resource.optional"] != nil`,
+							`spanevent.attributes["event.optional"] != nil`,
+						},
+					},
+				},
+			},
+		},
+		{
+			name:   "multiple_conditions_mixed_syntax",
+			golden: "multiple_conditions",
+			cfg: &Config{
+				Spans: map[string]MetricInfo{
+					"span.sum.if": {
+						Description:     "Span sum if ...",
+						SourceAttribute: "beep",
+						Conditions: []string{
+							`resource.attributes["resource.optional"] != nil`,
+							`attributes["span.optional"] != nil`,
+						},
+					},
+				},
+				SpanEvents: map[string]MetricInfo{
+					"spanevent.sum.if": {
+						Description:     "Span event sum if ...",
+						SourceAttribute: "beep",
+						Conditions: []string{
+							`resource.attributes["resource.optional"] != nil`,
+							`spanevent.attributes["event.optional"] != nil`,
 						},
 					},
 				},
@@ -241,25 +293,29 @@ func TestTracesToMetrics(t *testing.T) {
 			require.NoError(t, tc.cfg.Validate())
 			factory := NewFactory()
 			sink := &consumertest.MetricsSink{}
-			conn, err := factory.CreateTracesToMetrics(context.Background(),
+			conn, err := factory.CreateTracesToMetrics(t.Context(),
 				connectortest.NewNopSettings(metadata.Type), tc.cfg, sink)
 			require.NoError(t, err)
 			require.NotNil(t, conn)
 			assert.False(t, conn.Capabilities().MutatesData)
 
-			require.NoError(t, conn.Start(context.Background(), componenttest.NewNopHost()))
+			require.NoError(t, conn.Start(t.Context(), componenttest.NewNopHost()))
 			defer func() {
-				assert.NoError(t, conn.Shutdown(context.Background()))
+				assert.NoError(t, conn.Shutdown(t.Context()))
 			}()
 
 			testSpans, err := golden.ReadTraces(filepath.Join("testdata", "traces", "input.yaml"))
 			assert.NoError(t, err)
-			assert.NoError(t, conn.ConsumeTraces(context.Background(), testSpans))
+			assert.NoError(t, conn.ConsumeTraces(t.Context(), testSpans))
 
 			allMetrics := sink.AllMetrics()
 			assert.Len(t, allMetrics, 1)
 
-			expected, err := golden.ReadMetrics(filepath.Join("testdata", "traces", tc.name+".yaml"))
+			goldenName := tc.golden
+			if goldenName == "" {
+				goldenName = tc.name
+			}
+			expected, err := golden.ReadMetrics(filepath.Join("testdata", "traces", goldenName+".yaml"))
 			assert.NoError(t, err)
 			assert.NoError(t, pmetrictest.CompareMetrics(expected, allMetrics[0],
 				pmetrictest.IgnoreTimestamp(),
@@ -289,8 +345,9 @@ func TestTracesToMetrics(t *testing.T) {
 //   - (no attributes)
 func TestMetricsToMetrics(t *testing.T) {
 	testCases := []struct {
-		name string
-		cfg  *Config
+		name   string
+		golden string
+		cfg    *Config
 	}{
 		{
 			name: "one_attribute",
@@ -332,6 +389,22 @@ func TestMetricsToMetrics(t *testing.T) {
 						Conditions: []string{
 							`resource.attributes["resource.optional"] != nil`,
 							`attributes["datapoint.optional"] != nil`,
+						},
+					},
+				},
+			},
+		},
+		{
+			name:   "multiple_conditions_path_context",
+			golden: "multiple_conditions",
+			cfg: &Config{
+				DataPoints: map[string]MetricInfo{
+					"datapoint.sum.if": {
+						Description:     "Data point sum if ...",
+						SourceAttribute: "beep",
+						Conditions: []string{
+							`resource.attributes["resource.optional"] != nil`,
+							`datapoint.attributes["datapoint.optional"] != nil`,
 						},
 					},
 				},
@@ -421,25 +494,29 @@ func TestMetricsToMetrics(t *testing.T) {
 			require.NoError(t, tc.cfg.Validate())
 			factory := NewFactory()
 			sink := &consumertest.MetricsSink{}
-			conn, err := factory.CreateMetricsToMetrics(context.Background(),
+			conn, err := factory.CreateMetricsToMetrics(t.Context(),
 				connectortest.NewNopSettings(metadata.Type), tc.cfg, sink)
 			require.NoError(t, err)
 			require.NotNil(t, conn)
 			assert.False(t, conn.Capabilities().MutatesData)
 
-			require.NoError(t, conn.Start(context.Background(), componenttest.NewNopHost()))
+			require.NoError(t, conn.Start(t.Context(), componenttest.NewNopHost()))
 			defer func() {
-				assert.NoError(t, conn.Shutdown(context.Background()))
+				assert.NoError(t, conn.Shutdown(t.Context()))
 			}()
 
 			testMetrics, err := golden.ReadMetrics(filepath.Join("testdata", "metrics", "input.yaml"))
 			assert.NoError(t, err)
-			assert.NoError(t, conn.ConsumeMetrics(context.Background(), testMetrics))
+			assert.NoError(t, conn.ConsumeMetrics(t.Context(), testMetrics))
 
 			allMetrics := sink.AllMetrics()
 			assert.Len(t, allMetrics, 1)
 
-			expected, err := golden.ReadMetrics(filepath.Join("testdata", "metrics", tc.name+".yaml"))
+			goldenName := tc.golden
+			if goldenName == "" {
+				goldenName = tc.name
+			}
+			expected, err := golden.ReadMetrics(filepath.Join("testdata", "metrics", goldenName+".yaml"))
 			assert.NoError(t, err)
 			assert.NoError(t, pmetrictest.CompareMetrics(expected, allMetrics[0],
 				pmetrictest.IgnoreTimestamp(),
@@ -466,8 +543,9 @@ func TestMetricsToMetrics(t *testing.T) {
 //   - (no attributes)
 func TestLogsToMetrics(t *testing.T) {
 	testCases := []struct {
-		name string
-		cfg  *Config
+		name   string
+		golden string
+		cfg    *Config
 	}{
 		{
 			name: "one_attribute",
@@ -509,6 +587,22 @@ func TestLogsToMetrics(t *testing.T) {
 						Conditions: []string{
 							`resource.attributes["resource.optional"] != nil`,
 							`attributes["log.optional"] != nil`,
+						},
+					},
+				},
+			},
+		},
+		{
+			name:   "multiple_conditions_path_context",
+			golden: "multiple_conditions",
+			cfg: &Config{
+				Logs: map[string]MetricInfo{
+					"sum.if": {
+						Description:     "Sum if ...",
+						SourceAttribute: "beep",
+						Conditions: []string{
+							`resource.attributes["resource.optional"] != nil`,
+							`log.attributes["log.optional"] != nil`,
 						},
 					},
 				},
@@ -597,25 +691,29 @@ func TestLogsToMetrics(t *testing.T) {
 			require.NoError(t, tc.cfg.Validate())
 			factory := NewFactory()
 			sink := &consumertest.MetricsSink{}
-			conn, err := factory.CreateLogsToMetrics(context.Background(),
+			conn, err := factory.CreateLogsToMetrics(t.Context(),
 				connectortest.NewNopSettings(metadata.Type), tc.cfg, sink)
 			require.NoError(t, err)
 			require.NotNil(t, conn)
 			assert.False(t, conn.Capabilities().MutatesData)
 
-			require.NoError(t, conn.Start(context.Background(), componenttest.NewNopHost()))
+			require.NoError(t, conn.Start(t.Context(), componenttest.NewNopHost()))
 			defer func() {
-				assert.NoError(t, conn.Shutdown(context.Background()))
+				assert.NoError(t, conn.Shutdown(t.Context()))
 			}()
 
 			testLogs, err := golden.ReadLogs(filepath.Join("testdata", "logs", "input.yaml"))
 			assert.NoError(t, err)
-			assert.NoError(t, conn.ConsumeLogs(context.Background(), testLogs))
+			assert.NoError(t, conn.ConsumeLogs(t.Context(), testLogs))
 
 			allMetrics := sink.AllMetrics()
 			assert.Len(t, allMetrics, 1)
 
-			expected, err := golden.ReadMetrics(filepath.Join("testdata", "logs", tc.name+".yaml"))
+			goldenName := tc.golden
+			if goldenName == "" {
+				goldenName = tc.name
+			}
+			expected, err := golden.ReadMetrics(filepath.Join("testdata", "logs", goldenName+".yaml"))
 			assert.NoError(t, err)
 			assert.NoError(t, pmetrictest.CompareMetrics(expected, allMetrics[0],
 				pmetrictest.IgnoreTimestamp(),

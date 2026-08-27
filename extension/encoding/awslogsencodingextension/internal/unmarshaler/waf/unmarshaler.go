@@ -4,7 +4,6 @@
 package waf // import "github.com/open-telemetry/opentelemetry-collector-contrib/extension/encoding/awslogsencodingextension/internal/unmarshaler/waf"
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -14,21 +13,14 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
-	conventions "go.opentelemetry.io/otel/semconv/v1.28.0"
+	conventions "go.opentelemetry.io/otel/semconv/v1.40.0"
 
+	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/encoding"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/encoding/awslogsencodingextension/internal/constants"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/encoding/awslogsencodingextension/internal/metadata"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/encoding/awslogsencodingextension/internal/unmarshaler"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/xstreamencoding"
 )
-
-type wafLogUnmarshaler struct {
-	buildInfo component.BuildInfo
-}
-
-func NewWAFLogUnmarshaler(buildInfo component.BuildInfo) unmarshaler.AWSUnmarshaler {
-	return &wafLogUnmarshaler{
-		buildInfo: buildInfo,
-	}
-}
 
 // See log fields: https://docs.aws.amazon.com/waf/latest/developerguide/logging-fields.html.
 type wafLog struct {
@@ -60,51 +52,166 @@ type wafLog struct {
 	Ja4Fingerprint   string `json:"ja4Fingerprint"`
 }
 
-func (w *wafLogUnmarshaler) UnmarshalAWSLogs(reader io.Reader) (plog.Logs, error) {
-	logs := plog.NewLogs()
+var _ unmarshaler.StreamingLogsUnmarshaler = (*WafLogUnmarshaler)(nil)
 
-	resourceLogs := logs.ResourceLogs().AppendEmpty()
-	resourceLogs.Resource().Attributes().PutStr(
-		string(conventions.CloudProviderKey),
-		conventions.CloudProviderAWS.Value.AsString(),
-	)
+type WafLogUnmarshaler struct {
+	buildInfo component.BuildInfo
+}
 
-	scopeLogs := resourceLogs.ScopeLogs().AppendEmpty()
-	scopeLogs.Scope().SetName(metadata.ScopeName)
-	scopeLogs.Scope().SetVersion(w.buildInfo.Version)
+func NewWAFLogUnmarshaler(buildInfo component.BuildInfo) *WafLogUnmarshaler {
+	return &WafLogUnmarshaler{
+		buildInfo: buildInfo,
+	}
+}
 
-	scanner := bufio.NewScanner(reader)
-	webACLID := ""
-	for scanner.Scan() {
-		logLine := scanner.Bytes()
-
-		var log wafLog
-		if err := gojson.Unmarshal(logLine, &log); err != nil {
-			return plog.Logs{}, fmt.Errorf("failed to unmarshal WAF log: %w", err)
-		}
-		if log.WebACLID == "" {
-			return plog.Logs{}, errors.New("invalid WAF log: empty webaclId field")
-		}
-		if webACLID != "" && log.WebACLID != webACLID {
-			return plog.Logs{}, fmt.Errorf(
-				"unexpected: new webaclId %q is different than previous one %q",
-				webACLID,
-				log.WebACLID,
-			)
-		}
-		webACLID = log.WebACLID
-
-		record := scopeLogs.LogRecords().AppendEmpty()
-		if err := w.addWAFLog(log, record); err != nil {
-			return plog.Logs{}, err
-		}
+func (w *WafLogUnmarshaler) UnmarshalAWSLogs(reader io.Reader) (plog.Logs, error) {
+	// Decode as a stream but flush all at once using flush options
+	streamUnmarshaler, err := w.NewLogsDecoder(reader, encoding.WithFlushItems(0), encoding.WithFlushBytes(0))
+	if err != nil {
+		return plog.Logs{}, err
 	}
 
-	if err := setResourceAttributes(resourceLogs, webACLID); err != nil {
-		return plog.Logs{}, fmt.Errorf("failed to get resource attributes: %w", err)
+	logs, err := streamUnmarshaler.DecodeLogs()
+	if err != nil {
+		//nolint:errorlint
+		if err == io.EOF {
+			// EOF indicates no logs were found, return any logs that's available
+			return logs, nil
+		}
+		return plog.Logs{}, err
 	}
 
 	return logs, nil
+}
+
+// NewLogsDecoder returns a LogsDecoder that processes AWS WAF logs from the provided reader.
+// Parses JSON-formatted logs containing WAF events (web ACL evaluations, actions, HTTP request details).
+// Supports offset-based streaming; offset tracks bytes processed
+func (w *WafLogUnmarshaler) NewLogsDecoder(reader io.Reader, options ...encoding.DecoderOption) (encoding.LogsDecoder, error) {
+	scannerHelper, err := xstreamencoding.NewScannerHelper(reader, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	var sharedWebACLID string
+
+	decodeF := func() (plog.Logs, error) {
+		logs := plog.NewLogs()
+
+		resourceLogs := logs.ResourceLogs().AppendEmpty()
+		resourceLogs.Resource().Attributes().PutStr(
+			string(conventions.CloudProviderKey),
+			conventions.CloudProviderAWS.Value.AsString(),
+		)
+
+		scopeLogs := resourceLogs.ScopeLogs().AppendEmpty()
+		scopeLogs.Scope().SetName(metadata.ScopeName)
+		scopeLogs.Scope().SetVersion(w.buildInfo.Version)
+		scopeLogs.Scope().Attributes().PutStr(constants.FormatIdentificationTag, "aws."+constants.FormatWAFLog)
+
+		for {
+			logLine, flush, err := scannerHelper.ScanBytes()
+			if err != nil {
+				if !errors.Is(err, io.EOF) {
+					return plog.Logs{}, fmt.Errorf("error reading WAF logs from stream:: %w", err)
+				}
+
+				if len(logLine) == 0 {
+					break
+				}
+			}
+
+			var log wafLog
+			if err := gojson.Unmarshal(logLine, &log); err != nil {
+				return plog.Logs{}, fmt.Errorf("failed to unmarshal WAF log: %w", err)
+			}
+			if log.WebACLID == "" {
+				return plog.Logs{}, errors.New("invalid WAF log: empty webaclId field")
+			}
+			if sharedWebACLID != "" && log.WebACLID != sharedWebACLID {
+				return plog.Logs{}, fmt.Errorf(
+					"unexpected: new webaclId %q is different than previous one %q",
+					log.WebACLID,
+					sharedWebACLID,
+				)
+			}
+			sharedWebACLID = log.WebACLID
+			record := scopeLogs.LogRecords().AppendEmpty()
+			if err := w.addWAFLog(log, record); err != nil {
+				return plog.Logs{}, err
+			}
+
+			if flush {
+				break
+			}
+		}
+
+		if err := setResourceAttributes(resourceLogs, sharedWebACLID); err != nil {
+			return plog.Logs{}, fmt.Errorf("failed to get resource attributes: %w", err)
+		}
+
+		if scopeLogs.LogRecords().Len() == 0 {
+			return logs, io.EOF
+		}
+
+		return logs, nil
+	}
+
+	return xstreamencoding.NewLogsDecoderAdapter(decodeF, scannerHelper.Offset), nil
+}
+
+func (*WafLogUnmarshaler) addWAFLog(log wafLog, record plog.LogRecord) error {
+	// timestamp is in milliseconds, so we need to convert it to ns first
+	nanos := log.Timestamp * 1_000_000
+	ts := pcommon.Timestamp(nanos)
+	record.SetTimestamp(ts)
+
+	if log.HTTPRequest.HTTPVersion != "" {
+		_, version, found := strings.Cut(log.HTTPRequest.HTTPVersion, "HTTP/")
+		if !found || version == "" {
+			return fmt.Errorf(
+				`httpRequest.httpVersion %q does not have expected format "HTTP/<version"`,
+				log.HTTPRequest.HTTPVersion,
+			)
+		}
+		record.Attributes().PutStr(string(conventions.NetworkProtocolNameKey), "http")
+		record.Attributes().PutStr(string(conventions.NetworkProtocolVersionKey), version)
+	}
+
+	if log.ResponseCodeSent != nil {
+		record.Attributes().PutInt(string(conventions.HTTPResponseStatusCodeKey), *log.ResponseCodeSent)
+	}
+
+	putStr := func(name, value string) {
+		if value != "" {
+			record.Attributes().PutStr(name, value)
+		}
+	}
+
+	putStr("aws.waf.terminating_rule.type", log.TerminatingRuleType)
+	putStr("aws.waf.terminating_rule.id", log.TerminatingRuleID)
+	putStr("aws.waf.action", log.Action)
+	putStr("aws.waf.source.id", log.HTTPSourceID)
+	putStr("aws.waf.source.name", log.HTTPSourceName)
+
+	for _, header := range log.HTTPRequest.Headers {
+		putStr("http.request.header."+header.Name, header.Value)
+	}
+
+	putStr(string(conventions.ClientAddressKey), log.HTTPRequest.ClientIP)
+	putStr(string(conventions.ServerAddressKey), log.HTTPRequest.Host)
+	putStr(string(conventions.URLPathKey), log.HTTPRequest.URI)
+	putStr(string(conventions.URLQueryKey), log.HTTPRequest.Args)
+	putStr(string(conventions.HTTPRequestMethodKey), log.HTTPRequest.HTTPMethod)
+	putStr(string(conventions.AWSRequestIDKey), log.HTTPRequest.RequestID)
+	putStr(string(conventions.URLFragmentKey), log.HTTPRequest.Fragment)
+	putStr(string(conventions.URLSchemeKey), log.HTTPRequest.Scheme)
+	putStr("geo.country.iso_code", log.HTTPRequest.Country)
+
+	putStr(string(conventions.TLSClientJa3Key), log.Ja3Fingerprint)
+	putStr("tls.client.ja4", log.Ja4Fingerprint)
+
+	return nil
 }
 
 // setResourceAttributes based on the web ACL ID
@@ -135,59 +242,5 @@ func setResourceAttributes(resourceLogs plog.ResourceLogs, webACLID string) erro
 	}
 
 	resourceLogs.Resource().Attributes().PutStr(string(conventions.CloudResourceIDKey), webACLID)
-	return nil
-}
-
-func (w *wafLogUnmarshaler) addWAFLog(log wafLog, record plog.LogRecord) error {
-	// timestamp is in milliseconds, so we need to convert it to ns first
-	nanos := log.Timestamp * 1_000_000
-	ts := pcommon.Timestamp(nanos)
-	record.SetTimestamp(ts)
-
-	if log.HTTPRequest.HTTPVersion != "" {
-		_, version, found := strings.Cut(log.HTTPRequest.HTTPVersion, "HTTP/")
-		if !found || version == "" {
-			return fmt.Errorf(
-				`httpRequest.httpVersion %q does not have expected format "HTTP/<version"`,
-				log.HTTPRequest.HTTPVersion,
-			)
-		}
-		record.Attributes().PutStr(string(conventions.NetworkProtocolNameKey), "http")
-		record.Attributes().PutStr(string(conventions.NetworkProtocolVersionKey), version)
-	}
-
-	if log.ResponseCodeSent != nil {
-		record.Attributes().PutInt(string(conventions.HTTPResponseStatusCodeKey), *log.ResponseCodeSent)
-	}
-
-	putStr := func(name string, value string) {
-		if value != "" {
-			record.Attributes().PutStr(name, value)
-		}
-	}
-
-	putStr("aws.waf.terminating_rule.type", log.TerminatingRuleType)
-	putStr("aws.waf.terminating_rule.id", log.TerminatingRuleID)
-	putStr("aws.waf.action", log.Action)
-	putStr("aws.waf.source.id", log.HTTPSourceID)
-	putStr("aws.waf.source.name", log.HTTPSourceName)
-
-	for _, header := range log.HTTPRequest.Headers {
-		putStr("http.request.header."+header.Name, header.Value)
-	}
-
-	putStr(string(conventions.ClientAddressKey), log.HTTPRequest.ClientIP)
-	putStr(string(conventions.ServerAddressKey), log.HTTPRequest.Host)
-	putStr(string(conventions.URLPathKey), log.HTTPRequest.URI)
-	putStr(string(conventions.URLQueryKey), log.HTTPRequest.Args)
-	putStr(string(conventions.HTTPRequestMethodKey), log.HTTPRequest.HTTPMethod)
-	putStr(string(conventions.AWSRequestIDKey), log.HTTPRequest.RequestID)
-	putStr(string(conventions.URLFragmentKey), log.HTTPRequest.Fragment)
-	putStr(string(conventions.URLSchemeKey), log.HTTPRequest.Scheme)
-	putStr("geo.country.iso_code", log.HTTPRequest.Country)
-
-	putStr(string(conventions.TLSClientJa3Key), log.Ja3Fingerprint)
-	putStr("tls.client.ja4", log.Ja4Fingerprint)
-
 	return nil
 }

@@ -109,7 +109,7 @@ func (h *samplingProvider) downloadSamplingStrategies(samplingURL string) ([]byt
 
 	ctx, cx := context.WithTimeout(context.Background(), time.Second)
 	defer cx()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, samplingURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, samplingURL, http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("cannot construct HTTP request: %w", err)
 	}
@@ -245,7 +245,8 @@ func (h *samplingProvider) parseStrategiesDeprecated(strategies *strategies) {
 		if merge {
 			opS.PerOperationStrategies = mergePerOperationSamplingStrategies(
 				opS.PerOperationStrategies,
-				newStore.defaultStrategy.OperationSampling.PerOperationStrategies)
+				newStore.defaultStrategy.OperationSampling.PerOperationStrategies,
+			)
 		}
 	}
 	h.storedStrategies.Store(newStore)
@@ -284,7 +285,8 @@ func (h *samplingProvider) parseStrategies(strategies *strategies) {
 		// If the service did have its own per-operation strategies, then merge them with the default ones.
 		opS.PerOperationStrategies = mergePerOperationSamplingStrategies(
 			opS.PerOperationStrategies,
-			newStore.defaultStrategy.OperationSampling.PerOperationStrategies)
+			newStore.defaultStrategy.OperationSampling.PerOperationStrategies,
+		)
 	}
 	h.storedStrategies.Store(newStore)
 }
@@ -344,8 +346,10 @@ func (h *samplingProvider) parseOperationStrategy(
 			fmt.Sprintf(
 				"Operation strategies only supports probabilistic sampling at the moment,"+
 					"'%s' defaulting to probabilistic sampling with probability %f",
-				strategy.Operation, parent.DefaultSamplingProbability),
-			zap.Any("strategy", strategy))
+				strategy.Operation, parent.DefaultSamplingProbability,
+			),
+			zap.Any("strategy", strategy),
+		)
 		return nil, false
 	}
 	return s, true

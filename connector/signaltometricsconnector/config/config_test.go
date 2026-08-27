@@ -11,8 +11,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/config/configoptional"
+	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
-	"go.opentelemetry.io/collector/confmap/xconfmap"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/signaltometricsconnector/internal/metadata"
 )
@@ -124,6 +125,109 @@ func TestConfig(t *testing.T) {
 			},
 		},
 		{
+			path: "valid_full_with_context",
+			expected: &Config{
+				Spans: []MetricInfo{
+					{
+						Name:                      "span.exp_histogram",
+						Description:               "Exponential histogram",
+						Unit:                      "us",
+						IncludeResourceAttributes: []Attribute{{Key: "key.1", DefaultValue: "foo"}},
+						Attributes: []Attribute{
+							{Key: "key.2", DefaultValue: "bar"},
+							{Key: "key.3", Optional: true},
+						},
+						Conditions: []string{
+							`span.attributes["some.optional.1"] != nil`,
+							`resource.attributes["some.optional.2"] != nil`,
+						},
+						ExponentialHistogram: configoptional.Some(ExponentialHistogram{
+							MaxSize: 10,
+							Count:   "1",
+							Value:   "Microseconds(span.end_time - span.start_time)",
+						}),
+					},
+					{
+						Name:                      "span.histogram",
+						Description:               "Histogram",
+						Unit:                      "us",
+						IncludeResourceAttributes: []Attribute{{Key: "key.1", DefaultValue: "foo"}},
+						Attributes: []Attribute{
+							{Key: "key.2", DefaultValue: "bar"},
+							{Key: "key.3", Optional: true},
+						},
+						Conditions: []string{
+							`span.attributes["some.optional.1"] != nil`,
+							`resource.attributes["some.optional.2"] != nil`,
+						},
+						Histogram: configoptional.Some(Histogram{
+							Buckets: []float64{1.1, 11.1, 111.1},
+							Count:   "1",
+							Value:   "Microseconds(span.end_time - span.start_time)",
+						}),
+					},
+				},
+				Datapoints: []MetricInfo{
+					{
+						Name:                      "dp.sum",
+						Description:               "Sum",
+						Unit:                      "ms",
+						IncludeResourceAttributes: []Attribute{{Key: "key.1", DefaultValue: "foo"}},
+						Attributes: []Attribute{
+							{Key: "key.2", DefaultValue: "bar"},
+							{Key: "key.3", Optional: true},
+						},
+						Conditions: []string{
+							`datapoint.attributes["some.optional.1"] != nil`,
+							`IsDouble(datapoint.attributes["some.optional.1"])`,
+						},
+						Sum: configoptional.Some(Sum{
+							Value:       `datapoint.attributes["some.optional.1"]`,
+							IsMonotonic: false,
+						}),
+					},
+				},
+				Logs: []MetricInfo{
+					{
+						Name:                      "log.sum",
+						Description:               "Sum",
+						Unit:                      "1",
+						IncludeResourceAttributes: []Attribute{{Key: "key.1", DefaultValue: "foo"}},
+						Attributes: []Attribute{
+							{Key: "key.2", DefaultValue: "bar"},
+							{Key: "key.3", Optional: true},
+						},
+						Conditions: []string{
+							`log.attributes["some.optional.1"] != nil`,
+						},
+						Sum: configoptional.Some(Sum{
+							Value:       "1",
+							IsMonotonic: true,
+						}),
+					},
+				},
+				Profiles: []MetricInfo{
+					{
+						Name:                      "profile.sum",
+						Description:               "Sum",
+						Unit:                      "1",
+						IncludeResourceAttributes: []Attribute{{Key: "key.1", DefaultValue: "foo"}},
+						Attributes: []Attribute{
+							{Key: "key.2", DefaultValue: "bar"},
+							{Key: "key.3", Optional: true},
+						},
+						Conditions: []string{
+							`profile.duration_unix_nano > 0`,
+						},
+						Sum: configoptional.Some(Sum{
+							Value:       "1",
+							IsMonotonic: true,
+						}),
+					},
+				},
+			},
+		},
+		{
 			path: "valid_full",
 			expected: &Config{
 				Spans: []MetricInfo{
@@ -140,11 +244,11 @@ func TestConfig(t *testing.T) {
 							`attributes["some.optional.1"] != nil`,
 							`resource.attributes["some.optional.2"] != nil`,
 						},
-						ExponentialHistogram: &ExponentialHistogram{
+						ExponentialHistogram: configoptional.Some(ExponentialHistogram{
 							MaxSize: 10,
 							Count:   "1",
 							Value:   "Microseconds(end_time - start_time)",
-						},
+						}),
 					},
 					{
 						Name:                      "span.histogram",
@@ -159,11 +263,11 @@ func TestConfig(t *testing.T) {
 							`attributes["some.optional.1"] != nil`,
 							`resource.attributes["some.optional.2"] != nil`,
 						},
-						Histogram: &Histogram{
+						Histogram: configoptional.Some(Histogram{
 							Buckets: []float64{1.1, 11.1, 111.1},
 							Count:   "1",
 							Value:   "Microseconds(end_time - start_time)",
-						},
+						}),
 					},
 				},
 				Datapoints: []MetricInfo{
@@ -180,9 +284,10 @@ func TestConfig(t *testing.T) {
 							`attributes["some.optional.1"] != nil`,
 							`IsDouble(attributes["some.optional.1"])`,
 						},
-						Sum: &Sum{
-							Value: `attributes["some.optional.1"]`,
-						},
+						Sum: configoptional.Some(Sum{
+							Value:       `attributes["some.optional.1"]`,
+							IsMonotonic: false,
+						}),
 					},
 				},
 				Logs: []MetricInfo{
@@ -198,9 +303,10 @@ func TestConfig(t *testing.T) {
 						Conditions: []string{
 							`attributes["some.optional.1"] != nil`,
 						},
-						Sum: &Sum{
-							Value: "1",
-						},
+						Sum: configoptional.Some(Sum{
+							Value:       "1",
+							IsMonotonic: true,
+						}),
 					},
 				},
 				Profiles: []MetricInfo{
@@ -216,9 +322,10 @@ func TestConfig(t *testing.T) {
 						Conditions: []string{
 							`duration_unix_nano > 0`,
 						},
-						Sum: &Sum{
-							Value: "1",
-						},
+						Sum: configoptional.Some(Sum{
+							Value:       "1",
+							IsMonotonic: true,
+						}),
 					},
 				},
 			},
@@ -234,7 +341,7 @@ func TestConfig(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, sub.Unmarshal(&cfg))
 
-			err = xconfmap.Validate(cfg)
+			err = confmap.Validate(cfg)
 			if len(tc.errorMsgs) > 0 {
 				for _, errMsg := range tc.errorMsgs {
 					assert.ErrorContains(t, err, errMsg)

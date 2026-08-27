@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"strconv"
 	"time"
@@ -14,12 +15,15 @@ import (
 	zipkinmodel "github.com/openzipkin/zipkin-go/model"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
-	conventions "go.opentelemetry.io/otel/semconv/v1.15.0"
-	conventions161 "go.opentelemetry.io/otel/semconv/v1.6.1"
+	conventionsv118 "go.opentelemetry.io/otel/semconv/v1.18.0"
+	conventionsv125 "go.opentelemetry.io/otel/semconv/v1.25.0"
+	conventionsv138 "go.opentelemetry.io/otel/semconv/v1.38.0"
+	conventions "go.opentelemetry.io/otel/semconv/v1.40.0"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal/tracetranslator"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal/traceutil"
 	idutils "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/core/xidutils"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/zipkin/internal/metadata"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/zipkin/internal/zipkin"
 )
 
@@ -35,7 +39,7 @@ type FromTranslator struct{}
 
 // FromTraces translates internal trace data into Zipkin v2 spans.
 // Returns a slice of Zipkin SpanModel's.
-func (t FromTranslator) FromTraces(td ptrace.Traces) ([]*zipkinmodel.SpanModel, error) {
+func (FromTranslator) FromTraces(td ptrace.Traces) ([]*zipkinmodel.SpanModel, error) {
 	resourceSpans := td.ResourceSpans()
 	if resourceSpans.Len() == 0 {
 		return nil, nil
@@ -84,11 +88,26 @@ func resourceSpansToZipkinSpans(rs ptrace.ResourceSpans, estSpanCount int) ([]*z
 }
 
 func extractScopeTags(il pcommon.InstrumentationScope, zTags map[string]string) {
+	attrs := il.Attributes()
+	for k, v := range attrs.All() {
+		zTags[k] = v.AsString()
+	}
+
 	if ilName := il.Name(); ilName != "" {
-		zTags[string(conventions.OtelLibraryNameKey)] = ilName
+		if !metadata.PkgTranslatorZipkinDontEmitV0ScopeConventionsFeatureGate.IsEnabled() {
+			zTags[string(conventionsv125.OTelLibraryNameKey)] = ilName
+		}
+		if metadata.PkgTranslatorZipkinEmitV1ScopeConventionsFeatureGate.IsEnabled() {
+			zTags[string(conventions.OTelScopeNameKey)] = ilName
+		}
 	}
 	if ilVer := il.Version(); ilVer != "" {
-		zTags[string(conventions.OtelLibraryVersionKey)] = ilVer
+		if !metadata.PkgTranslatorZipkinDontEmitV0ScopeConventionsFeatureGate.IsEnabled() {
+			zTags[string(conventionsv125.OTelLibraryVersionKey)] = ilVer
+		}
+		if metadata.PkgTranslatorZipkinEmitV1ScopeConventionsFeatureGate.IsEnabled() {
+			zTags[string(conventions.OTelScopeVersionKey)] = ilVer
+		}
 	}
 }
 
@@ -177,22 +196,25 @@ func populateStatus(status ptrace.Status, zs *zipkinmodel.SpanModel, tags map[st
 		return
 	}
 
-	tags[string(conventions.OtelStatusCodeKey)] = traceutil.StatusCodeStr(status.Code())
+	tags[string(conventions.OTelStatusCodeKey)] = traceutil.StatusCodeStr(status.Code())
 	if status.Message() != "" {
-		tags[string(conventions.OtelStatusDescriptionKey)] = status.Message()
+		tags[string(conventions.OTelStatusDescriptionKey)] = status.Message()
 		zs.Err = fmt.Errorf("%s", status.Message())
 	}
 }
 
 func aggregateSpanTags(span ptrace.Span, zTags map[string]string) map[string]string {
 	tags := make(map[string]string)
-	for key, val := range zTags {
-		tags[key] = val
-	}
+	maps.Copy(tags, zTags)
 	spanTags := attributeMapToStringMap(span.Attributes())
-	for key, val := range spanTags {
-		tags[key] = val
+	maps.Copy(tags, spanTags)
+
+	if val, ok := tags[string(conventions.HTTPResponseStatusCodeKey)]; ok {
+		if _, ok2 := tags[string(conventionsv125.HTTPStatusCodeKey)]; !ok2 {
+			tags[string(conventionsv125.HTTPStatusCodeKey)] = val
+		}
 	}
+
 	return tags
 }
 
@@ -238,7 +260,7 @@ func spanLinksToZipkinTags(links ptrace.SpanLinkSlice, zTags map[string]string) 
 }
 
 func attributeMapToStringMap(attrMap pcommon.Map) map[string]string {
-	rawMap := make(map[string]string)
+	rawMap := make(map[string]string, attrMap.Len())
 	for k, v := range attrMap.All() {
 		rawMap[k] = v.AsString()
 	}
@@ -256,14 +278,34 @@ func removeRedundantTags(redundantKeys map[string]bool, zTags map[string]string)
 func resourceToZipkinEndpointServiceNameAndAttributeMap(
 	resource pcommon.Resource,
 ) (serviceName string, zTags map[string]string) {
-	zTags = make(map[string]string)
 	attrs := resource.Attributes()
+	zTags = make(map[string]string, attrs.Len())
 	if attrs.Len() == 0 {
 		return tracetranslator.ResourceNoServiceName, zTags
 	}
 
 	for k, v := range attrs.All() {
 		zTags[k] = v.AsString()
+	}
+
+	if val, ok := zTags[string(conventions.CloudResourceIDKey)]; ok {
+		if !metadata.PkgTranslatorZipkinDontEmitV0CloudResourceConventionsFeatureGate.IsEnabled() {
+			if _, ok2 := zTags[string(conventionsv118.FaaSIDKey)]; !ok2 {
+				zTags[string(conventionsv118.FaaSIDKey)] = val
+			}
+		}
+		if !metadata.PkgTranslatorZipkinEmitV1CloudResourceConventionsFeatureGate.IsEnabled() {
+			delete(zTags, string(conventions.CloudResourceIDKey))
+		}
+	} else if val, ok := zTags[string(conventionsv118.FaaSIDKey)]; ok {
+		if metadata.PkgTranslatorZipkinEmitV1CloudResourceConventionsFeatureGate.IsEnabled() {
+			if _, ok2 := zTags[string(conventions.CloudResourceIDKey)]; !ok2 {
+				zTags[string(conventions.CloudResourceIDKey)] = val
+			}
+		}
+		if metadata.PkgTranslatorZipkinDontEmitV0CloudResourceConventionsFeatureGate.IsEnabled() {
+			delete(zTags, string(conventionsv118.FaaSIDKey))
+		}
 	}
 
 	serviceName = extractZipkinServiceName(zTags)
@@ -315,24 +357,40 @@ func zipkinEndpointFromTags(
 	redundantKeys map[string]bool,
 ) (endpoint *zipkinmodel.Endpoint) {
 	serviceName := localServiceName
-	if peerSvc, ok := zTags[string(conventions.PeerServiceKey)]; ok && remoteEndpoint {
-		serviceName = peerSvc
-		redundantKeys[string(conventions.PeerServiceKey)] = true
+	if remoteEndpoint {
+		if peerSvc, ok := zTags[string(conventions.ServicePeerNameKey)]; ok {
+			serviceName = peerSvc
+			redundantKeys[string(conventions.ServicePeerNameKey)] = true
+		} else if peerSvc, ok := zTags[string(conventionsv138.PeerServiceKey)]; ok {
+			serviceName = peerSvc
+			redundantKeys[string(conventionsv138.PeerServiceKey)] = true
+		}
 	}
 
-	var ipKey, portKey string
+	var ipKey, v0IPKey, portKey string
 	if remoteEndpoint {
-		ipKey, portKey = string(conventions161.NetPeerIPKey), string(conventions.NetPeerPortKey)
+		ipKey, portKey = string(conventions.NetworkPeerAddressKey), string(conventionsv125.NetPeerPortKey)
+		v0IPKey = "net.peer.ip"
 	} else {
-		ipKey, portKey = string(conventions161.NetHostIPKey), string(conventions.NetHostPortKey)
+		ipKey, portKey = string(conventions.NetworkLocalAddressKey), string(conventionsv125.NetHostPortKey)
+		v0IPKey = "net.host.ip"
 	}
 
 	var ip net.IP
 	ipv6Selected := false
-	if ipStr, ok := zTags[ipKey]; ok {
-		ipv6Selected = isIPv6Address(ipStr)
-		ip = net.ParseIP(ipStr)
-		redundantKeys[ipKey] = true
+	if metadata.PkgTranslatorZipkinEmitV1NetworkConventionsFeatureGate.IsEnabled() {
+		if ipStr, ok := zTags[ipKey]; ok {
+			ipv6Selected = isIPv6Address(ipStr)
+			ip = net.ParseIP(ipStr)
+			redundantKeys[ipKey] = true
+		}
+	}
+	if !metadata.PkgTranslatorZipkinDontEmitV0NetworkConventionsFeatureGate.IsEnabled() {
+		if ipStr, ok := zTags[v0IPKey]; ok && ip == nil {
+			ipv6Selected = isIPv6Address(ipStr)
+			ip = net.ParseIP(ipStr)
+			redundantKeys[v0IPKey] = true
+		}
 	}
 
 	var port uint64

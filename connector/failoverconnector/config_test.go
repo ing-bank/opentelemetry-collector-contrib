@@ -11,8 +11,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/config/configoptional"
+	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
-	"go.opentelemetry.io/collector/confmap/xconfmap"
+	"go.opentelemetry.io/collector/exporter/exporterhelper"
 	"go.opentelemetry.io/collector/pipeline"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/failoverconnector/internal/metadata"
@@ -26,6 +28,7 @@ func TestLoadConfig(t *testing.T) {
 		{
 			id: component.NewIDWithName(metadata.Type, "default"),
 			expected: &Config{
+				QueueSettings: configoptional.Some(exporterhelper.NewDefaultQueueConfig()),
 				PipelinePriority: [][]pipeline.ID{
 					{
 						pipeline.NewIDWithName(pipeline.SignalTraces, ""),
@@ -37,6 +40,7 @@ func TestLoadConfig(t *testing.T) {
 		{
 			id: component.NewIDWithName(metadata.Type, "full"),
 			expected: &Config{
+				QueueSettings: configoptional.Some(exporterhelper.NewDefaultQueueConfig()),
 				PipelinePriority: [][]pipeline.ID{
 					{
 						pipeline.NewIDWithName(pipeline.SignalTraces, "first"),
@@ -69,7 +73,7 @@ func TestLoadConfig(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, sub.Unmarshal(cfg))
 
-			assert.NoError(t, xconfmap.Validate(cfg))
+			assert.NoError(t, confmap.Validate(cfg))
 			assert.Equal(t, tc.expected, cfg)
 		})
 	}
@@ -106,7 +110,7 @@ func TestValidateConfig(t *testing.T) {
 				require.NoError(t, err)
 				require.NoError(t, sub.Unmarshal(cfg))
 
-				assert.ErrorContains(t, xconfmap.Validate(cfg), tc.err.Error())
+				assert.ErrorContains(t, confmap.Validate(cfg), tc.err.Error())
 			})
 		})
 	}

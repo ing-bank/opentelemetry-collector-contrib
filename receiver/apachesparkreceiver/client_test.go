@@ -4,7 +4,6 @@
 package apachesparkreceiver
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -52,7 +51,7 @@ func TestNewApacheSparkClient(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.desc, func(t *testing.T) {
-			ac, err := newApacheSparkClient(context.Background(), tc.cfg, tc.host, tc.settings)
+			ac, err := newApacheSparkClient(t.Context(), tc.cfg, tc.host, tc.settings)
 			if tc.expectError != nil {
 				require.Nil(t, ac)
 				require.ErrorContains(t, err, tc.expectError.Error())
@@ -487,9 +486,9 @@ func TestJobStats(t *testing.T) {
 func createTestClient(t *testing.T, baseEndpoint string) client {
 	t.Helper()
 	cfg := createDefaultConfig().(*Config)
-	cfg.Endpoint = baseEndpoint
+	cfg.ClientConfig.Endpoint = baseEndpoint
 
-	testClient, err := newApacheSparkClient(context.Background(), cfg, componenttest.NewNopHost(), componenttest.NewNopTelemetrySettings())
+	testClient, err := newApacheSparkClient(t.Context(), cfg, componenttest.NewNopHost(), componenttest.NewNopTelemetrySettings())
 	require.NoError(t, err)
 	return testClient
 }

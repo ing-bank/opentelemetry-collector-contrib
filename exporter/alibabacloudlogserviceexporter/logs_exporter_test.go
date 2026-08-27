@@ -4,7 +4,6 @@
 package alibabacloudlogserviceexporter
 
 import (
-	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,7 +13,6 @@ import (
 	"go.opentelemetry.io/collector/exporter/exportertest"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
-	conventions "go.opentelemetry.io/otel/semconv/v1.6.1"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/alibabacloudlogserviceexporter/internal/metadata"
 )
@@ -26,13 +24,13 @@ func createSimpleLogData(numberOfLogs int) plog.Logs {
 	rl.ScopeLogs().AppendEmpty() // Add an empty ScopeLogs
 	sl := rl.ScopeLogs().AppendEmpty()
 
-	for i := 0; i < numberOfLogs; i++ {
+	for i := range numberOfLogs {
 		ts := pcommon.Timestamp(int64(i) * time.Millisecond.Nanoseconds())
 		logRecord := sl.LogRecords().AppendEmpty()
 		logRecord.Body().SetStr("mylog")
-		logRecord.Attributes().PutStr(string(conventions.ServiceNameKey), "myapp")
+		logRecord.Attributes().PutStr("service.name", "myapp")
 		logRecord.Attributes().PutStr("my-label", "myapp-type")
-		logRecord.Attributes().PutStr(string(conventions.HostNameKey), "myhost")
+		logRecord.Attributes().PutStr("host.name", "myhost")
 		logRecord.Attributes().PutStr("custom", "custom")
 		logRecord.SetTimestamp(ts)
 	}
@@ -51,7 +49,7 @@ func TestNewLogsExporter(t *testing.T) {
 	require.NotNil(t, got)
 
 	// This will put trace data to send buffer and return success.
-	err = got.ConsumeLogs(context.Background(), createSimpleLogData(3))
+	err = got.ConsumeLogs(t.Context(), createSimpleLogData(3))
 	assert.NoError(t, err)
 	time.Sleep(time.Second * 4)
 }
@@ -65,6 +63,33 @@ func TestSTSTokenExporter(t *testing.T) {
 	})
 	assert.NoError(t, err)
 	require.NotNil(t, got)
+}
+
+func TestNewLogServiceClient_STSCredentials(t *testing.T) {
+	producerConfig := newProducerConfig(&Config{
+		Endpoint:        "us-west-1.log.aliyuncs.com",
+		Project:         "demo-project",
+		Logstore:        "demo-logstore",
+		AccessKeyID:     "test-id",
+		AccessKeySecret: "test-secret",
+		SecurityToken:   "test-token",
+	})
+	require.NotNil(t, producerConfig)
+	require.NotNil(t, producerConfig.CredentialsProvider)
+	credentials, err := producerConfig.CredentialsProvider.GetCredentials()
+	assert.NoError(t, err)
+	assert.Equal(t, "test-token", credentials.SecurityToken)
+
+	client, err := newLogServiceClient(&Config{
+		Endpoint:        "us-west-1.log.aliyuncs.com",
+		Project:         "demo-project",
+		Logstore:        "demo-logstore",
+		AccessKeyID:     "test-id",
+		AccessKeySecret: "test-secret",
+		SecurityToken:   "test-token",
+	}, exportertest.NewNopSettings(metadata.Type).Logger)
+	assert.NoError(t, err)
+	require.NotNil(t, client)
 }
 
 func TestNewFailsWithEmptyLogsExporterName(t *testing.T) {

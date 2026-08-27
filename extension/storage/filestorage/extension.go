@@ -5,11 +5,15 @@ package filestorage // import "github.com/open-telemetry/opentelemetry-collector
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/extension"
@@ -54,14 +58,14 @@ func (lfs *localFileStorage) Start(context.Context, component.Host) error {
 }
 
 // Shutdown will close any open databases
-func (lfs *localFileStorage) Shutdown(context.Context) error {
+func (*localFileStorage) Shutdown(context.Context) error {
 	// TODO clean up data files that did not have a client
 	// and are older than a threshold (possibly configurable)
 	return nil
 }
 
 // GetClient returns a storage client for an individual component
-func (lfs *localFileStorage) GetClient(_ context.Context, kind component.Kind, ent component.ID, name string) (storage.Client, error) {
+func (lfs *localFileStorage) GetClient(ctx context.Context, kind component.Kind, ent component.ID, name string) (storage.Client, error) {
 	var rawName string
 	if name == "" {
 		rawName = fmt.Sprintf("%s_%s_%s", kindString(kind), ent.Type(), ent.Name())
@@ -71,20 +75,106 @@ func (lfs *localFileStorage) GetClient(_ context.Context, kind component.Kind, e
 
 	rawName = sanitize(rawName)
 	absoluteName := filepath.Join(lfs.cfg.Directory, rawName)
-	client, err := newClient(lfs.logger, absoluteName, lfs.cfg.Timeout, lfs.cfg.Compaction, !lfs.cfg.FSync)
+
+	// Try to create client, handling panics if recreate is enabled
+	client, err := lfs.createClientWithPanicRecovery(absoluteName)
+
+	// If the error is due to filename being too long, truncate and try again
+	if errors.Is(err, syscall.ENAMETOOLONG) {
+		hashedName := filepath.Join(lfs.cfg.Directory, hash(rawName))
+		lfs.logger.Warn("filename too long, using hashed filename instead",
+			zap.String("originalFile", absoluteName), zap.String("component", rawName), zap.String("hashedFileName", hashedName))
+		client, err = lfs.createClientWithPanicRecovery(hashedName)
+		absoluteName = hashedName
+	}
+
+	// return error if still not successful
 	if err != nil {
 		return nil, err
 	}
 
-	// return if compaction is not required
+	// Perform on_start compaction if configured
 	if lfs.cfg.Compaction.OnStart {
-		compactionErr := client.Compact(lfs.cfg.Compaction.Directory, lfs.cfg.Timeout, lfs.cfg.Compaction.MaxTransactionSize)
-		if compactionErr != nil {
-			lfs.logger.Error("compaction on start failed", zap.Error(compactionErr))
+		client, err = lfs.compactOnStart(ctx, client, absoluteName)
+		if err != nil {
+			lfs.logger.Error("compaction on start failed", zap.Error(err))
+			if client == nil {
+				return nil, err
+			}
 		}
 	}
 
 	return client, nil
+}
+
+func (lfs *localFileStorage) compactOnStart(ctx context.Context, client *fileStorageClient, absoluteName string) (recoveredClient *fileStorageClient, err error) {
+	recoveredClient = client
+	defer func() {
+		if r := recover(); r != nil {
+			lfs.logger.Warn("panic during on_start compaction, database may be corrupted",
+				zap.String("file", absoluteName),
+				zap.Any("panic", r))
+
+			if closeErr := recoveredClient.Close(ctx); closeErr != nil {
+				lfs.logger.Error("failed to close corrupted database after compaction panic", zap.Error(closeErr))
+			}
+
+			if lfs.cfg.Recreate {
+				recoveredClient, err = lfs.backupAndRecreateClient(absoluteName)
+				return
+			}
+
+			recoveredClient = nil
+			err = fmt.Errorf("compaction failed due to panic, database may be corrupted: %v", r)
+		}
+	}()
+
+	err = client.Compact(lfs.cfg.Compaction.Directory, lfs.cfg.Timeout, lfs.cfg.Compaction.MaxTransactionSize)
+	return recoveredClient, err
+}
+
+// createClientWithPanicRecovery attempts to create a client, and if recreate is enabled
+// and a panic occurs (typically due to database corruption), it will rename the file
+// and try again with a fresh database
+func (lfs *localFileStorage) createClientWithPanicRecovery(absoluteName string) (client *fileStorageClient, err error) {
+	// First attempt: try to create client normally
+	if !lfs.cfg.Recreate {
+		// If recreate is disabled, just try once
+		return newClient(lfs.logger, absoluteName, lfs.cfg)
+	}
+
+	// If recreate is enabled, handle potential panics during database opening
+	defer func() {
+		if r := recover(); r != nil {
+			lfs.logger.Warn("Database corruption detected, recreating database file",
+				zap.String("file", absoluteName),
+				zap.Any("panic", r))
+
+			// Use the helper function to backup and recreate
+			client, err = lfs.backupAndRecreateClient(absoluteName)
+		}
+	}()
+
+	// Try to create the client normally first
+	client, err = newClient(lfs.logger, absoluteName, lfs.cfg)
+	return client, err
+}
+
+// backupAndRecreateClient backs up the corrupted database and creates a fresh one
+func (lfs *localFileStorage) backupAndRecreateClient(absoluteName string) (*fileStorageClient, error) {
+	// Use a filename-safe timestamp so recreate works on Windows too.
+	timestamp := time.Now().UTC().Format("20060102T150405.000Z0700")
+	backupName := absoluteName + "." + timestamp + ".backup"
+	if renameErr := os.Rename(absoluteName, backupName); renameErr != nil {
+		return nil, fmt.Errorf("error renaming corrupted database. Please remove %s manually: %w", absoluteName, renameErr)
+	}
+
+	lfs.logger.Info("Corrupted database file renamed",
+		zap.String("original", absoluteName),
+		zap.String("backup", backupName))
+
+	// Try to create client again with fresh database
+	return newClient(lfs.logger, absoluteName, lfs.cfg)
 }
 
 func kindString(k component.Kind) string {
@@ -114,9 +204,9 @@ func sanitize(name string) string {
 	var sanitized strings.Builder
 	for _, character := range name {
 		if isSafe(character) {
-			sanitized.WriteString(string(character))
+			fmt.Fprint(&sanitized, string(character))
 		} else {
-			sanitized.WriteString(fmt.Sprintf("~%04X", character))
+			fmt.Fprintf(&sanitized, "~%04X", character)
 		}
 	}
 	return sanitized.String()
@@ -174,4 +264,12 @@ func (lfs *localFileStorage) cleanup(compactionDirectory string) error {
 			zap.Error(errors.Join(errs...)))
 	}
 	return nil
+}
+
+// hash ensures the filename is within filesystem limits.
+// On most systems, the maximum file name length is 255 bytes.
+// We use a SHA-256 hash to generate a fixed-length filename (64 characters).
+func hash(name string) string {
+	hashID := sha256.Sum256([]byte(name))
+	return hex.EncodeToString(hashID[:]) // filename safe
 }

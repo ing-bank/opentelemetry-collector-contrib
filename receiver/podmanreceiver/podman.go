@@ -46,8 +46,8 @@ func (pc *containerScraper) getContainers() []container {
 	pc.containersLock.Lock()
 	defer pc.containersLock.Unlock()
 	containers := make([]container, 0, len(pc.containers))
-	for _, container := range pc.containers {
-		containers = append(containers, container)
+	for i := range pc.containers {
+		containers = append(containers, pc.containers[i])
 	}
 	return containers
 }
@@ -66,14 +66,15 @@ func (pc *containerScraper) loadContainerList(ctx context.Context) error {
 	}
 	params.Add("filters", string(jsonFilter))
 
-	listCtx, cancel := context.WithTimeout(ctx, pc.config.Timeout)
+	listCtx, cancel := context.WithTimeout(ctx, pc.config.ControllerConfig.Timeout)
 	defer cancel()
 	containerList, err := pc.client.list(listCtx, params)
 	if err != nil {
 		return err
 	}
 
-	for _, c := range containerList {
+	for i := range containerList {
+		c := containerList[i]
 		pc.persistContainer(c)
 	}
 	return nil
@@ -148,7 +149,7 @@ func (pc *containerScraper) inspectAndPersistContainer(ctx context.Context, cid 
 		return nil, false
 	}
 	params.Add("filters", string(jsonFilter))
-	inspectCtx, cancel := context.WithTimeout(ctx, pc.config.Timeout)
+	inspectCtx, cancel := context.WithTimeout(ctx, pc.config.ControllerConfig.Timeout)
 	defer cancel()
 	container, err := pc.client.list(inspectCtx, params)
 	if len(container) == 1 && err == nil {

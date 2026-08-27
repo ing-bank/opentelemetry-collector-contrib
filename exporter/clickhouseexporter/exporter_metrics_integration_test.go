@@ -6,7 +6,6 @@
 package clickhouseexporter
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -24,9 +23,9 @@ func testMetricsExporter(t *testing.T, endpoint string) {
 func newTestMetricsExporter(t *testing.T, dsn string, fns ...func(*Config)) *metricsExporter {
 	exporter := newMetricsExporter(zaptest.NewLogger(t), withTestExporterConfig(fns...)(dsn))
 
-	require.NoError(t, exporter.start(context.Background(), nil))
+	require.NoError(t, exporter.start(t.Context(), nil))
 
-	t.Cleanup(func() { _ = exporter.shutdown(context.Background()) })
+	t.Cleanup(func() { _ = exporter.shutdown(t.Context()) })
 	return exporter
 }
 
@@ -35,21 +34,15 @@ func verifyExporterMetrics(t *testing.T, exporter *metricsExporter) {
 	rm := metric.ResourceMetrics().AppendEmpty()
 	simpleMetrics(5000).ResourceMetrics().At(0).CopyTo(rm)
 
-	// 3 pushes
-	mustPushMetricsData(t, exporter, metric)
-	mustPushMetricsData(t, exporter, metric)
-	mustPushMetricsData(t, exporter, metric)
+	pushConcurrentlyNoError(t, func() error {
+		return exporter.pushMetricsData(t.Context(), metric)
+	})
 
 	verifyGaugeMetric(t, exporter)
 	verifySumMetric(t, exporter)
 	verifyHistogramMetric(t, exporter)
 	verifyExphistogramMetric(t, exporter)
 	verifySummaryMetric(t, exporter)
-}
-
-func mustPushMetricsData(t *testing.T, exporter *metricsExporter, md pmetric.Metrics) {
-	err := exporter.pushMetricsData(context.Background(), md)
-	require.NoError(t, err)
 }
 
 // simpleMetrics there will be added two ResourceMetrics and each of them have count data point
@@ -67,7 +60,7 @@ func simpleMetrics(count int) pmetric.Metrics {
 	sm.Scope().SetName("Scope name 1")
 	sm.Scope().SetVersion("Scope version 1")
 	timestamp := time.Unix(1703498029, 0)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		// gauge
 		m := sm.Metrics().AppendEmpty()
 		m.SetName("gauge metrics")
@@ -186,7 +179,7 @@ func simpleMetrics(count int) pmetric.Metrics {
 	sm.Scope().SetDroppedAttributesCount(20)
 	sm.Scope().SetName("Scope name 2")
 	sm.Scope().SetVersion("Scope version 2")
-	for i := 0; i < count; i++ {
+	for i := range count {
 		// gauge
 		m := sm.Metrics().AppendEmpty()
 		m.SetName("gauge metrics")
@@ -293,7 +286,7 @@ func simpleMetrics(count int) pmetric.Metrics {
 	sm.Scope().SetDroppedAttributesCount(20)
 	sm.Scope().SetName("Scope name 3")
 	sm.Scope().SetVersion("Scope version 3")
-	for i := 0; i < count; i++ {
+	for i := range count {
 		// gauge
 		m := sm.Metrics().AppendEmpty()
 		m.SetName("gauge metrics")
@@ -456,7 +449,7 @@ func verifyGaugeMetric(t *testing.T, exporter *metricsExporter) {
 		ExemplarsValue:    []float64{54},
 	}
 
-	row := exporter.db.QueryRow(context.Background(), "SELECT * FROM otel_int_test.otel_metrics_gauge")
+	row := exporter.db.QueryRow(t.Context(), "SELECT * FROM otel_int_test.otel_metrics_gauge")
 	require.NoError(t, row.Err())
 
 	var actualGauge gauge
@@ -529,7 +522,7 @@ func verifySumMetric(t *testing.T, exporter *metricsExporter) {
 		ExemplarsValue:    []float64{54},
 	}
 
-	row := exporter.db.QueryRow(context.Background(), "SELECT * FROM otel_int_test.otel_metrics_sum")
+	row := exporter.db.QueryRow(t.Context(), "SELECT * FROM otel_int_test.otel_metrics_sum")
 	require.NoError(t, row.Err())
 
 	var actualSum sum
@@ -612,7 +605,7 @@ func verifyHistogramMetric(t *testing.T, exporter *metricsExporter) {
 		ExemplarsValue:    []float64{55.22},
 	}
 
-	row := exporter.db.QueryRow(context.Background(), "SELECT * FROM otel_int_test.otel_metrics_histogram")
+	row := exporter.db.QueryRow(t.Context(), "SELECT * FROM otel_int_test.otel_metrics_histogram")
 	require.NoError(t, row.Err())
 
 	var actualHistogram histogram
@@ -703,7 +696,7 @@ func verifyExphistogramMetric(t *testing.T, exporter *metricsExporter) {
 		ExemplarsValue:    []float64{54},
 	}
 
-	row := exporter.db.QueryRow(context.Background(), "SELECT * FROM otel_int_test.otel_metrics_exponential_histogram")
+	row := exporter.db.QueryRow(t.Context(), "SELECT * FROM otel_int_test.otel_metrics_exponential_histogram")
 	require.NoError(t, row.Err())
 
 	var actualExpHistogram expHistogram
@@ -766,7 +759,7 @@ func verifySummaryMetric(t *testing.T, exporter *metricsExporter) {
 		Flags:          0,
 	}
 
-	row := exporter.db.QueryRow(context.Background(), "SELECT * FROM otel_int_test.otel_metrics_summary")
+	row := exporter.db.QueryRow(t.Context(), "SELECT * FROM otel_int_test.otel_metrics_summary")
 	require.NoError(t, row.Err())
 
 	var actualSummary summary

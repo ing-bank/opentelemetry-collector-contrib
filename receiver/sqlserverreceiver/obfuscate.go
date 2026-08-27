@@ -1,47 +1,17 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// source(Apache 2.0): https://github.com/DataDog/datadog-agent/blob/main/pkg/collector/python/datadog_agent.go
-
-// Unless explicitly stated otherwise all files in this repository are licensed
-// under the Apache License Version 2.0.
-// This product includes software developed at Datadog (https://www.datadoghq.com/).
-// Copyright 2016-present Datadog, Inc.
-
 package sqlserverreceiver // import "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/sqlserverreceiver"
 
 import (
 	"bytes"
 	"encoding/xml"
-	"fmt"
 	"strings"
-	"sync"
+	"unicode"
 
 	"github.com/DataDog/datadog-agent/pkg/obfuscate"
+	"go.uber.org/zap"
 )
-
-var (
-	obfuscator       *obfuscate.Obfuscator
-	obfuscatorLoader sync.Once
-)
-
-// lazyInitObfuscator initializes the obfuscator the first time it is used.
-func lazyInitObfuscator() *obfuscate.Obfuscator {
-	obfuscatorLoader.Do(func() { obfuscator = obfuscate.NewObfuscator(obfuscate.Config{}) })
-	return obfuscator
-}
-
-// ObfuscateSQL obfuscates & normalizes the provided SQL query, writing the error into errResult if the operation fails.
-func obfuscateSQL(rawQuery string) (string, error) {
-	obfuscatedQuery, err := lazyInitObfuscator().ObfuscateSQLStringWithOptions(rawQuery, &obfuscate.SQLConfig{DBMS: "mssql"})
-	if err != nil {
-		return "", err
-	}
-
-	return obfuscatedQuery.Query, nil
-}
-
-// Ending source(Apache 2.0): https://github.com/DataDog/datadog-agent/blob/main/pkg/collector/python/datadog_agent.go
 
 var xmlPlanObfuscationAttrs = []string{
 	"StatementText",
@@ -50,8 +20,57 @@ var xmlPlanObfuscationAttrs = []string{
 	"ParameterCompiledValue",
 }
 
+type obfuscator struct {
+	*obfuscate.Obfuscator
+	logger *zap.Logger
+}
+
+func newObfuscator(logger *zap.Logger) *obfuscator {
+	return &obfuscator{
+		Obfuscator: obfuscate.NewObfuscator(obfuscate.Config{
+			SQL: obfuscate.SQLConfig{
+				DBMS: "mssql",
+				// ObfuscateAndNormalize routes obfuscation through the go-sqllexer
+				// engine, which is more tolerant than the legacy tokenizer: it does
+				// not error on statements that reduce to nothing after comments are
+				// stripped (returning an empty result instead of "result is empty"),
+				// so comment-only statements no longer spam error logs or drop the
+				// row. It also normalizes the output (collapsing whitespace and
+				// stripping comments/aliases), which yields more stable query
+				// signatures across semantically identical statements.
+				ObfuscationMode: obfuscate.ObfuscateAndNormalize,
+			},
+		}),
+		logger: logger,
+	}
+}
+
+// sanitizeSQL strips non-semantic Unicode format characters (Unicode category
+// Cf, e.g. a zero-width space U+200B) that carry no SQL semantics. Under the
+// ObfuscateAndNormalize engine these characters no longer cause a hard failure,
+// but they would otherwise survive into the obfuscated output as garbled bytes
+// and, worse, cause an otherwise-identical statement to obfuscate to a different
+// string. Stripping them keeps the obfuscated text clean and ensures the query
+// signature is stable regardless of stray invisible characters.
+func sanitizeSQL(sql string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, sql)
+}
+
+func (o *obfuscator) obfuscateSQLString(sql string) (string, error) {
+	obfuscatedQuery, err := o.ObfuscateSQLString(sanitizeSQL(sql))
+	if err != nil {
+		return "", err
+	}
+	return obfuscatedQuery.Query, nil
+}
+
 // obfuscateXMLPlan obfuscates SQL text & parameters from the provided SQL Server XML Plan
-func obfuscateXMLPlan(rawPlan string) (string, error) {
+func (o *obfuscator) obfuscateXMLPlan(rawPlan string) (string, error) {
 	decoder := xml.NewDecoder(strings.NewReader(rawPlan))
 	var buffer bytes.Buffer
 	encoder := xml.NewEncoder(&buffer)
@@ -73,10 +92,11 @@ func obfuscateXMLPlan(rawPlan string) (string, error) {
 						if elem.Attr[i].Value == "" {
 							continue
 						}
-						val, err := obfuscateSQL(elem.Attr[i].Value)
+						val, err := o.obfuscateSQLString(elem.Attr[i].Value)
 						if err != nil {
-							fmt.Println("Unable to obfuscate SQL statement in query plan, skipping: " + elem.Attr[i].Value)
-							return "", nil
+							o.logger.Warn("Unable to obfuscate SQL statement in query plan, redacting attribute", zap.String("attr", attrName), zap.Error(err))
+							elem.Attr[i].Value = "?"
+							continue
 						}
 						elem.Attr[i].Value = val
 					}

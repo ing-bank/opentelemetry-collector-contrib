@@ -8,11 +8,11 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"strings"
 	"time"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configopaque"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configretry"
 	"go.opentelemetry.io/collector/config/configtls"
 	"go.opentelemetry.io/collector/scraper/scraperhelper"
@@ -24,18 +24,18 @@ import (
 var _ component.Config = (*Config)(nil)
 
 type Config struct {
-	scraperhelper.ControllerConfig `mapstructure:",squash"`
-	BaseURL                        string                        `mapstructure:"base_url"`
-	PublicKey                      string                        `mapstructure:"public_key"`
-	PrivateKey                     configopaque.String           `mapstructure:"private_key"`
-	Granularity                    string                        `mapstructure:"granularity"`
-	MetricsBuilderConfig           metadata.MetricsBuilderConfig `mapstructure:",squash"`
-	Projects                       []*ProjectConfig              `mapstructure:"projects"`
-	Alerts                         AlertConfig                   `mapstructure:"alerts"`
-	Events                         *EventsConfig                 `mapstructure:"events"`
-	Logs                           LogConfig                     `mapstructure:"logs"`
-	BackOffConfig                  configretry.BackOffConfig     `mapstructure:"retry_on_failure"`
-	StorageID                      *component.ID                 `mapstructure:"storage"`
+	ControllerConfig     scraperhelper.ControllerConfig        `mapstructure:",squash"`
+	BaseURL              string                                `mapstructure:"base_url"`
+	PublicKey            string                                `mapstructure:"public_key"`
+	PrivateKey           configopaque.String                   `mapstructure:"private_key"`
+	Granularity          string                                `mapstructure:"granularity"`
+	MetricsBuilderConfig metadata.MetricsBuilderConfig         `mapstructure:",squash"`
+	Projects             []ProjectConfig                       `mapstructure:"projects"`
+	Alerts               AlertConfig                           `mapstructure:"alerts"`
+	Events               configoptional.Optional[EventsConfig] `mapstructure:"events"`
+	Logs                 LogConfig                             `mapstructure:"logs"`
+	BackOffConfig        configretry.BackOffConfig             `mapstructure:"retry_on_failure"`
+	StorageID            *component.ID                         `mapstructure:"storage"`
 }
 
 type AlertConfig struct {
@@ -71,7 +71,7 @@ type EventsConfig struct {
 }
 
 type LogsProjectConfig struct {
-	ProjectConfig `mapstructure:",squash"`
+	ProjectConfig ProjectConfig `mapstructure:",squash"`
 
 	EnableAuditLogs bool              `mapstructure:"collect_audit_logs"`
 	EnableHostLogs  *bool             `mapstructure:"collect_host_logs"`
@@ -123,14 +123,11 @@ func (pc *ProjectConfig) populateIncludesAndExcludes() {
 
 var (
 	// Alerts Receiver Errors
-	errNoEndpoint       = errors.New("an endpoint must be specified")
-	errNoSecret         = errors.New("a webhook secret must be specified")
-	errNoCert           = errors.New("tls was configured, but no cert file was specified")
-	errNoKey            = errors.New("tls was configured, but no key file was specified")
-	errNoModeRecognized = fmt.Errorf("alert mode not recognized for mode. Known alert modes are: %s", strings.Join([]string{
-		alertModeListen,
-		alertModePoll,
-	}, ","))
+	errNoEndpoint        = errors.New("an endpoint must be specified")
+	errNoSecret          = errors.New("a webhook secret must be specified")
+	errNoCert            = errors.New("tls was configured, but no cert file was specified")
+	errNoKey             = errors.New("tls was configured, but no key file was specified")
+	errNoModeRecognized  = fmt.Errorf("alert mode not recognized for mode. Known alert modes are: %s,%s", alertModeListen, alertModePoll)
 	errPageSizeIncorrect = errors.New("page size must be a value between 1 and 500")
 
 	// Logs Receiver Errors
@@ -160,8 +157,8 @@ func (c *Config) Validate() error {
 
 	errs = multierr.Append(errs, c.Alerts.validate())
 	errs = multierr.Append(errs, c.Logs.validate())
-	if c.Events != nil {
-		errs = multierr.Append(errs, c.Events.validate())
+	if c.Events.HasValue() {
+		errs = multierr.Append(errs, c.Events.Get().validate())
 	}
 
 	return errs
@@ -178,7 +175,7 @@ func (l *LogConfig) validate() error {
 	}
 
 	for _, project := range l.Projects {
-		if len(project.ExcludeClusters) != 0 && len(project.IncludeClusters) != 0 {
+		if len(project.ProjectConfig.ExcludeClusters) != 0 && len(project.ProjectConfig.IncludeClusters) != 0 {
 			errs = multierr.Append(errs, errClusterConfig)
 		}
 

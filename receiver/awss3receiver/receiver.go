@@ -12,6 +12,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/klauspost/compress/zstd"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/plog"
@@ -90,7 +91,8 @@ func newAWSS3Receiver(ctx context.Context, cfg *Config, telemetryType string, se
 func (r *awss3Receiver) Start(ctx context.Context, host component.Host) error {
 	var err error
 	if r.notifier != nil {
-		if err = r.notifier.Start(ctx, host); err != nil {
+		err = r.notifier.Start(ctx, host)
+		if err != nil {
 			return err
 		}
 	}
@@ -119,17 +121,47 @@ func (r *awss3Receiver) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-func (r *awss3Receiver) receiveBytes(ctx context.Context, key string, data []byte) error {
+func (r *awss3Receiver) receiveBytes(ctx context.Context, key string, data []byte) (err error) {
 	if data == nil {
 		return nil
 	}
 	if strings.HasSuffix(key, ".gz") {
-		reader, err := gzip.NewReader(bytes.NewReader(data))
+		var reader *gzip.Reader
+		reader, err = gzip.NewReader(bytes.NewReader(data))
 		if err != nil {
 			return err
 		}
+		defer func() {
+			if closeErr := reader.Close(); closeErr != nil && err == nil {
+				err = closeErr
+			}
+		}()
 		key = strings.TrimSuffix(key, ".gz")
 		data, err = io.ReadAll(reader)
+		if err != nil {
+			return err
+		}
+	} else if strings.HasSuffix(key, ".zst") {
+		var reader *zstd.Decoder
+		reader, err = zstd.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return err
+		}
+		decompressedReader := reader.IOReadCloser()
+		defer func() {
+			if closeErr := decompressedReader.Close(); closeErr != nil && err == nil {
+				err = closeErr
+			}
+		}()
+		// Strip the compression suffix so the downstream format
+		// detection sees the underlying marshaler's suffix (.json /
+		// .binpb). Matches the .gz branch; without it, a file written
+		// by awss3exporter with compression: zstd (e.g. foo.binpb.zst)
+		// loops back through processReceivedData with key still ending
+		// in .zst, falls through every format check, and is dropped
+		// with "Unsupported file format" (#47802).
+		key = strings.TrimSuffix(key, ".zst")
+		data, err = io.ReadAll(decompressedReader)
 		if err != nil {
 			return err
 		}

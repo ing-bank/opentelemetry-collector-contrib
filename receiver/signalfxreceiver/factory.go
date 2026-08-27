@@ -13,6 +13,7 @@ import (
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/confighttp"
+	"go.opentelemetry.io/collector/config/confignet"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/receiver"
 
@@ -33,14 +34,23 @@ func NewFactory() receiver.Factory {
 		metadata.Type,
 		createDefaultConfig,
 		receiver.WithMetrics(createMetricsReceiver, metadata.MetricsStability),
-		receiver.WithLogs(createLogsReceiver, metadata.LogsStability))
+		receiver.WithLogs(createLogsReceiver, metadata.LogsStability),
+	)
 }
 
 func createDefaultConfig() component.Config {
+	netAddr := confignet.NewDefaultAddrConfig()
+	netAddr.Transport = confignet.TransportTypeTCP
+	netAddr.Endpoint = defaultEndpoint
+	serverConfig := confighttp.NewDefaultServerConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	serverConfig.WriteTimeout = 0
+	serverConfig.ReadHeaderTimeout = 0
+	serverConfig.IdleTimeout = 0           //nolint:staticcheck // SA1019: see TODO above
+	serverConfig.KeepAlivesEnabled = false //nolint:staticcheck // SA1019: see TODO above
+	serverConfig.NetAddr = netAddr
 	return &Config{
-		ServerConfig: confighttp.ServerConfig{
-			Endpoint: defaultEndpoint,
-		},
+		ServerConfig: serverConfig,
 	}
 }
 
@@ -70,14 +80,6 @@ func createMetricsReceiver(
 ) (receiver.Metrics, error) {
 	rCfg := cfg.(*Config)
 
-	if rCfg.AccessTokenPassthrough {
-		params.Logger.Warn(
-			"access_token_passthrough is deprecated. " +
-				"Please enable include_metadata in the receiver and add " +
-				"`metadata_keys: [X-Sf-Token]` to the batch processor",
-		)
-	}
-
 	receiverLock.Lock()
 	r := receivers[rCfg]
 	if r == nil {
@@ -103,14 +105,6 @@ func createLogsReceiver(
 	consumer consumer.Logs,
 ) (receiver.Logs, error) {
 	rCfg := cfg.(*Config)
-
-	if rCfg.AccessTokenPassthrough {
-		params.Logger.Warn(
-			"access_token_passthrough is deprecated. " +
-				"Please enable include_metadata in the receiver and add " +
-				"`metadata_keys: [X-Sf-Token]` to the batch processor",
-		)
-	}
 
 	receiverLock.Lock()
 	r := receivers[rCfg]

@@ -9,6 +9,7 @@ CREATE TABLE table1 (
 CREATE TABLE table2 (
     id serial PRIMARY KEY
 );
+GRANT SELECT ON table1, table2 TO otelu;
 
 CREATE DATABASE otel2;
 \c otel2
@@ -29,3 +30,8 @@ SELECT * FROM test2;
 
 
 CREATE EXTENSION pg_stat_statements;
+
+-- generating temp usage
+SET work_mem = '64kB';
+SELECT * FROM generate_series(1, 100000) AS x ORDER BY x;
+SET work_mem = '4MB';

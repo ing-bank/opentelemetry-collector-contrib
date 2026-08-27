@@ -4,7 +4,6 @@
 package reader
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -37,11 +36,11 @@ func TestPersistFlusher(t *testing.T) {
 	require.NoError(t, err)
 
 	// ReadToEnd will return when we hit eof, but we shouldn't emit the unfinished log yet
-	r.ReadToEnd(context.Background())
+	r.ReadToEnd(t.Context())
 	sink.ExpectToken(t, []byte("log with newline"))
 
 	// Even trying again shouldn't produce the log yet because the flush period still hasn't expired.
-	r.ReadToEnd(context.Background())
+	r.ReadToEnd(t.Context())
 	sink.ExpectNoCallsUntil(t, 2*flushPeriod)
 
 	// A copy of the reader should remember that we last emitted about 200ms ago.
@@ -51,7 +50,7 @@ func TestPersistFlusher(t *testing.T) {
 	// This time, the flusher will kick in and we should emit the unfinished log.
 	// If the copy did not remember when we last emitted a log, then the flushPeriod
 	// will not be expired at this point so we won't see the unfinished log.
-	copyReader.ReadToEnd(context.Background())
+	copyReader.ReadToEnd(t.Context())
 	sink.ExpectToken(t, []byte("log without newline"))
 }
 
@@ -122,7 +121,7 @@ func TestTokenization(t *testing.T) {
 			r, err := f.NewReader(temp, fp)
 			require.NoError(t, err)
 
-			r.ReadToEnd(context.Background())
+			r.ReadToEnd(t.Context())
 
 			for _, expected := range tc.expected {
 				require.Equal(t, expected, sink.NextToken(t))
@@ -152,7 +151,7 @@ func TestTokenizationTooLong(t *testing.T) {
 	r, err := f.NewReader(temp, fp)
 	require.NoError(t, err)
 
-	r.ReadToEnd(context.Background())
+	r.ReadToEnd(t.Context())
 
 	for _, expected := range expected {
 		require.Equal(t, expected, sink.NextToken(t))
@@ -183,7 +182,110 @@ func TestTokenizationTooLongWithLineStartPattern(t *testing.T) {
 	r, err := f.NewReader(temp, fp)
 	require.NoError(t, err)
 
-	r.ReadToEnd(context.Background())
+	r.ReadToEnd(t.Context())
+
+	for _, expected := range expected {
+		require.Equal(t, expected, sink.NextToken(t))
+	}
+}
+
+// TestTokenizationTooLongWithTruncate tests truncation behavior (not split) for oversized entries.
+func TestTokenizationTooLongWithTruncate(t *testing.T) {
+	fileContent := []byte("aaaaaaaaaaaaaaaaaaaaaa\naaa\n")
+	// With truncate mode, the oversized first line is truncated to 10 bytes
+	// and the remainder is skipped. Only one token from the first line.
+	expected := [][]byte{
+		[]byte("aaaaaaaaaa"),
+		[]byte("aaa"),
+	}
+
+	f, sink := testFactory(t, withMaxLogSize(10), withTruncateOnMaxLogSize(true))
+
+	temp := filetest.OpenTemp(t, t.TempDir())
+	_, err := temp.Write(fileContent)
+	require.NoError(t, err)
+
+	fp, err := f.NewFingerprint(temp)
+	require.NoError(t, err)
+
+	r, err := f.NewReader(temp, fp)
+	require.NoError(t, err)
+
+	r.ReadToEnd(t.Context())
+
+	for _, expected := range expected {
+		require.Equal(t, expected, sink.NextToken(t))
+	}
+}
+
+// TestTokenizationMultilineWithTruncate tests that multiline patterns work correctly
+// with truncate mode. This is a regression test for the issue where the truncate
+// function incorrectly assumed newlines mark entry boundaries.
+func TestTokenizationMultilineWithTruncate(t *testing.T) {
+	// Log entries using ">" as line start pattern with OmitPattern=true
+	// Entry 1: ">first\nsecond\nthird\n" (multiline entry, ">" omitted from output)
+	// Entry 2: ">short\n"
+	// Entry 3: ">end\n" (needed because flushAtEOF=false in test factory)
+	fileContent := []byte(">first\nsecond\nthird\n>short\n>end\n")
+
+	// With max_log_size=100, entries fit without truncation
+	expected := [][]byte{
+		[]byte("first\nsecond\nthird"),
+		[]byte("short"),
+	}
+
+	sCfg := split.Config{LineStartPattern: `>`, OmitPattern: true}
+	f, sink := testFactory(t, withSplitConfig(sCfg), withMaxLogSize(100), withTruncateOnMaxLogSize(true))
+
+	temp := filetest.OpenTemp(t, t.TempDir())
+	_, err := temp.Write(fileContent)
+	require.NoError(t, err)
+
+	fp, err := f.NewFingerprint(temp)
+	require.NoError(t, err)
+
+	r, err := f.NewReader(temp, fp)
+	require.NoError(t, err)
+
+	r.ReadToEnd(t.Context())
+
+	for _, expected := range expected {
+		require.Equal(t, expected, sink.NextToken(t))
+	}
+}
+
+// TestTokenizationMultilineOversizedWithTruncate tests truncation of oversized
+// multiline entries. The entry should be truncated at max_log_size and the
+// remainder skipped until the next entry boundary (not the next newline).
+func TestTokenizationMultilineOversizedWithTruncate(t *testing.T) {
+	// Entry 1: ">first\nsecond\nthird\n" (">" omitted, 18 chars, exceeds max_log_size=10)
+	// Entry 2: ">short\n"
+	// Entry 3: ">end\n" (needed because flushAtEOF=false in test factory)
+	fileContent := []byte(">first\nsecond\nthird\n>short\n>end\n")
+
+	// With max_log_size=10 and truncate mode:
+	// Entry 1 content "first\nsecond\nthird" (18 chars) gets truncated to 10 chars
+	// The remainder is skipped until the next ">" pattern
+	// Entry 2 "short" fits within limit
+	expected := [][]byte{
+		[]byte("first\nseco"), // First 10 chars of the multiline entry
+		[]byte("short"),       // Second entry is within limit
+	}
+
+	sCfg := split.Config{LineStartPattern: `>`, OmitPattern: true}
+	f, sink := testFactory(t, withSplitConfig(sCfg), withMaxLogSize(10), withTruncateOnMaxLogSize(true))
+
+	temp := filetest.OpenTemp(t, t.TempDir())
+	_, err := temp.Write(fileContent)
+	require.NoError(t, err)
+
+	fp, err := f.NewFingerprint(temp)
+	require.NoError(t, err)
+
+	r, err := f.NewReader(temp, fp)
+	require.NoError(t, err)
+
+	r.ReadToEnd(t.Context())
 
 	for _, expected := range expected {
 		require.Equal(t, expected, sink.NextToken(t))
@@ -218,7 +320,7 @@ func TestHeaderFingerprintIncluded(t *testing.T) {
 	_, err = temp.Write(fileContent)
 	require.NoError(t, err)
 
-	r.ReadToEnd(context.Background())
+	r.ReadToEnd(t.Context())
 
 	require.Equal(t, fingerprint.New([]byte("#header-line\naaa\n")), r.Fingerprint)
 }

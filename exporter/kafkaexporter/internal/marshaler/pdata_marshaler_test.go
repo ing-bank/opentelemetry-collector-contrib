@@ -10,11 +10,13 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/pdata/pprofile"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/testdata"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatatest/plogtest"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatatest/pmetrictest"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatatest/pprofiletest"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatatest/ptracetest"
 )
 
@@ -69,21 +71,53 @@ func TestPdataTracesMarshaler(t *testing.T) {
 	})
 }
 
+func TestPdataProfilesMarshaler(t *testing.T) {
+	input := testdata.GenerateProfiles(2)
+	compare := func(expected, actual pprofile.Profiles) error { return pprofiletest.CompareProfiles(expected, actual) }
+	t.Run("protobuf", func(t *testing.T) {
+		testPdataMarshaler(t, input, compare,
+			NewPdataProfilesMarshaler(&pprofile.ProtoMarshaler{}).MarshalProfiles,
+			(&pprofile.ProtoUnmarshaler{}).UnmarshalProfiles,
+		)
+	})
+	t.Run("json", func(t *testing.T) {
+		testPdataMarshaler(t, input, compare,
+			NewPdataProfilesMarshaler(&pprofile.JSONMarshaler{}).MarshalProfiles,
+			(&pprofile.JSONUnmarshaler{}).UnmarshalProfiles,
+		)
+	})
+}
+
 func testPdataMarshaler[Data any](
 	t *testing.T,
 	input Data,
 	compare func(Data, Data) error,
-	marshal func(Data) ([]Message, error),
+	marshal func(Data, func(key, value []byte)) error,
 	unmarshal func([]byte) (Data, error),
 ) {
 	t.Helper()
 
-	messages, err := marshal(input)
-	require.NoError(t, err)
-	require.Len(t, messages, 1) // 1 message per batch
-	assert.Nil(t, messages[0].Key)
+	collect := func() (keys, values [][]byte, err error) {
+		err = marshal(input, func(k, v []byte) {
+			keys = append(keys, k)
+			values = append(values, v)
+		})
+		return keys, values, err
+	}
 
-	output, err := unmarshal(messages[0].Value)
+	keys, values, err := collect()
 	require.NoError(t, err)
-	assert.NoError(t, compare(input, output))
+	require.Len(t, values, 1) // 1 message per batch
+	assert.Nil(t, keys[0])
+
+	// Marshal input again to produce the expected bytes — this ensures the
+	// internal dictionary structure matches.
+	_, expectedValues, err := collect()
+	require.NoError(t, err)
+	expected, err := unmarshal(expectedValues[0])
+	require.NoError(t, err)
+
+	output, err := unmarshal(values[0])
+	require.NoError(t, err)
+	assert.NoError(t, compare(expected, output))
 }

@@ -13,59 +13,78 @@ import (
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/confignet"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/extension/extensiontest"
 
-	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckv2extension/internal/grpc"
-	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckv2extension/internal/http"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/common/testutil"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/healthcheck"
 )
 
 func TestCreateDefaultConfig(t *testing.T) {
 	cfg := createDefaultConfig()
+	legacyServerConfig := confighttp.NewDefaultServerConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	legacyServerConfig.WriteTimeout = 0
+	legacyServerConfig.ReadHeaderTimeout = 0
+	legacyServerConfig.IdleTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+	legacyServerConfig.NetAddr = confignet.AddrConfig{
+		Transport: "tcp",
+		Endpoint:  testutil.EndpointForPort(healthcheck.DefaultHTTPPort),
+	}
+	legacyServerConfig.KeepAlivesEnabled = true //nolint:staticcheck // SA1019: see TODO above
+	httpServerConfig := confighttp.NewDefaultServerConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	httpServerConfig.WriteTimeout = 0
+	httpServerConfig.ReadHeaderTimeout = 0
+	httpServerConfig.IdleTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+	httpServerConfig.NetAddr = confignet.AddrConfig{
+		Transport: "tcp",
+		Endpoint:  testutil.EndpointForPort(healthcheck.DefaultHTTPPort),
+	}
+	httpServerConfig.KeepAlivesEnabled = true //nolint:staticcheck // SA1019: see TODO above
 	assert.Equal(t, &Config{
-		LegacyConfig: http.LegacyConfig{
-			ServerConfig: confighttp.ServerConfig{
-				Endpoint: testutil.EndpointForPort(defaultHTTPPort),
-			},
-			Path: "/",
+		LegacyConfig: healthcheck.HTTPLegacyConfig{
+			ServerConfig: legacyServerConfig,
+			Path:         "/",
 		},
-		HTTPConfig: &http.Config{
-			ServerConfig: confighttp.ServerConfig{
-				Endpoint: testutil.EndpointForPort(defaultHTTPPort),
-			},
-			Status: http.PathConfig{
+		HTTPConfig: &healthcheck.HTTPConfig{
+			ServerConfig: httpServerConfig,
+			Status: healthcheck.PathConfig{
 				Enabled: true,
 				Path:    "/status",
 			},
-			Config: http.PathConfig{
+			Config: healthcheck.PathConfig{
 				Enabled: false,
 				Path:    "/config",
 			},
 		},
-		GRPCConfig: &grpc.Config{
+		GRPCConfig: &healthcheck.GRPCConfig{
 			ServerConfig: configgrpc.ServerConfig{
 				NetAddr: confignet.AddrConfig{
-					Endpoint:  testutil.EndpointForPort(defaultGRPCPort),
+					Endpoint:  testutil.EndpointForPort(healthcheck.DefaultGRPCPort),
 					Transport: "tcp",
 				},
+				Keepalive: configoptional.Some(configgrpc.NewDefaultKeepaliveServerConfig()),
 			},
 		},
 	}, cfg)
 
 	assert.NoError(t, componenttest.CheckConfigStruct(cfg))
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	ext, err := createExtension(ctx, extensiontest.NewNopSettings(extensiontest.NopType), cfg)
 	require.NoError(t, err)
 	require.NotNil(t, ext)
+	require.NoError(t, ext.Shutdown(ctx))
 }
 
 func TestCreate(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
-	cfg.Endpoint = testutil.GetAvailableLocalAddress(t)
-	ctx, cancel := context.WithCancel(context.Background())
+	cfg.ServerConfig.NetAddr.Endpoint = testutil.GetAvailableLocalAddress(t)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	ext, err := createExtension(ctx, extensiontest.NewNopSettings(extensiontest.NopType), cfg)
 	require.NoError(t, err)
 	require.NotNil(t, ext)
+	require.NoError(t, ext.Shutdown(ctx))
 }

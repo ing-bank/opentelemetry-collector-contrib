@@ -6,7 +6,6 @@
 package pagingscraper
 
 import (
-	"context"
 	"errors"
 	"testing"
 
@@ -104,10 +103,10 @@ func TestScrape_Errors(t *testing.T) {
 
 	for _, test := range testCases {
 		t.Run(test.name, func(t *testing.T) {
-			metricsConfig := metadata.DefaultMetricsBuilderConfig()
+			metricsConfig := metadata.NewDefaultMetricsBuilderConfig()
 			metricsConfig.Metrics.SystemPagingUtilization.Enabled = true
 
-			scraper := newPagingScraper(context.Background(), scrapertest.NewNopSettings(metadata.Type), &Config{MetricsBuilderConfig: metricsConfig})
+			scraper := newPagingScraper(t.Context(), scrapertest.NewNopSettings(metadata.Type), &Config{MetricsBuilderConfig: metricsConfig})
 			if test.getPageFileStats != nil {
 				scraper.pageFileStats = test.getPageFileStats
 			}
@@ -127,7 +126,7 @@ func TestScrape_Errors(t *testing.T) {
 				defaultPageFaultsPerSec int64 = 300
 				defaultPageMajPerSec    int64 = 200
 			)
-			scraper.perfCounterFactory = func(_, _, counter string) (winperfcounters.PerfCounterWatcher, error) {
+			scraper.perfCounterFactory = func(_, _, counter string, _ ...winperfcounters.WatcherOption) (winperfcounters.PerfCounterWatcher, error) {
 				perfCounterMock := &testmocks.PerfCounterWatcherMock{}
 				switch counter {
 				case pageReadsPerSec:
@@ -163,10 +162,10 @@ func TestScrape_Errors(t *testing.T) {
 				return perfCounterMock, nil
 			}
 
-			err := scraper.start(context.Background(), componenttest.NewNopHost())
+			err := scraper.start(t.Context(), componenttest.NewNopHost())
 			require.NoError(t, err, "Failed to initialize paging scraper: %v", err)
 
-			md, err := scraper.scrape(context.Background())
+			md, err := scraper.scrape(t.Context())
 			if test.expectedErr != "" {
 				assert.EqualError(t, err, test.expectedErr)
 
@@ -209,14 +208,14 @@ func TestScrape_Errors(t *testing.T) {
 
 func TestPagingScrapeWithRealData(t *testing.T) {
 	config := Config{
-		MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig(),
+		MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig(),
 	}
-	scraper := newPagingScraper(context.Background(), scrapertest.NewNopSettings(metadata.Type), &config)
+	scraper := newPagingScraper(t.Context(), scrapertest.NewNopSettings(metadata.Type), &config)
 
-	err := scraper.start(context.Background(), componenttest.NewNopHost())
+	err := scraper.start(t.Context(), componenttest.NewNopHost())
 	require.NoError(t, err, "Failed to start the paging scraper")
 
-	metrics, err := scraper.scrape(context.Background())
+	metrics, err := scraper.scrape(t.Context())
 	require.NoError(t, err, "Failed to scrape metrics")
 	require.NotNil(t, metrics, "Metrics cannot be nil")
 
@@ -233,7 +232,7 @@ func TestPagingScrapeWithRealData(t *testing.T) {
 func TestStart_Error(t *testing.T) {
 	testCases := []struct {
 		name                  string
-		newPerfCounterFactory func(string, string, string) (winperfcounters.PerfCounterWatcher, error)
+		newPerfCounterFactory func(string, string, string, ...winperfcounters.WatcherOption) (winperfcounters.PerfCounterWatcher, error)
 		expectedSkipScrape    bool
 	}{
 		{
@@ -242,7 +241,7 @@ func TestStart_Error(t *testing.T) {
 		},
 		{
 			name: "new_perf_counter_watcher_fails",
-			newPerfCounterFactory: func(string, string, string) (winperfcounters.PerfCounterWatcher, error) {
+			newPerfCounterFactory: func(string, string, string, ...winperfcounters.WatcherOption) (winperfcounters.PerfCounterWatcher, error) {
 				return nil, errors.New("err1")
 			},
 			expectedSkipScrape: true,
@@ -251,16 +250,16 @@ func TestStart_Error(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			metricsConfig := metadata.DefaultMetricsBuilderConfig()
+			metricsConfig := metadata.NewDefaultMetricsBuilderConfig()
 			metricsConfig.Metrics.SystemPagingUtilization.Enabled = true
 
-			scraper := newPagingScraper(context.Background(), scrapertest.NewNopSettings(metadata.Type), &Config{MetricsBuilderConfig: metricsConfig})
+			scraper := newPagingScraper(t.Context(), scrapertest.NewNopSettings(metadata.Type), &Config{MetricsBuilderConfig: metricsConfig})
 
 			if tc.newPerfCounterFactory != nil {
 				scraper.perfCounterFactory = tc.newPerfCounterFactory
 			}
 
-			err := scraper.start(context.Background(), componenttest.NewNopHost())
+			err := scraper.start(t.Context(), componenttest.NewNopHost())
 			require.NoError(t, err, "Failed to initialize paging scraper: %v", err)
 
 			require.Equal(t, tc.expectedSkipScrape, scraper.skipScrape)

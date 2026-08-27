@@ -5,18 +5,17 @@ package elasticsearchreceiver
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/confighttp"
-	"go.opentelemetry.io/collector/config/configopaque"
+	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
-	"go.opentelemetry.io/collector/confmap/xconfmap"
 	"go.opentelemetry.io/collector/scraper/scraperhelper"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/elasticsearchreceiver/internal/metadata"
@@ -34,7 +33,7 @@ func TestValidateCredentials(t *testing.T) {
 
 				cfg := NewFactory().CreateDefaultConfig().(*Config)
 				cfg.Username = "user"
-				require.ErrorIs(t, xconfmap.Validate(cfg), errPasswordNotSpecified)
+				require.ErrorIs(t, confmap.Validate(cfg), errPasswordNotSpecified)
 			},
 		},
 		{
@@ -44,7 +43,7 @@ func TestValidateCredentials(t *testing.T) {
 
 				cfg := NewFactory().CreateDefaultConfig().(*Config)
 				cfg.Password = "pass"
-				require.ErrorIs(t, xconfmap.Validate(cfg), errUsernameNotSpecified)
+				require.ErrorIs(t, confmap.Validate(cfg), errUsernameNotSpecified)
 			},
 		},
 		{
@@ -55,7 +54,7 @@ func TestValidateCredentials(t *testing.T) {
 				cfg := NewFactory().CreateDefaultConfig().(*Config)
 				cfg.Username = "user"
 				cfg.Password = "pass"
-				require.NoError(t, xconfmap.Validate(cfg))
+				require.NoError(t, confmap.Validate(cfg))
 			},
 		},
 		{
@@ -64,7 +63,7 @@ func TestValidateCredentials(t *testing.T) {
 				t.Parallel()
 
 				cfg := NewFactory().CreateDefaultConfig().(*Config)
-				require.NoError(t, xconfmap.Validate(cfg))
+				require.NoError(t, confmap.Validate(cfg))
 			},
 		},
 	}
@@ -123,9 +122,9 @@ func TestValidateEndpoint(t *testing.T) {
 			t.Parallel()
 
 			cfg := NewFactory().CreateDefaultConfig().(*Config)
-			cfg.Endpoint = testCase.rawURL
+			cfg.ClientConfig.Endpoint = testCase.rawURL
 
-			err := xconfmap.Validate(cfg)
+			err := confmap.Validate(cfg)
 
 			switch {
 			case testCase.expectedErr != nil:
@@ -145,7 +144,7 @@ func TestLoadConfig(t *testing.T) {
 	cm, err := confmaptest.LoadConf(filepath.Join("testdata", "config.yaml"))
 	require.NoError(t, err)
 
-	defaultMetrics := metadata.DefaultMetricsBuilderConfig()
+	defaultMetrics := metadata.NewDefaultMetricsBuilderConfig()
 	defaultMetrics.Metrics.ElasticsearchNodeFsDiskAvailable.Enabled = false
 	tests := []struct {
 		id       component.ID
@@ -172,7 +171,6 @@ func TestLoadConfig(t *testing.T) {
 					client := confighttp.NewDefaultClientConfig()
 					client.Timeout = 10000000000
 					client.Endpoint = "http://example.com:9200"
-					client.Headers = map[string]configopaque.String{}
 					return client
 				}(),
 			},
@@ -188,8 +186,23 @@ func TestLoadConfig(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, sub.Unmarshal(cfg))
 
-			assert.NoError(t, xconfmap.Validate(cfg))
-			if diff := cmp.Diff(tt.expected, cfg, cmpopts.IgnoreUnexported(metadata.MetricConfig{}), cmpopts.IgnoreUnexported(metadata.ResourceAttributeConfig{})); diff != "" {
+			assert.NoError(t, confmap.Validate(cfg))
+			if diff := cmp.Diff(
+				tt.expected,
+				cfg,
+				// mdatagen gives metric and resource attribute configs an unexported enabledSetByUser,
+				// set from parser.IsSet("enabled"), so it is only true on the unmarshaled side:
+				// https://github.com/open-telemetry/opentelemetry-collector/blob/e4e58cda0aa6d5d4d275ff12072ae418410e6ae7/cmd/mdatagen/internal/templates/config.go.tmpl#L42-L44
+				cmp.FilterPath(
+					func(fp cmp.Path) bool {
+						return fp.Last().String() == ".enabledSetByUser"
+					},
+					cmp.Ignore(),
+				),
+				// Allow go-cmp to read unexported fields instead of panicking on them, so new
+				// upstream fields can't break this (https://pkg.go.dev/github.com/google/go-cmp/cmp#Exporter).
+				cmp.Exporter(func(reflect.Type) bool { return true }),
+			); diff != "" {
 				t.Errorf("Config mismatch (-expected +actual):\n%s", diff)
 			}
 		})

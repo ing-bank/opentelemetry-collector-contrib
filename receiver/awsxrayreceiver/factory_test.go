@@ -4,16 +4,17 @@
 package awsxrayreceiver
 
 import (
-	"context"
 	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/collector/component/componenttest"
+	"go.opentelemetry.io/collector/config/confignet"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/pipeline"
 	"go.opentelemetry.io/collector/receiver/receivertest"
 
+	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/common/testutil"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/awsxrayreceiver/internal/metadata"
 )
 
@@ -34,11 +35,21 @@ func TestCreateTraces(t *testing.T) {
 
 	t.Setenv(defaultRegionEnvName, mockRegion)
 
+	// Use dynamic port to avoid port conflicts when running tests in parallel or with -count > 1
+	// This issue occurs when running: go test -race -parallel 8 -count=10 ./...
+	udpAddr := testutil.GetAvailableLocalNetworkAddress(t, "udp")
+
 	factory := NewFactory()
+	cfg := factory.CreateDefaultConfig().(*Config)
+	cfg.AddrConfig = confignet.AddrConfig{
+		Endpoint:  udpAddr,
+		Transport: confignet.TransportTypeUDP,
+	}
+
 	_, err := factory.CreateTraces(
-		context.Background(),
+		t.Context(),
 		receivertest.NewNopSettings(metadata.Type),
-		factory.CreateDefaultConfig().(*Config),
+		cfg,
 		consumertest.NewNop(),
 	)
 	assert.NoError(t, err, "trace receiver can be created")
@@ -47,7 +58,7 @@ func TestCreateTraces(t *testing.T) {
 func TestCreateMetrics(t *testing.T) {
 	factory := NewFactory()
 	_, err := factory.CreateMetrics(
-		context.Background(),
+		t.Context(),
 		receivertest.NewNopSettings(metadata.Type),
 		factory.CreateDefaultConfig().(*Config),
 		consumertest.NewNop(),

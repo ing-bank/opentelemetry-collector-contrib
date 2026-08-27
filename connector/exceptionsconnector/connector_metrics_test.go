@@ -5,7 +5,6 @@ package exceptionsconnector
 
 import (
 	"bytes"
-	"context"
 	"testing"
 	"time"
 
@@ -34,10 +33,6 @@ type metricID struct {
 
 type metricDataPoint interface {
 	Attributes() pcommon.Map
-}
-
-func stringp(str string) *string {
-	return &str
 }
 
 func TestConnectorConsumeTraces(t *testing.T) {
@@ -70,9 +65,9 @@ func TestConnectorConsumeTraces(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			msink := &consumertest.MetricsSink{}
 
-			p := newTestMetricsConnector(msink, stringp("defaultNullValue"), zaptest.NewLogger(t))
+			p := newTestMetricsConnector(msink, new("defaultNullValue"), zaptest.NewLogger(t))
 
-			ctx := metadata.NewIncomingContext(context.Background(), nil)
+			ctx := metadata.NewIncomingContext(t.Context(), nil)
 			err := p.Start(ctx, componenttest.NewNopHost())
 			defer func() { sdErr := p.Shutdown(ctx); require.NoError(t, sdErr) }()
 			require.NoError(t, err)
@@ -90,10 +85,10 @@ func TestConnectorConsumeTraces(t *testing.T) {
 	t.Run("Test without exemplars", func(t *testing.T) {
 		msink := &consumertest.MetricsSink{}
 
-		p := newTestMetricsConnector(msink, stringp("defaultNullValue"), zaptest.NewLogger(t))
+		p := newTestMetricsConnector(msink, new("defaultNullValue"), zaptest.NewLogger(t))
 		p.config.Exemplars.Enabled = false
 
-		ctx := metadata.NewIncomingContext(context.Background(), nil)
+		ctx := metadata.NewIncomingContext(t.Context(), nil)
 		err := p.Start(ctx, componenttest.NewNopHost())
 		defer func() { sdErr := p.Shutdown(ctx); require.NoError(t, sdErr) }()
 		require.NoError(t, err)
@@ -110,12 +105,12 @@ func TestConnectorConsumeTraces(t *testing.T) {
 func BenchmarkConnectorConsumeTraces(b *testing.B) {
 	msink := &consumertest.MetricsSink{}
 
-	conn := newTestMetricsConnector(msink, stringp("defaultNullValue"), zaptest.NewLogger(b))
+	conn := newTestMetricsConnector(msink, new("defaultNullValue"), zaptest.NewLogger(b))
 	traces := buildSampleTrace()
 
 	// Test
-	ctx := metadata.NewIncomingContext(context.Background(), nil)
-	for n := 0; n < b.N; n++ {
+	ctx := metadata.NewIncomingContext(b.Context(), nil)
+	for b.Loop() {
 		assert.NoError(b, conn.ConsumeTraces(ctx, traces))
 	}
 }
@@ -132,7 +127,7 @@ func newTestMetricsConnector(mcon consumer.Metrics, defaultNullValue *string, lo
 			{Name: arrayAttrName},
 			{Name: nullAttrName, Default: defaultNullValue},
 			// Add a default value for an attribute that doesn't exist in a span
-			{Name: notInSpanAttrName0, Default: stringp("defaultNotInSpanAttrVal")},
+			{Name: notInSpanAttrName0, Default: new("defaultNotInSpanAttrVal")},
 			// Leave the default value unset to test that this dimension should not be added to the metric.
 			{Name: notInSpanAttrName1},
 
@@ -154,7 +149,7 @@ func verifyConsumeMetricsInputCumulative(tb testing.TB, input pmetric.Metrics) b
 	return verifyConsumeMetricsInput(tb, input, 1)
 }
 
-func verifyBadMetricsOkay(_ testing.TB, _ pmetric.Metrics) bool {
+func verifyBadMetricsOkay(testing.TB, pmetric.Metrics) bool {
 	return true // Validating no exception
 }
 
@@ -189,7 +184,7 @@ func verifyConsumeMetricsInput(tb testing.TB, input pmetric.Metrics, numCumulati
 	assert.True(tb, m.At(0).Sum().IsMonotonic())
 	callsDps := m.At(0).Sum().DataPoints()
 	require.Equal(tb, 3, callsDps.Len())
-	for dpi := 0; dpi < 3; dpi++ {
+	for dpi := range 3 {
 		dp := callsDps.At(dpi)
 		assert.Equal(tb, int64(numCumulativeConsumptions), dp.IntValue(), "There should only be one metric per Service/kind combination")
 		assert.NotZero(tb, dp.StartTimestamp(), "StartTimestamp should be set")

@@ -4,10 +4,10 @@
 package grafanacloudconnector
 
 import (
-	"context"
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/connector/connectortest"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -30,7 +30,7 @@ func TestNewConnector(t *testing.T) {
 		{
 			name:                 "other config",
 			hostIdentifiers:      []string{"host.id", "host.name", "k8s.node.uid"},
-			metricsFlushInterval: durationPtr(15 * time.Second),
+			metricsFlushInterval: new(15 * time.Second),
 			expectedConfig: &Config{
 				HostIdentifiers:      []string{"host.id", "host.name", "k8s.node.uid"},
 				MetricsFlushInterval: 15 * time.Second,
@@ -47,7 +47,7 @@ func TestNewConnector(t *testing.T) {
 				cfg.MetricsFlushInterval = *tc.metricsFlushInterval
 			}
 
-			c, err := factory.CreateTracesToMetrics(context.Background(), connectortest.NewNopSettings(metadata.Type), cfg, consumertest.NewNop())
+			c, err := factory.CreateTracesToMetrics(t.Context(), connectortest.NewNopSettings(metadata.Type), cfg, consumertest.NewNop())
 			imp := c.(*connectorImp)
 
 			assert.NilError(t, err)
@@ -138,11 +138,11 @@ func TestConsumeTraces(t *testing.T) {
 			tc.cfg.MetricsFlushInterval = 50 * time.Millisecond
 
 			sink := &consumertest.MetricsSink{}
-			c, err := factory.CreateTracesToMetrics(context.Background(), connectortest.NewNopSettings(metadata.Type), tc.cfg, sink)
+			c, err := factory.CreateTracesToMetrics(t.Context(), connectortest.NewNopSettings(metadata.Type), tc.cfg, sink)
 			assert.NilError(t, err)
 
-			ctx := context.Background()
-			assert.NilError(t, c.Start(ctx, nil))
+			ctx := t.Context()
+			assert.NilError(t, c.Start(ctx, componenttest.NewNopHost()))
 			err = c.ConsumeTraces(ctx, tc.input)
 			assert.NilError(t, err)
 			assert.NilError(t, c.Shutdown(ctx))
@@ -169,8 +169,4 @@ func testTraces(attrs map[string]string) ptrace.Traces {
 		resourceSpans.Resource().Attributes().PutStr(k, v)
 	}
 	return traces
-}
-
-func durationPtr(t time.Duration) *time.Duration {
-	return &t
 }

@@ -4,12 +4,12 @@
 package logicmonitorexporter
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/confighttp"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configretry"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
 	"go.opentelemetry.io/collector/exporter/exportertest"
@@ -22,15 +22,28 @@ func TestCreateDefaultConfig(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 
+	clientConfig := confighttp.NewDefaultClientConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	clientConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+	clientConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+	clientConfig.ForceAttemptHTTP2 = false
 	assert.Equal(t, &Config{
+		ClientConfig:  clientConfig,
 		BackOffConfig: configretry.NewDefaultBackOffConfig(),
-		QueueSettings: exporterhelper.NewDefaultQueueConfig(),
+		QueueSettings: configoptional.Some(exporterhelper.NewDefaultQueueConfig()),
 	}, cfg, "failed to create default config")
 
 	assert.NoError(t, componenttest.CheckConfigStruct(cfg))
 }
 
 func TestCreateLogs(t *testing.T) {
+	clientConfig := confighttp.NewDefaultClientConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	clientConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+	clientConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+	clientConfig.ForceAttemptHTTP2 = false
+	clientConfig.Endpoint = "http://example.logicmonitor.com/rest"
+
 	tests := []struct {
 		name         string
 		config       Config
@@ -40,9 +53,7 @@ func TestCreateLogs(t *testing.T) {
 		{
 			name: "valid config",
 			config: Config{
-				ClientConfig: confighttp.ClientConfig{
-					Endpoint: "http://example.logicmonitor.com/rest",
-				},
+				ClientConfig: clientConfig,
 			},
 			shouldError: false,
 		},
@@ -52,14 +63,14 @@ func TestCreateLogs(t *testing.T) {
 			factory := NewFactory()
 			cfg := factory.CreateDefaultConfig().(*Config)
 			set := exportertest.NewNopSettings(metadata.Type)
-			oexp, err := factory.CreateLogs(context.Background(), set, cfg)
+			oexp, err := factory.CreateLogs(t.Context(), set, cfg)
 			if (err != nil) != tt.shouldError {
 				t.Errorf("CreateLogs() error = %v, shouldError %v", err, tt.shouldError)
 				return
 			}
 			if tt.shouldError {
 				assert.Error(t, err)
-				if len(tt.errorMessage) != 0 {
+				if tt.errorMessage != "" {
 					assert.Equal(t, tt.errorMessage, err.Error())
 				}
 				return
@@ -71,6 +82,13 @@ func TestCreateLogs(t *testing.T) {
 }
 
 func TestCreateTraces(t *testing.T) {
+	clientConfig := confighttp.NewDefaultClientConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	clientConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+	clientConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+	clientConfig.ForceAttemptHTTP2 = false
+	clientConfig.Endpoint = "http://example.logicmonitor.com/rest"
+
 	tests := []struct {
 		name         string
 		config       Config
@@ -80,9 +98,7 @@ func TestCreateTraces(t *testing.T) {
 		{
 			name: "valid config",
 			config: Config{
-				ClientConfig: confighttp.ClientConfig{
-					Endpoint: "http://example.logicmonitor.com/rest",
-				},
+				ClientConfig: clientConfig,
 			},
 			shouldError: false,
 		},
@@ -92,14 +108,14 @@ func TestCreateTraces(t *testing.T) {
 			factory := NewFactory()
 			cfg := factory.CreateDefaultConfig().(*Config)
 			set := exportertest.NewNopSettings(metadata.Type)
-			oexp, err := factory.CreateTraces(context.Background(), set, cfg)
+			oexp, err := factory.CreateTraces(t.Context(), set, cfg)
 			if (err != nil) != tt.shouldError {
 				t.Errorf("CreateTraces() error = %v, shouldError %v", err, tt.shouldError)
 				return
 			}
 			if tt.shouldError {
 				assert.Error(t, err)
-				if len(tt.errorMessage) != 0 {
+				if tt.errorMessage != "" {
 					assert.Equal(t, tt.errorMessage, err.Error())
 				}
 				return

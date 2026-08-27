@@ -9,6 +9,29 @@ resourceMetrics:
             stringValue: "8081"
     scopeMetrics:
       - metrics:
+          - description: The number of connections in different asynchronous states reported by Apache's server-status.
+            gauge:
+              dataPoints:
+              - asInt: "2"
+                attributes:
+                - key: connection_state
+                  value:
+                    stringValue: writing
+                timeUnixNano: "1632495518500962000"
+              - asInt: "1"
+                attributes:
+                - key: connection_state
+                  value:
+                    stringValue: keepalive
+                timeUnixNano: "1632495518500962000"
+              - asInt: "1"
+                attributes:
+                - key: connection_state
+                  value:
+                    stringValue: closing
+                timeUnixNano: "1632495518500962000"
+            name: apache.connections.async
+            unit: '{connections}'     
           - description: Current load of the CPU.
             gauge:
               dataPoints:
@@ -196,6 +219,15 @@ resourceMetrics:
                   timeUnixNano: "1632495518500962000"
               isMonotonic: true
             unit: s
+          - description: The maximum number of worker slots configured for the HTTP server, derived from the scoreboard length.
+            name: apache.worker.limit
+            sum:
+              aggregationTemporality: 2
+              dataPoints:
+                - asInt: "400"
+                  startTimeUnixNano: "1000000"
+                  timeUnixNano: "1632495518500962000"
+            unit: '{worker}'
           - description: The number of workers currently attached to the HTTP server.
             name: apache.workers
             sum:

@@ -43,8 +43,7 @@ func (u *packetServer) ListenAndServe(
 				u.transport,
 				u.packetConn.LocalAddr(),
 				err)
-			var netErr net.Error
-			if errors.As(err, &netErr) {
+			if netErr, ok := errors.AsType[net.Error](err); ok {
 				if netErr.Timeout() {
 					continue
 				}
@@ -55,7 +54,7 @@ func (u *packetServer) ListenAndServe(
 }
 
 // handlePacket is helper that parses the buffer and split it line by line to be parsed upstream.
-func (u *packetServer) handlePacket(
+func (*packetServer) handlePacket(
 	numBytes int,
 	data []byte,
 	addr net.Addr,

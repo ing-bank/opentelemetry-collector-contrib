@@ -7,54 +7,46 @@ import (
 	"errors"
 	"fmt"
 
-	"go.opentelemetry.io/collector/confmap/xconfmap"
+	"go.opentelemetry.io/collector/confmap"
+
+	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/encoding/awslogsencodingextension/internal/constants"
+	subscriptionfilter "github.com/open-telemetry/opentelemetry-collector-contrib/extension/encoding/awslogsencodingextension/internal/unmarshaler/subscription-filter"
+	vpcflowlog "github.com/open-telemetry/opentelemetry-collector-contrib/extension/encoding/awslogsencodingextension/internal/unmarshaler/vpc-flow-log"
 )
 
-var _ xconfmap.Validator = (*Config)(nil)
-
-const (
-	formatCloudWatchLogsSubscriptionFilter = "cloudwatch_logs_subscription_filter"
-	formatVPCFlowLog                       = "vpc_flow_log"
-	formatS3AccessLog                      = "s3_access_log"
-	formatWAFLog                           = "waf_log"
-
-	fileFormatPlainText = "plain-text"
-	fileFormatParquet   = "parquet"
-)
+var _ confmap.Validator = (*Config)(nil)
 
 var (
 	supportedLogFormats = []string{
-		formatCloudWatchLogsSubscriptionFilter,
-		formatVPCFlowLog,
-		formatS3AccessLog,
-		formatWAFLog,
+		constants.FormatCloudWatchLogsSubscriptionFilter,
+		constants.FormatVPCFlowLog,
+		constants.FormatS3AccessLog,
+		constants.FormatWAFLog,
+		constants.FormatCloudTrailLog,
+		constants.FormatELBAccessLog,
+		constants.FormatNetworkFirewallLog,
 	}
-	supportedVPCFlowLogFileFormat = []string{fileFormatPlainText, fileFormatParquet}
+	supportedVPCFlowLogFileFormat = []string{constants.FileFormatPlainText, constants.FileFormatParquet}
 )
 
 type Config struct {
-	// Format defines the AWS logs format.
-	//
-	// Current valid values are:
-	// - cloudwatch_logs_subscription_filter
-	// - vpc_flow_log
-	// - s3_access_log
-	// - waf_log
+	// Format selects the AWS logs format. See supportedLogFormats for valid values.
 	Format string `mapstructure:"format"`
 
-	VPCFlowLogConfig VPCFlowLogConfig `mapstructure:"vpc_flow_log"`
+	VPCFlowLogConfig vpcflowlog.Config `mapstructure:"vpcflow"`
+
+	// CloudWatch is consulted only when Format is a CloudWatch subscription-filter format.
+	CloudWatch CloudWatchConfig `mapstructure:"cloudwatch"`
 
 	// prevent unkeyed literal initialization
 	_ struct{}
 }
 
-type VPCFlowLogConfig struct {
-	// VPC flow logs sent to S3 have support
-	// for file format in plain text or
-	// parquet. Default is plain text.
-	//
-	// See https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs-s3-path.html.
-	FileFormat string `mapstructure:"file_format"`
+type CloudWatchConfig struct {
+	// Streams routes subscription-filter events to inner encoding extensions
+	// by logGroup/logStream pattern or service name. Empty means no routing.
+	Streams []subscriptionfilter.CloudWatchStream `mapstructure:"streams"`
+
 	// prevent unkeyed literal initialization
 	_ struct{}
 }
@@ -65,23 +57,37 @@ func (cfg *Config) Validate() error {
 	switch cfg.Format {
 	case "":
 		errs = append(errs, fmt.Errorf("format unspecified, expected one of %q", supportedLogFormats))
-	case formatCloudWatchLogsSubscriptionFilter: // valid
-	case formatVPCFlowLog: // valid
-	case formatS3AccessLog: // valid
-	case formatWAFLog: // valid
+	case constants.FormatCloudWatchLogsSubscriptionFilter: // valid
+	case constants.FormatVPCFlowLog: // valid
+	case constants.FormatS3AccessLog: // valid
+	case constants.FormatWAFLog: // valid
+	case constants.FormatCloudTrailLog: // valid
+	case constants.FormatELBAccessLog: // valid
+	case constants.FormatNetworkFirewallLog: // valid
 	default:
 		errs = append(errs, fmt.Errorf("unsupported format %q, expected one of %q", cfg.Format, supportedLogFormats))
 	}
 
 	switch cfg.VPCFlowLogConfig.FileFormat {
-	case fileFormatParquet: // valid
-	case fileFormatPlainText: // valid
+	case constants.FileFormatParquet, constants.FileFormatPlainText:
 	default:
 		errs = append(errs, fmt.Errorf(
 			"unsupported file format %q for VPC flow log, expected one of %q",
 			cfg.VPCFlowLogConfig.FileFormat,
 			supportedVPCFlowLogFileFormat,
 		))
+	}
+
+	if len(cfg.CloudWatch.Streams) > 0 {
+		if cfg.Format != constants.FormatCloudWatchLogsSubscriptionFilter {
+			errs = append(errs, fmt.Errorf(
+				"'cloudwatch.streams' is only valid with format %q; got %q",
+				constants.FormatCloudWatchLogsSubscriptionFilter, cfg.Format,
+			))
+		}
+		if err := subscriptionfilter.ValidateStreams(cfg.CloudWatch.Streams); err != nil {
+			errs = append(errs, err)
+		}
 	}
 
 	if len(errs) > 0 {

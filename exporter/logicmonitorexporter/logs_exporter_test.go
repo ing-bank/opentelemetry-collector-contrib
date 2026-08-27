@@ -25,6 +25,13 @@ import (
 )
 
 func Test_NewLogsExporter(t *testing.T) {
+	clientConfig := confighttp.NewDefaultClientConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	clientConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+	clientConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+	clientConfig.ForceAttemptHTTP2 = false
+	clientConfig.Endpoint = "http://example.logicmonitor.com/rest"
+
 	tests := []struct {
 		name string
 		args struct {
@@ -39,10 +46,8 @@ func Test_NewLogsExporter(t *testing.T) {
 				logger *zap.Logger
 			}{
 				config: &Config{
-					ClientConfig: confighttp.ClientConfig{
-						Endpoint: "http://example.logicmonitor.com/rest",
-					},
-					APIToken: APIToken{AccessID: "testid", AccessKey: "testkey"},
+					ClientConfig: clientConfig,
+					APIToken:     APIToken{AccessID: "testid", AccessKey: "testkey"},
 				},
 				logger: zaptest.NewLogger(t),
 			},
@@ -51,7 +56,7 @@ func Test_NewLogsExporter(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			set := exportertest.NewNopSettings(metadata.Type)
-			exp := newLogsExporter(context.Background(), tt.args.config, set)
+			exp := newLogsExporter(t.Context(), tt.args.config, set)
 			assert.NotNil(t, exp)
 		})
 	}
@@ -68,11 +73,15 @@ func TestPushLogData(t *testing.T) {
 	}))
 	defer ts.Close()
 
+	clientConfig := confighttp.NewDefaultClientConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	clientConfig.MaxIdleConns = 0    //nolint:staticcheck // SA1019: see TODO above
+	clientConfig.IdleConnTimeout = 0 //nolint:staticcheck // SA1019: see TODO above
+	clientConfig.ForceAttemptHTTP2 = false
+	clientConfig.Endpoint = ts.URL
 	cfg := &Config{
-		ClientConfig: confighttp.ClientConfig{
-			Endpoint: ts.URL,
-		},
-		APIToken: APIToken{AccessID: "testid", AccessKey: "testkey"},
+		ClientConfig: clientConfig,
+		APIToken:     APIToken{AccessID: "testid", AccessKey: "testkey"},
 	}
 
 	tests := []struct {
@@ -99,7 +108,7 @@ func TestPushLogData(t *testing.T) {
 				ctx context.Context
 				lg  plog.Logs
 			}{
-				ctx: context.Background(),
+				ctx: t.Context(),
 				lg:  testutil.CreateLogData(1),
 			},
 		},

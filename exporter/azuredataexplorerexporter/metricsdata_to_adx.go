@@ -6,6 +6,7 @@ package azuredataexplorerexporter // import "github.com/open-telemetry/opentelem
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"strconv"
@@ -61,8 +62,9 @@ func mapToAdxMetric(res pcommon.Resource, md pmetric.Metric, scopeattrs map[stri
 	if h := resourceAttrs[hostkey]; h != nil {
 		host = h.(string)
 	}
-	createMetric := func(times time.Time, attr pcommon.Map, value func() float64, name string, desc string, mt pmetric.MetricType) *adxMetric {
-		clonedScopedAttributes := copyMap(cloneMap(scopeattrs), attr.AsRaw())
+	createMetric := func(times time.Time, attr pcommon.Map, value func() float64, name, desc string, mt pmetric.MetricType) *adxMetric {
+		clonedScopedAttributes := maps.Clone(scopeattrs)
+		maps.Copy(clonedScopedAttributes, attr.AsRaw())
 		if isEmpty(name) {
 			name = md.Name()
 		}
@@ -107,24 +109,19 @@ func mapToAdxMetric(res pcommon.Resource, md pmetric.Metric, scopeattrs map[stri
 			dataPoint := dataPoints.At(gi)
 			bounds := dataPoint.ExplicitBounds()
 			counts := dataPoint.BucketCounts()
-			// first, add one event for sum, and one for count
-			{
-				adxMetrics = append(adxMetrics,
-					createMetric(dataPoint.Timestamp().AsTime(), dataPoint.Attributes(), dataPoint.Sum,
-						fmt.Sprintf("%s_%s", md.Name(), sumsuffix),
-						fmt.Sprintf("%s%s", md.Description(), sumdescription),
-						pmetric.MetricTypeHistogram))
-			}
-			{
-				adxMetrics = append(adxMetrics,
-					createMetric(dataPoint.Timestamp().AsTime(), dataPoint.Attributes(), func() float64 {
-						// Change int to float. The value is a float64 in the table
-						return float64(dataPoint.Count())
-					},
-						fmt.Sprintf("%s_%s", md.Name(), countsuffix),
-						fmt.Sprintf("%s%s", md.Description(), countdescription),
-						pmetric.MetricTypeHistogram))
-			}
+			adxMetrics = append(adxMetrics,
+				// first, add one event for sum, and one for count
+				createMetric(dataPoint.Timestamp().AsTime(), dataPoint.Attributes(), dataPoint.Sum,
+					fmt.Sprintf("%s_%s", md.Name(), sumsuffix),
+					fmt.Sprintf("%s%s", md.Description(), sumdescription),
+					pmetric.MetricTypeHistogram),
+				createMetric(dataPoint.Timestamp().AsTime(), dataPoint.Attributes(), func() float64 {
+					// Change int to float. The value is a float64 in the table
+					return float64(dataPoint.Count())
+				},
+					fmt.Sprintf("%s_%s", md.Name(), countsuffix),
+					fmt.Sprintf("%s%s", md.Description(), countdescription),
+					pmetric.MetricTypeHistogram))
 			// Spec says counts is optional but if present it must have one more
 			// element than the bounds array.
 			if counts.Len() == 0 || counts.Len() != bounds.Len()+1 {
@@ -133,7 +130,8 @@ func mapToAdxMetric(res pcommon.Resource, md pmetric.Metric, scopeattrs map[stri
 			value := uint64(0)
 			// now create buckets for each bound.
 			for bi := 0; bi < bounds.Len(); bi++ {
-				customMap := copyMap(map[string]any{"le": float64ToDimValue(bounds.At(bi))}, dataPoint.Attributes().AsRaw())
+				customMap := map[string]any{"le": float64ToDimValue(bounds.At(bi))}
+				maps.Copy(customMap, dataPoint.Attributes().AsRaw())
 
 				value += counts.At(bi)
 				vMap := pcommon.NewMap()
@@ -150,9 +148,9 @@ func mapToAdxMetric(res pcommon.Resource, md pmetric.Metric, scopeattrs map[stri
 			// add an upper bound for +Inf
 			{
 				// Add the LE field for the bucket's bound
-				customMap := copyMap(map[string]any{
-					"le": float64ToDimValue(math.Inf(1)),
-				}, dataPoint.Attributes().AsRaw())
+				customMap := map[string]any{"le": float64ToDimValue(math.Inf(1))}
+				maps.Copy(customMap, dataPoint.Attributes().AsRaw())
+
 				vMap := pcommon.NewMap()
 				//nolint:errcheck
 				vMap.FromRaw(customMap)
@@ -188,16 +186,14 @@ func mapToAdxMetric(res pcommon.Resource, md pmetric.Metric, scopeattrs map[stri
 		var adxMetrics []*adxMetric
 		for gi := 0; gi < dataPoints.Len(); gi++ {
 			dataPoint := dataPoints.At(gi)
-			// first, add one event for sum, and one for count
-			{
-				adxMetrics = append(adxMetrics, createMetric(dataPoint.Timestamp().AsTime(), dataPoint.Attributes(), dataPoint.Sum,
+			adxMetrics = append(adxMetrics,
+				// first, add one event for sum, and one for count
+				createMetric(dataPoint.Timestamp().AsTime(), dataPoint.Attributes(), dataPoint.Sum,
 					fmt.Sprintf("%s_%s", md.Name(), sumsuffix),
 					fmt.Sprintf("%s%s", md.Description(), sumdescription),
-					pmetric.MetricTypeSummary))
-			}
-			// counts
-			{
-				adxMetrics = append(adxMetrics, createMetric(dataPoint.Timestamp().AsTime(),
+					pmetric.MetricTypeSummary),
+				// counts
+				createMetric(dataPoint.Timestamp().AsTime(),
 					dataPoint.Attributes(),
 					func() float64 {
 						return float64(dataPoint.Count())
@@ -205,7 +201,6 @@ func mapToAdxMetric(res pcommon.Resource, md pmetric.Metric, scopeattrs map[stri
 					fmt.Sprintf("%s_%s", md.Name(), countsuffix),
 					fmt.Sprintf("%s%s", md.Description(), countdescription),
 					pmetric.MetricTypeSummary))
-			}
 			// now create values for each quantile.
 			for bi := 0; bi < dataPoint.QuantileValues().Len(); bi++ {
 				dp := dataPoint.QuantileValues().At(bi)
@@ -214,7 +209,8 @@ func mapToAdxMetric(res pcommon.Resource, md pmetric.Metric, scopeattrs map[stri
 					"qt":         float64ToDimValue(dp.Quantile()),
 					quantileName: sanitizeFloat(dp.Value()).(float64),
 				}
-				customMap := copyMap(metricQuantile, dataPoint.Attributes().AsRaw())
+				customMap := metricQuantile
+				maps.Copy(customMap, dataPoint.Attributes().AsRaw())
 				vMap := pcommon.NewMap()
 				//nolint:errcheck
 				vMap.FromRaw(customMap)
@@ -227,12 +223,11 @@ func mapToAdxMetric(res pcommon.Resource, md pmetric.Metric, scopeattrs map[stri
 			}
 		}
 		return adxMetrics
-	case pmetric.MetricTypeExponentialHistogram, pmetric.MetricTypeEmpty:
-		fallthrough
 	default:
 		logger.Warn(
 			"Unsupported metric type : ",
-			zap.Any("metric", md))
+			zap.Any("metric", md),
+		)
 		return nil
 	}
 }
@@ -255,18 +250,6 @@ func rawMetricsToAdxMetrics(_ context.Context, metrics pmetric.Metrics, logger *
 		}
 	}
 	return transformedAdxMetrics
-}
-
-func copyMap(toAttrib map[string]any, fromAttrib map[string]any) map[string]any {
-	for k, v := range fromAttrib {
-		toAttrib[k] = v
-	}
-	return toAttrib
-}
-
-func cloneMap(fields map[string]any) map[string]any {
-	newFields := make(map[string]any, len(fields))
-	return copyMap(newFields, fields)
 }
 
 func float64ToDimValue(f float64) string {

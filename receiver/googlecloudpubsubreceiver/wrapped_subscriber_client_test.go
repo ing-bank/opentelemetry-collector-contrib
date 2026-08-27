@@ -4,10 +4,9 @@
 package googlecloudpubsubreceiver
 
 import (
-	"context"
 	"testing"
 
-	pubsub "cloud.google.com/go/pubsub/apiv1"
+	pubsub "cloud.google.com/go/pubsub/v2/apiv1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/api/option"
@@ -70,13 +69,31 @@ func TestGenerateClientOptions(t *testing.T) {
 		assert.Equal(t, option.WithUserAgent("test-user-agent 1234"), gotOptions[0])
 		assert.IsType(t, option.WithGRPCConn(nil), gotOptions[1])
 	})
+
+	t.Run("universe domain", func(t *testing.T) {
+		cfg := factory.CreateDefaultConfig().(*Config)
+		cfg.ProjectID = "my-sovereign-project"
+		cfg.Subscription = "projects/my-sovereign-project/subscriptions/otlp-subscription"
+		cfg.UniverseDomain = "apis.example.com"
+
+		require.NoError(t, cfg.validate())
+
+		gotOptions, closeConnFn, err := generateClientOptions(cfg, "")
+		assert.NoError(t, err)
+		assert.Empty(t, closeConnFn)
+
+		expectedOptions := []option.ClientOption{
+			option.WithUniverseDomain("apis.example.com"),
+		}
+		assert.ElementsMatch(t, expectedOptions, gotOptions)
+	})
 }
 
 func TestNewSubscriberClient(t *testing.T) {
 	// The subscriber client checks for credentials during init
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "testdata/gcp-fake-creds.json")
 
-	ctx := context.Background()
+	ctx := t.Context()
 	factory := NewFactory()
 
 	t.Run("defaults", func(t *testing.T) {
@@ -89,7 +106,7 @@ func TestNewSubscriberClient(t *testing.T) {
 		client, err := newSubscriberClient(ctx, cfg, "test-user-agent 6789")
 		assert.NoError(t, err)
 		require.NotEmpty(t, client)
-		assert.IsType(t, &pubsub.SubscriberClient{}, client)
+		assert.IsType(t, &pubsub.SubscriptionAdminClient{}, client)
 		assert.NoError(t, client.Close())
 	})
 
@@ -104,7 +121,7 @@ func TestNewSubscriberClient(t *testing.T) {
 		client, err := newSubscriberClient(ctx, cfg, "test-user-agent 6789")
 		assert.NoError(t, err)
 		require.NotEmpty(t, client)
-		assert.IsType(t, &pubsub.SubscriberClient{}, client)
+		assert.IsType(t, &pubsub.SubscriptionAdminClient{}, client)
 		assert.NoError(t, client.Close())
 	})
 

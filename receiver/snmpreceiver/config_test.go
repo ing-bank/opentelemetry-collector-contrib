@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
-	"go.opentelemetry.io/collector/confmap/xconfmap"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/snmpreceiver/internal/metadata"
 )
@@ -256,9 +256,9 @@ func TestLoadConfigConnectionConfigs(t *testing.T) {
 			cfg := factory.CreateDefaultConfig()
 			require.NoError(t, sub.Unmarshal(cfg))
 			if test.expectedErr == "" {
-				require.NoError(t, xconfmap.Validate(cfg))
+				require.NoError(t, confmap.Validate(cfg))
 			} else {
-				require.ErrorContains(t, xconfmap.Validate(cfg), test.expectedErr)
+				require.ErrorContains(t, confmap.Validate(cfg), test.expectedErr)
 			}
 
 			require.Equal(t, test.expectedCfg, cfg)
@@ -266,7 +266,7 @@ func TestLoadConfigConnectionConfigs(t *testing.T) {
 	}
 }
 
-func getBaseMetricConfig(gauge bool, scalar bool) map[string]*MetricConfig {
+func getBaseMetricConfig(gauge, scalar bool) map[string]*MetricConfig {
 	metricCfg := map[string]*MetricConfig{
 		"m3": {
 			Unit: "By",
@@ -1000,9 +1000,9 @@ func TestLoadConfigMetricConfigs(t *testing.T) {
 			cfg := factory.CreateDefaultConfig()
 			require.NoError(t, sub.Unmarshal(cfg))
 			if test.expectedErr == "" {
-				require.NoError(t, xconfmap.Validate(cfg))
+				require.NoError(t, confmap.Validate(cfg))
 			} else {
-				require.ErrorContains(t, xconfmap.Validate(cfg), test.expectedErr)
+				require.ErrorContains(t, confmap.Validate(cfg), test.expectedErr)
 			}
 
 			require.Equal(t, test.expectedCfg, cfg)

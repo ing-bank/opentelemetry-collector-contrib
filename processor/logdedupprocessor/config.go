@@ -47,17 +47,23 @@ type Config struct {
 	ExcludeFields     []string      `mapstructure:"exclude_fields"`
 	IncludeFields     []string      `mapstructure:"include_fields"`
 	Conditions        []string      `mapstructure:"conditions"`
+	MetadataKeys      []string      `mapstructure:"metadata_keys"`
+	// MetadataCardinalityLimit limits the number of unique metadata combinations
+	// tracked simultaneously. 0 (default) means unbounded.
+	MetadataCardinalityLimit uint32 `mapstructure:"metadata_cardinality_limit"`
 }
 
 // createDefaultConfig returns the default config for the processor.
 func createDefaultConfig() component.Config {
 	return &Config{
-		LogCountAttribute: defaultLogCountAttribute,
-		Interval:          defaultInterval,
-		Timezone:          defaultTimezone,
-		ExcludeFields:     []string{},
-		IncludeFields:     []string{},
-		Conditions:        []string{},
+		LogCountAttribute:        defaultLogCountAttribute,
+		Interval:                 defaultInterval,
+		Timezone:                 defaultTimezone,
+		ExcludeFields:            []string{},
+		IncludeFields:            []string{},
+		Conditions:               []string{},
+		MetadataKeys:             []string{},
+		MetadataCardinalityLimit: 0,
 	}
 }
 
@@ -80,11 +86,18 @@ func (c Config) Validate() error {
 		return errors.New("cannot define both exclude_fields and include_fields")
 	}
 
-	if err = c.validateExcludeFields(); err != nil {
+	err = c.validateExcludeFields()
+	if err != nil {
 		return err
 	}
 
-	if err = c.validateIncludeFields(); err != nil {
+	err = c.validateIncludeFields()
+	if err != nil {
+		return err
+	}
+
+	err = c.validateMetadataKeys()
+	if err != nil {
 		return err
 	}
 
@@ -115,6 +128,19 @@ func (c Config) validateExcludeFields() error {
 		knownExcludeFields[field] = struct{}{}
 	}
 
+	return nil
+}
+
+// validateMetadataKeys validates that metadata_keys has no duplicates (case-insensitive).
+func (c Config) validateMetadataKeys() error {
+	seen := make(map[string]struct{}, len(c.MetadataKeys))
+	for _, k := range c.MetadataKeys {
+		lk := strings.ToLower(k)
+		if _, ok := seen[lk]; ok {
+			return fmt.Errorf("duplicate metadata_key %q", lk)
+		}
+		seen[lk] = struct{}{}
+	}
 	return nil
 }
 

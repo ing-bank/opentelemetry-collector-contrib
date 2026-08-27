@@ -6,7 +6,6 @@
 package windowseventlogreceiver
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -18,13 +17,13 @@ import (
 )
 
 func TestDefaultConfigFailure(t *testing.T) {
-	factory := newFactoryAdapter()
+	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 	require.NotNil(t, cfg, "failed to create default config")
 	require.NoError(t, componenttest.CheckConfigStruct(cfg))
 
 	receiver, err := factory.CreateLogs(
-		context.Background(),
+		t.Context(),
 		receivertest.NewNopSettings(metadata.Type),
 		cfg,
 		new(consumertest.LogsSink),

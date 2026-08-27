@@ -4,11 +4,14 @@
 package pprofiletest
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pprofile"
+	"go.opentelemetry.io/collector/pdata/testdata"
 )
 
 func Test_validateProfile(t *testing.T) {
@@ -42,21 +45,7 @@ func Test_validateProfile(t *testing.T) {
 				return dic
 			}(),
 			profile: pprofile.NewProfile(),
-			wantErr: assert.Error,
-		},
-		{
-			name: "invalid sample type",
-			dictionary: func() pprofile.ProfilesDictionary {
-				dic := pprofile.NewProfilesDictionary()
-				dic.StringTable().Append("")
-				return dic
-			}(),
-			profile: func() pprofile.Profile {
-				pp := pprofile.NewProfile()
-				pp.SampleType().AppendEmpty()
-				return pp
-			}(),
-			wantErr: assert.Error,
+			wantErr: assert.NoError,
 		},
 		{
 			name: "invalid sample",
@@ -67,49 +56,8 @@ func Test_validateProfile(t *testing.T) {
 			}(),
 			profile: func() pprofile.Profile {
 				pp := pprofile.NewProfile()
-				st := pp.SampleType().AppendEmpty()
-				st.SetAggregationTemporality(pprofile.AggregationTemporalityDelta)
-				pp.PeriodType().SetAggregationTemporality(pprofile.AggregationTemporalityDelta)
-				pp.Sample().AppendEmpty()
-				return pp
-			}(),
-			wantErr: assert.Error,
-		},
-		{
-			name: "invalid default sample type string index",
-			dictionary: func() pprofile.ProfilesDictionary {
-				dic := pprofile.NewProfilesDictionary()
-				dic.StringTable().Append("")
-				return dic
-			}(),
-			profile: func() pprofile.Profile {
-				pp := pprofile.NewProfile()
-				st := pp.SampleType().AppendEmpty()
-				st.SetAggregationTemporality(pprofile.AggregationTemporalityDelta)
-				pp.PeriodType().SetAggregationTemporality(pprofile.AggregationTemporalityDelta)
-				s := pp.Sample().AppendEmpty()
-				s.Value().Append(0)
-				pp.SetDefaultSampleTypeIndex(1)
-				return pp
-			}(),
-			wantErr: assert.Error,
-		},
-		{
-			name: "invalid comment string index",
-			dictionary: func() pprofile.ProfilesDictionary {
-				dic := pprofile.NewProfilesDictionary()
-				dic.StringTable().Append("")
-				return dic
-			}(),
-			profile: func() pprofile.Profile {
-				pp := pprofile.NewProfile()
-				st := pp.SampleType().AppendEmpty()
-				st.SetAggregationTemporality(pprofile.AggregationTemporalityDelta)
-				pp.PeriodType().SetAggregationTemporality(pprofile.AggregationTemporalityDelta)
-				s := pp.Sample().AppendEmpty()
-				s.Value().Append(0)
-				pp.SetDefaultSampleTypeIndex(0)
-				pp.CommentStrindices().Append(1)
+				s := pp.Samples().AppendEmpty()
+				s.SetLinkIndex(42)
 				return pp
 			}(),
 			wantErr: assert.Error,
@@ -123,13 +71,8 @@ func Test_validateProfile(t *testing.T) {
 			}(),
 			profile: func() pprofile.Profile {
 				pp := pprofile.NewProfile()
-				st := pp.SampleType().AppendEmpty()
-				st.SetAggregationTemporality(pprofile.AggregationTemporalityDelta)
-				pp.PeriodType().SetAggregationTemporality(pprofile.AggregationTemporalityDelta)
-				s := pp.Sample().AppendEmpty()
-				s.Value().Append(0)
-				pp.SetDefaultSampleTypeIndex(0)
-				pp.CommentStrindices().Append(0)
+				s := pp.Samples().AppendEmpty()
+				s.Values().Append(0)
 				pp.AttributeIndices().Append(1)
 				return pp
 			}(),
@@ -140,19 +83,14 @@ func Test_validateProfile(t *testing.T) {
 			dictionary: func() pprofile.ProfilesDictionary {
 				dic := pprofile.NewProfilesDictionary()
 				dic.StringTable().Append("")
-				au := dic.AttributeUnits().AppendEmpty()
-				au.SetAttributeKeyStrindex(1)
+				au := dic.AttributeTable().AppendEmpty()
+				au.SetKeyStrindex(1)
 				return dic
 			}(),
 			profile: func() pprofile.Profile {
 				pp := pprofile.NewProfile()
-				st := pp.SampleType().AppendEmpty()
-				st.SetAggregationTemporality(pprofile.AggregationTemporalityDelta)
-				pp.PeriodType().SetAggregationTemporality(pprofile.AggregationTemporalityDelta)
-				s := pp.Sample().AppendEmpty()
-				s.Value().Append(0)
-				pp.SetDefaultSampleTypeIndex(0)
-				pp.CommentStrindices().Append(0)
+				s := pp.Samples().AppendEmpty()
+				s.Values().Append(0)
 				pp.AttributeIndices().Append(0)
 				return pp
 			}(),
@@ -163,23 +101,18 @@ func Test_validateProfile(t *testing.T) {
 			dictionary: func() pprofile.ProfilesDictionary {
 				dic := pprofile.NewProfilesDictionary()
 				dic.StringTable().Append("")
-				au := dic.AttributeUnits().AppendEmpty()
-				au.SetAttributeKeyStrindex(0)
+				au := dic.AttributeTable().AppendEmpty()
+				au.SetKeyStrindex(0)
 				return dic
 			}(),
 			profile: func() pprofile.Profile {
 				pp := pprofile.NewProfile()
-				st := pp.SampleType().AppendEmpty()
-				st.SetAggregationTemporality(pprofile.AggregationTemporalityDelta)
-				pp.PeriodType().SetAggregationTemporality(pprofile.AggregationTemporalityDelta)
-				s := pp.Sample().AppendEmpty()
-				s.Value().Append(0)
-				pp.SetDefaultSampleTypeIndex(0)
-				pp.CommentStrindices().Append(0)
+				s := pp.Samples().AppendEmpty()
+				s.Values().Append(0)
 				pp.AttributeIndices().Append(0)
 				return pp
 			}(),
-			wantErr: assert.Error,
+			wantErr: assert.NoError,
 		},
 	}
 	for _, tt := range tests {
@@ -216,7 +149,7 @@ func Test_validateSampleTypes(t *testing.T) {
 			name:       "empty",
 			dictionary: pprofile.NewProfilesDictionary(),
 			profile:    pprofile.NewProfile(),
-			wantErr:    assert.NoError,
+			wantErr:    assert.Error,
 		},
 		{
 			name: "valid",
@@ -227,10 +160,6 @@ func Test_validateSampleTypes(t *testing.T) {
 			}(),
 			profile: func() pprofile.Profile {
 				pp := pprofile.NewProfile()
-				s := pp.SampleType().AppendEmpty()
-				s.SetAggregationTemporality(pprofile.AggregationTemporalityDelta)
-				s = pp.SampleType().AppendEmpty()
-				s.SetAggregationTemporality(pprofile.AggregationTemporalityCumulative)
 				return pp
 			}(),
 			wantErr: assert.NoError,
@@ -244,10 +173,7 @@ func Test_validateSampleTypes(t *testing.T) {
 			}(),
 			profile: func() pprofile.Profile {
 				pp := pprofile.NewProfile()
-				s := pp.SampleType().AppendEmpty()
-				s.SetAggregationTemporality(pprofile.AggregationTemporalityDelta)
-				s = pp.SampleType().AppendEmpty()
-				s.SetAggregationTemporality(3)
+				pp.SampleType().SetTypeStrindex(3)
 				return pp
 			}(),
 			wantErr: assert.Error,
@@ -274,16 +200,6 @@ func Test_validateValueType(t *testing.T) {
 			wantErr:    assert.Error,
 		},
 		{
-			name: "invalid aggregation temporality",
-			dictionary: func() pprofile.ProfilesDictionary {
-				dic := pprofile.NewProfilesDictionary()
-				dic.StringTable().Append("")
-				return dic
-			}(),
-			valueType: pprofile.NewValueType(),
-			wantErr:   assert.Error,
-		},
-		{
 			name: "unit string index out of range",
 			dictionary: func() pprofile.ProfilesDictionary {
 				dic := pprofile.NewProfilesDictionary()
@@ -292,7 +208,6 @@ func Test_validateValueType(t *testing.T) {
 			}(),
 			valueType: func() pprofile.ValueType {
 				pp := pprofile.NewValueType()
-				pp.SetAggregationTemporality(pprofile.AggregationTemporalityDelta)
 				pp.SetUnitStrindex(1)
 				return pp
 			}(),
@@ -307,7 +222,6 @@ func Test_validateValueType(t *testing.T) {
 			}(),
 			valueType: func() pprofile.ValueType {
 				pp := pprofile.NewValueType()
-				pp.SetAggregationTemporality(pprofile.AggregationTemporalityDelta)
 				return pp
 			}(),
 			wantErr: assert.NoError,
@@ -321,7 +235,6 @@ func Test_validateValueType(t *testing.T) {
 			}(),
 			valueType: func() pprofile.ValueType {
 				pp := pprofile.NewValueType()
-				pp.SetAggregationTemporality(pprofile.AggregationTemporalityCumulative)
 				return pp
 			}(),
 			wantErr: assert.NoError,
@@ -352,8 +265,8 @@ func Test_validateSamples(t *testing.T) {
 			dictionary: pprofile.NewProfilesDictionary(),
 			profile: func() pprofile.Profile {
 				pp := pprofile.NewProfile()
-				pp.Sample().AppendEmpty()
-				pp.Sample().AppendEmpty()
+				pp.Samples().AppendEmpty()
+				pp.Samples().AppendEmpty()
 				return pp
 			}(),
 			wantErr: assert.NoError,
@@ -363,8 +276,8 @@ func Test_validateSamples(t *testing.T) {
 			dictionary: pprofile.NewProfilesDictionary(),
 			profile: func() pprofile.Profile {
 				pp := pprofile.NewProfile()
-				pp.Sample().AppendEmpty()
-				s := pp.Sample().AppendEmpty()
+				pp.Samples().AppendEmpty()
+				s := pp.Samples().AppendEmpty()
 				s.TimestampsUnixNano().Append(123)
 				return pp
 			}(),
@@ -392,100 +305,6 @@ func Test_validateSample(t *testing.T) {
 			profile:    pprofile.NewProfile(),
 			sample:     pprofile.NewSample(),
 			wantErr:    assert.NoError,
-		},
-		{
-			name:       "negative location length",
-			dictionary: pprofile.NewProfilesDictionary(),
-			profile:    pprofile.NewProfile(),
-			sample: func() pprofile.Sample {
-				s := pprofile.NewSample()
-				s.SetLocationsLength(-1)
-				return s
-			}(),
-			wantErr: assert.Error,
-		},
-		{
-			name:       "location length out of range",
-			dictionary: pprofile.NewProfilesDictionary(),
-			profile:    pprofile.NewProfile(),
-			sample: func() pprofile.Sample {
-				s := pprofile.NewSample()
-				s.SetLocationsStartIndex(0)
-				s.SetLocationsLength(1)
-				return s
-			}(),
-			wantErr: assert.Error,
-		},
-		{
-			name: "location start plus location length in range",
-			dictionary: func() pprofile.ProfilesDictionary {
-				dic := pprofile.NewProfilesDictionary()
-				dic.LocationTable().AppendEmpty()
-				return dic
-			}(),
-			profile: func() pprofile.Profile {
-				pp := pprofile.NewProfile()
-				pp.LocationIndices().Append(0)
-				return pp
-			}(),
-			sample: func() pprofile.Sample {
-				s := pprofile.NewSample()
-				s.SetLocationsStartIndex(0)
-				s.SetLocationsLength(1)
-				return s
-			}(),
-			wantErr: assert.NoError,
-		},
-		{
-			name: "location start plus location length out of range",
-			dictionary: func() pprofile.ProfilesDictionary {
-				dic := pprofile.NewProfilesDictionary()
-				dic.LocationTable().AppendEmpty()
-				return dic
-			}(),
-			profile: func() pprofile.Profile {
-				pp := pprofile.NewProfile()
-				pp.LocationIndices().Append(0)
-				return pp
-			}(),
-			sample: func() pprofile.Sample {
-				s := pprofile.NewSample()
-				s.SetLocationsStartIndex(0)
-				s.SetLocationsLength(2)
-				return s
-			}(),
-			wantErr: assert.Error,
-		},
-		{
-			name: "location index out of range",
-			dictionary: func() pprofile.ProfilesDictionary {
-				dic := pprofile.NewProfilesDictionary()
-				dic.LocationTable().AppendEmpty()
-				return dic
-			}(),
-			profile: func() pprofile.Profile {
-				pp := pprofile.NewProfile()
-				pp.LocationIndices().Append(1)
-				return pp
-			}(),
-			sample: func() pprofile.Sample {
-				s := pprofile.NewSample()
-				s.SetLocationsStartIndex(0)
-				s.SetLocationsLength(1)
-				return s
-			}(),
-			wantErr: assert.Error,
-		},
-		{
-			name:       "sample type length does not match",
-			dictionary: pprofile.NewProfilesDictionary(),
-			profile:    pprofile.NewProfile(),
-			sample: func() pprofile.Sample {
-				s := pprofile.NewSample()
-				s.Value().Append(123)
-				return s
-			}(),
-			wantErr: assert.Error,
 		},
 		{
 			name: "attribute in range",
@@ -529,7 +348,7 @@ func Test_validateSample(t *testing.T) {
 			profile: func() pprofile.Profile {
 				pp := pprofile.NewProfile()
 				pp.SetTime(1)
-				pp.SetDuration(1)
+				pp.SetDurationNano(1)
 				return pp
 			}(),
 			sample: func() pprofile.Sample {
@@ -545,7 +364,7 @@ func Test_validateSample(t *testing.T) {
 			profile: func() pprofile.Profile {
 				pp := pprofile.NewProfile()
 				pp.SetTime(1)
-				pp.SetDuration(1)
+				pp.SetDurationNano(1)
 				return pp
 			}(),
 			sample: func() pprofile.Sample {
@@ -561,7 +380,7 @@ func Test_validateSample(t *testing.T) {
 			profile: func() pprofile.Profile {
 				pp := pprofile.NewProfile()
 				pp.SetTime(1)
-				pp.SetDuration(1)
+				pp.SetDurationNano(1)
 				return pp
 			}(),
 			sample: func() pprofile.Sample {
@@ -657,7 +476,7 @@ func Test_validateLocation(t *testing.T) {
 			location: func() pprofile.Location {
 				l := pprofile.NewLocation()
 				l.AttributeIndices().Append(0)
-				l.Line().AppendEmpty()
+				l.Lines().AppendEmpty()
 				return l
 			}(),
 			wantErr: assert.NoError,
@@ -762,7 +581,7 @@ func Test_validateMapping(t *testing.T) {
 	}
 }
 
-func Test_validateAttributeUnits(t *testing.T) {
+func Test_validateKeyValueAndUnitsUnits(t *testing.T) {
 	tests := []struct {
 		name       string
 		dictionary pprofile.ProfilesDictionary
@@ -778,7 +597,7 @@ func Test_validateAttributeUnits(t *testing.T) {
 			dictionary: func() pprofile.ProfilesDictionary {
 				dic := pprofile.NewProfilesDictionary()
 				dic.StringTable().Append("")
-				dic.AttributeUnits().AppendEmpty()
+				dic.AttributeTable().AppendEmpty()
 				return dic
 			}(),
 			wantErr: assert.NoError,
@@ -788,7 +607,7 @@ func Test_validateAttributeUnits(t *testing.T) {
 			dictionary: func() pprofile.ProfilesDictionary {
 				dic := pprofile.NewProfilesDictionary()
 				dic.StringTable().Append("")
-				au := dic.AttributeUnits().AppendEmpty()
+				au := dic.AttributeTable().AppendEmpty()
 				au.SetUnitStrindex(1)
 				return dic
 			}(),
@@ -799,8 +618,8 @@ func Test_validateAttributeUnits(t *testing.T) {
 			dictionary: func() pprofile.ProfilesDictionary {
 				dic := pprofile.NewProfilesDictionary()
 				dic.StringTable().Append("")
-				au := dic.AttributeUnits().AppendEmpty()
-				au.SetAttributeKeyStrindex(1)
+				au := dic.AttributeTable().AppendEmpty()
+				au.SetKeyStrindex(1)
 				return dic
 			}(),
 			wantErr: assert.Error,
@@ -808,22 +627,22 @@ func Test_validateAttributeUnits(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tt.wantErr(t, validateAttributeUnits(tt.dictionary))
+			tt.wantErr(t, validateKeyValueAndUnits(tt.dictionary))
 		})
 	}
 }
 
-func Test_validateAttributeUnitAt(t *testing.T) {
+func Test_validateKeyValueAndUnit(t *testing.T) {
 	tests := []struct {
 		name       string
 		dictionary pprofile.ProfilesDictionary
-		attrUnit   pprofile.AttributeUnit
+		attrUnit   pprofile.KeyValueAndUnit
 		wantErr    assert.ErrorAssertionFunc
 	}{
 		{
 			name:       "out of range",
 			dictionary: pprofile.NewProfilesDictionary(),
-			attrUnit:   pprofile.NewAttributeUnit(),
+			attrUnit:   pprofile.NewKeyValueAndUnit(),
 			wantErr:    assert.Error,
 		},
 		{
@@ -833,13 +652,32 @@ func Test_validateAttributeUnitAt(t *testing.T) {
 				dic.StringTable().Append("")
 				return dic
 			}(),
-			attrUnit: pprofile.NewAttributeUnit(),
+			attrUnit: pprofile.NewKeyValueAndUnit(),
 			wantErr:  assert.NoError,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tt.wantErr(t, validateAttributeUnit(tt.dictionary, tt.attrUnit))
+			tt.wantErr(t, validateKeyValueAndUnit(tt.dictionary, tt.attrUnit))
 		})
+	}
+}
+
+func TestGeneratedData(t *testing.T) {
+	data := testdata.GenerateProfiles(3)
+
+	for i := range data.ResourceProfiles().Len() {
+		rp := data.ResourceProfiles().At(i)
+		for j := range rp.ScopeProfiles().Len() {
+			sp := rp.ScopeProfiles().At(j)
+			for k := range sp.Profiles().Len() {
+				p := sp.Profiles().At(k)
+				err := ValidateProfile(data.Dictionary(), p)
+				if err != nil {
+					err = fmt.Errorf("profile ResourceProfiles[%d]ScopeProfiles[%d]Profiles[%d]: %w", i, j, k, err)
+				}
+				require.NoError(t, err)
+			}
+		}
 	}
 }

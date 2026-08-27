@@ -7,14 +7,12 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/IBM/sarama"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/receiver"
 	"go.opentelemetry.io/collector/scraper"
 	"go.opentelemetry.io/collector/scraper/scraperhelper"
 
-	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/kafka"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/kafkametricsreceiver/internal/metadata"
 )
 
@@ -24,14 +22,12 @@ var (
 	brokersScraperType   = component.MustNewType("brokers")
 	topicsScraperType    = component.MustNewType("topics")
 	consumersScraperType = component.MustNewType("consumers")
-	allScrapers          = map[string]createKafkaScraper{
-		brokersScraperType.String():   createBrokerScraper,
-		topicsScraperType.String():    createTopicsScraper,
-		consumersScraperType.String(): createConsumerScraper,
-	}
 
-	newSaramaClient = kafka.NewSaramaClient
-	newClusterAdmin = sarama.NewClusterAdminFromClient
+	allScrapers = map[string]createKafkaScraper{
+		brokersScraperType.String():   createBrokerScraperFranz,
+		topicsScraperType.String():    createTopicsScraperFranz,
+		consumersScraperType.String(): createConsumerScraperFranz,
+	}
 )
 
 var newMetricsReceiver = func(
@@ -41,16 +37,16 @@ var newMetricsReceiver = func(
 	consumer consumer.Metrics,
 ) (receiver.Metrics, error) {
 	scraperControllerOptions := make([]scraperhelper.ControllerOption, 0, len(config.Scrapers))
-	for _, scraper := range config.Scrapers {
-		if s, ok := allScrapers[scraper]; ok {
-			s, err := s(ctx, config, params)
-			if err != nil {
-				return nil, err
-			}
-			scraperControllerOptions = append(scraperControllerOptions, scraperhelper.AddScraper(metadata.Type, s))
-			continue
+	for _, key := range config.Scrapers {
+		factory, ok := allScrapers[key]
+		if !ok {
+			return nil, fmt.Errorf("no scraper found for key: %s", key)
 		}
-		return nil, fmt.Errorf("no scraper found for key: %s", scraper)
+		s, err := factory(ctx, config, params)
+		if err != nil {
+			return nil, err
+		}
+		scraperControllerOptions = append(scraperControllerOptions, scraperhelper.AddMetricsScraper(metadata.Type, s))
 	}
 
 	return scraperhelper.NewMetricsController(

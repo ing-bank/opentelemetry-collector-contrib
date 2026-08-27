@@ -5,11 +5,14 @@ package azureblobexporter // import "github.com/open-telemetry/opentelemetry-col
 
 import (
 	"context"
+	"time"
 
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configretry"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
+	"go.opentelemetry.io/collector/exporter/xexporter"
 	"go.opentelemetry.io/collector/pipeline"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/azureblobexporter/internal/metadata"
@@ -23,39 +26,47 @@ const (
 
 // NewFactory creates a factory for Azure Blob exporter.
 func NewFactory() exporter.Factory {
-	return exporter.NewFactory(
+	return xexporter.NewFactory(
 		metadata.Type,
 		createDefaultConfig,
-		exporter.WithTraces(createTracesExporter, metadata.TracesStability),
-		exporter.WithLogs(createLogsExporter, metadata.LogsStability),
-		exporter.WithMetrics(createMetricsExporter, metadata.MetricsStability),
+		xexporter.WithTraces(createTracesExporter, metadata.TracesStability),
+		xexporter.WithLogs(createLogsExporter, metadata.LogsStability),
+		xexporter.WithMetrics(createMetricsExporter, metadata.MetricsStability),
+		xexporter.WithDeprecatedTypeAlias(metadata.DeprecatedType),
 	)
 }
 
 func createDefaultConfig() component.Config {
 	return &Config{
-		Auth: &Authentication{
+		QueueSettings:   configoptional.Default(exporterhelper.NewDefaultQueueConfig()),
+		TimeoutSettings: exporterhelper.TimeoutConfig{Timeout: 30 * time.Second},
+		Auth: Authentication{
 			Type: ConnectionString,
 		},
-		Container: &TelemetryConfig{
+		Container: TelemetryConfig{
 			Metrics: "metrics",
 			Logs:    "logs",
 			Traces:  "traces",
 		},
-		BlobNameFormat: &BlobNameFormat{
-			MetricsFormat:  "2006/01/02/metrics_15_04_05.json",
-			LogsFormat:     "2006/01/02/logs_15_04_05.json",
-			TracesFormat:   "2006/01/02/traces_15_04_05.json",
-			SerialNumRange: 10000,
-			Params:         map[string]string{},
+		BlobNameFormat: BlobNameFormat{
+			MetricsFormat:     "2006/01/02/metrics_15_04_05.json",
+			LogsFormat:        "2006/01/02/logs_15_04_05.json",
+			TracesFormat:      "2006/01/02/traces_15_04_05.json",
+			SerialNumEnabled:  true,
+			SerialNumRange:    10000,
+			Params:            map[string]string{},
+			TemplateEnabled:   false,
+			TimeParserEnabled: true,
+			TimeParserRanges:  nil,
 		},
 		FormatType: formatTypeJSON,
-		AppendBlob: &AppendBlob{
+		AppendBlob: AppendBlob{
 			Enabled:   false,
 			Separator: "\n",
 		},
-		Encodings:     &Encodings{},
+		Encodings:     Encodings{},
 		BackOffConfig: configretry.NewDefaultBackOffConfig(),
+		Compression:   "",
 	}
 }
 
@@ -70,7 +81,9 @@ func createLogsExporter(ctx context.Context,
 		config,
 		azBlobExporter.ConsumeLogs,
 		exporterhelper.WithStart(azBlobExporter.start),
-		exporterhelper.WithRetry(cfg.BackOffConfig))
+		exporterhelper.WithRetry(cfg.BackOffConfig),
+		exporterhelper.WithQueue(cfg.QueueSettings),
+		exporterhelper.WithTimeout(cfg.TimeoutSettings))
 }
 
 func createMetricsExporter(ctx context.Context,
@@ -84,7 +97,9 @@ func createMetricsExporter(ctx context.Context,
 		config,
 		azBlobExporter.ConsumeMetrics,
 		exporterhelper.WithStart(azBlobExporter.start),
-		exporterhelper.WithRetry(cfg.BackOffConfig))
+		exporterhelper.WithRetry(cfg.BackOffConfig),
+		exporterhelper.WithQueue(cfg.QueueSettings),
+		exporterhelper.WithTimeout(cfg.TimeoutSettings))
 }
 
 func createTracesExporter(ctx context.Context,
@@ -99,5 +114,7 @@ func createTracesExporter(ctx context.Context,
 		config,
 		azBlobExporter.ConsumeTraces,
 		exporterhelper.WithStart(azBlobExporter.start),
-		exporterhelper.WithRetry(cfg.BackOffConfig))
+		exporterhelper.WithRetry(cfg.BackOffConfig),
+		exporterhelper.WithQueue(cfg.QueueSettings),
+		exporterhelper.WithTimeout(cfg.TimeoutSettings))
 }

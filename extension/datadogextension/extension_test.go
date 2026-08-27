@@ -1,30 +1,37 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build !aix
+
 package datadogextension
 
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/DataDog/datadog-agent/comp/forwarder/defaultforwarder"
+	defaultforwarderimpl "github.com/DataDog/datadog-agent/comp/forwarder/defaultforwarder/impl"
+	pkgconfigmodel "github.com/DataDog/datadog-agent/pkg/config/model"
 	"github.com/DataDog/datadog-agent/pkg/metrics"
 	"github.com/DataDog/datadog-agent/pkg/metrics/event"
 	"github.com/DataDog/datadog-agent/pkg/metrics/servicecheck"
+	"github.com/DataDog/datadog-agent/pkg/opentelemetry-mapping-go/otlp/attributes/source"
 	"github.com/DataDog/datadog-agent/pkg/serializer/marshaler"
 	"github.com/DataDog/datadog-agent/pkg/serializer/types"
-	"github.com/DataDog/opentelemetry-mapping-go/pkg/otlp/attributes/source"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componentstatus"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/confighttp"
+	"go.opentelemetry.io/collector/config/confignet"
+	"go.opentelemetry.io/collector/config/configtls"
 	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/extension"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/service"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/datadogextension/internal/httpserver"
@@ -49,7 +56,7 @@ func TestNewExtension(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		hostProvider := &mockSourceProvider{source: source.Source{Kind: source.HostnameKind, Identifier: "test-host"}}
 		uuidProvider := &mockUUIDProvider{mockUUID: "test-uuid"}
-		ext, err := newExtension(context.Background(), cfg, set, hostProvider, uuidProvider)
+		ext, err := newExtension(t.Context(), cfg, set, hostProvider, uuidProvider)
 		require.NoError(t, err)
 		require.NotNil(t, ext)
 		assert.Equal(t, "test-host", ext.info.host.Identifier)
@@ -60,9 +67,24 @@ func TestNewExtension(t *testing.T) {
 	t.Run("host provider error", func(t *testing.T) {
 		hostProvider := &mockSourceProvider{err: errors.New("host error")}
 		uuidProvider := &mockUUIDProvider{mockUUID: "test-uuid"}
-		_, err := newExtension(context.Background(), cfg, set, hostProvider, uuidProvider)
+		_, err := newExtension(t.Context(), cfg, set, hostProvider, uuidProvider)
 		require.Error(t, err)
 		assert.Equal(t, "host error", err.Error())
+	})
+
+	t.Run("config hostname skips source provider", func(t *testing.T) {
+		cfgWithHostname := &Config{
+			API:      datadogconfig.APIConfig{Key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Site: "datadoghq.com"},
+			Hostname: "my-configured-host",
+		}
+		// Provider returns an error; if it were called the test would fail.
+		hostProvider := &mockSourceProvider{err: errors.New("provider should not be called")}
+		uuidProvider := &mockUUIDProvider{mockUUID: "test-uuid"}
+		ext, err := newExtension(t.Context(), cfgWithHostname, set, hostProvider, uuidProvider)
+		require.NoError(t, err)
+		assert.False(t, hostProvider.called, "source provider must not be called when hostname is set in config")
+		assert.Equal(t, "my-configured-host", ext.info.host.Identifier)
+		assert.Equal(t, "config", ext.info.hostnameSource)
 	})
 }
 
@@ -71,14 +93,19 @@ func TestExtensionLifecycle(t *testing.T) {
 		set := extension.Settings{TelemetrySettings: componenttest.NewNopTelemetrySettings()}
 		hostProvider := &mockSourceProvider{source: source.Source{Kind: source.HostnameKind, Identifier: "test-host"}}
 		uuidProvider := &mockUUIDProvider{mockUUID: "test-uuid"}
+		serverConfig := confighttp.NewDefaultServerConfig()
+		serverConfig.NetAddr = confignet.AddrConfig{
+			Transport: confignet.TransportTypeTCP,
+			Endpoint:  "localhost:0",
+		}
 		cfg := &Config{
 			API: datadogconfig.APIConfig{Key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Site: "datadoghq.com"},
 			HTTPConfig: &httpserver.Config{
-				ServerConfig: confighttp.ServerConfig{Endpoint: "localhost:0"},
+				ServerConfig: serverConfig,
 				Path:         "/test-path",
 			},
 		}
-		ext, err := newExtension(context.Background(), cfg, set, hostProvider, uuidProvider)
+		ext, err := newExtension(t.Context(), cfg, set, hostProvider, uuidProvider)
 		require.NoError(t, err)
 
 		mockSerializer := &mockSerializer{}
@@ -90,18 +117,18 @@ func TestExtensionLifecycle(t *testing.T) {
 				component.MustNewType("mockreceiver"): {BuilderRef: "gomod.example/receiver v1.0.0"},
 			}},
 		}
-		err = ext.Start(context.Background(), host)
+		err = ext.Start(t.Context(), host)
 		require.NoError(t, err)
 		assert.True(t, mockSerializer.startCalled, "serializer.Start should be called")
 		assert.NotEmpty(t, ext.info.modules.Receiver, "module infos should be populated")
 
 		// NotifyConfig will create and start the http server
-		err = ext.NotifyConfig(context.Background(), confmap.New())
+		err = ext.NotifyConfig(t.Context(), confmap.New())
 		require.NoError(t, err)
 		require.NotNil(t, ext.httpServer, "httpServer should be created")
 
 		// Shutdown
-		err = ext.Shutdown(context.Background())
+		err = ext.Shutdown(t.Context())
 		require.NoError(t, err)
 		assert.True(t, mockSerializer.stopCalled, "serializer.Stop should be called")
 	})
@@ -111,13 +138,13 @@ func TestExtensionLifecycle(t *testing.T) {
 		hostProvider := &mockSourceProvider{source: source.Source{Kind: source.HostnameKind, Identifier: "test-host"}}
 		uuidProvider := &mockUUIDProvider{mockUUID: "test-uuid"}
 		cfg := &Config{API: datadogconfig.APIConfig{Key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Site: "datadoghq.com"}}
-		ext, err := newExtension(context.Background(), cfg, set, hostProvider, uuidProvider)
+		ext, err := newExtension(t.Context(), cfg, set, hostProvider, uuidProvider)
 		require.NoError(t, err)
 		ext.serializer = nil // Test with no serializer
 
-		err = ext.Start(context.Background(), componenttest.NewNopHost())
+		err = ext.Start(t.Context(), componenttest.NewNopHost())
 		require.NoError(t, err)
-		err = ext.Shutdown(context.Background())
+		err = ext.Shutdown(t.Context())
 		require.NoError(t, err)
 	})
 
@@ -126,11 +153,11 @@ func TestExtensionLifecycle(t *testing.T) {
 		hostProvider := &mockSourceProvider{source: source.Source{Kind: source.HostnameKind, Identifier: "test-host"}}
 		uuidProvider := &mockUUIDProvider{mockUUID: "test-uuid"}
 		cfg := &Config{API: datadogconfig.APIConfig{Key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Site: "datadoghq.com"}}
-		ext, err := newExtension(context.Background(), cfg, set, hostProvider, uuidProvider)
+		ext, err := newExtension(t.Context(), cfg, set, hostProvider, uuidProvider)
 		require.NoError(t, err)
 
 		// NopHost does not implement hostcapabilities.ModuleInfo
-		err = ext.Start(context.Background(), componenttest.NewNopHost())
+		err = ext.Start(t.Context(), componenttest.NewNopHost())
 		require.NoError(t, err)
 		assert.Empty(t, ext.info.modules, "module infos should be empty")
 	})
@@ -144,17 +171,22 @@ func TestNotifyConfig(t *testing.T) {
 		}
 		hostProvider := &mockSourceProvider{source: source.Source{Kind: source.HostnameKind, Identifier: "test-host"}}
 		uuidProvider := &mockUUIDProvider{mockUUID: "test-uuid"}
+		serverConfig := confighttp.NewDefaultServerConfig()
+		serverConfig.NetAddr = confignet.AddrConfig{
+			Transport: confignet.TransportTypeTCP,
+			Endpoint:  "localhost:0",
+		}
 		cfg := &Config{
 			API: datadogconfig.APIConfig{Key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Site: "datadoghq.com"},
 			HTTPConfig: &httpserver.Config{
-				ServerConfig: confighttp.ServerConfig{Endpoint: "localhost:0"},
+				ServerConfig: serverConfig,
 				Path:         "/test-path",
 			},
 		}
-		ext, err := newExtension(context.Background(), cfg, set, hostProvider, uuidProvider)
+		ext, err := newExtension(t.Context(), cfg, set, hostProvider, uuidProvider)
 		require.NoError(t, err)
 		ext.serializer = &mockSerializer{}
-		require.NoError(t, ext.Start(context.Background(), componenttest.NewNopHost()))
+		require.NoError(t, ext.Start(t.Context(), componenttest.NewNopHost()))
 
 		conf := confmap.NewFromStringMap(map[string]any{
 			"receivers": map[string]any{"otlp": nil},
@@ -164,7 +196,7 @@ func TestNotifyConfig(t *testing.T) {
 			component.MustNewType("otlp"): {BuilderRef: "gomod.example/otlp v1.0.0"},
 		}}
 
-		err = ext.NotifyConfig(context.Background(), conf)
+		err = ext.NotifyConfig(t.Context(), conf)
 		require.NoError(t, err)
 		assert.NotNil(t, ext.configs.collector)
 		assert.NotNil(t, ext.otelCollectorMetadata)
@@ -174,8 +206,106 @@ func TestNotifyConfig(t *testing.T) {
 		assert.NotNil(t, ext.httpServer, "http server should be created and started")
 
 		// Ensure shutdown works cleanly
-		assert.NoError(t, ext.Shutdown(context.Background()))
+		assert.NoError(t, ext.Shutdown(t.Context()))
 	})
+}
+
+func TestCollectorResourceAttributesArePopulated(t *testing.T) {
+	// Prepare TelemetrySettings with Resource attributes
+	tel := componenttest.NewNopTelemetrySettings()
+	res := pcommon.NewResource()
+	res.Attributes().PutStr("b_key", "2")
+	res.Attributes().PutStr("a_key", "1")
+	tel.Resource = res
+
+	set := extension.Settings{
+		TelemetrySettings: tel,
+		BuildInfo:         component.BuildInfo{Version: "1.2.3"},
+	}
+	hostProvider := &mockSourceProvider{source: source.Source{Kind: source.HostnameKind, Identifier: "test-host"}}
+	uuidProvider := &mockUUIDProvider{mockUUID: "test-uuid"}
+	serverConfig := confighttp.NewDefaultServerConfig()
+	serverConfig.NetAddr = confignet.AddrConfig{
+		Transport: confignet.TransportTypeTCP,
+		Endpoint:  "localhost:0",
+	}
+	cfg := &Config{
+		API: datadogconfig.APIConfig{Key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Site: "datadoghq.com"},
+		HTTPConfig: &httpserver.Config{
+			ServerConfig: serverConfig,
+			Path:         "/test-path",
+		},
+	}
+
+	ext, err := newExtension(t.Context(), cfg, set, hostProvider, uuidProvider)
+	require.NoError(t, err)
+	ext.serializer = &mockSerializer{}
+	require.NoError(t, ext.Start(t.Context(), componenttest.NewNopHost()))
+
+	// Minimal config to trigger NotifyConfig
+	conf := confmap.NewFromStringMap(map[string]any{})
+	err = ext.NotifyConfig(t.Context(), conf)
+	require.NoError(t, err)
+
+	// Expect map with keys and values (os.type is always injected as a fallback)
+	require.NotNil(t, ext.otelCollectorMetadata)
+	expected := map[string]string{"a_key": "1", "b_key": "2", "os.type": runtime.GOOS}
+	assert.Equal(t, expected, ext.otelCollectorMetadata.CollectorResourceAttributes)
+
+	// Cleanup
+	assert.NoError(t, ext.Shutdown(t.Context()))
+}
+
+func TestCollectorResourceAttributesWithMultipleKeys(t *testing.T) {
+	// Prepare TelemetrySettings with multiple Resource attributes
+	tel := componenttest.NewNopTelemetrySettings()
+	res := pcommon.NewResource()
+	res.Attributes().PutStr("deployment.environment.name", "prod")
+	res.Attributes().PutStr("team.name", "backend")
+	res.Attributes().PutStr("cloud.region", "us-east")
+	tel.Resource = res
+
+	set := extension.Settings{
+		TelemetrySettings: tel,
+		BuildInfo:         component.BuildInfo{Version: "1.2.3"},
+	}
+	hostProvider := &mockSourceProvider{source: source.Source{Kind: source.HostnameKind, Identifier: "test-host"}}
+	uuidProvider := &mockUUIDProvider{mockUUID: "test-uuid"}
+	serverConfig := confighttp.NewDefaultServerConfig()
+	serverConfig.NetAddr = confignet.AddrConfig{
+		Transport: confignet.TransportTypeTCP,
+		Endpoint:  "localhost:0",
+	}
+	cfg := &Config{
+		API: datadogconfig.APIConfig{Key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Site: "datadoghq.com"},
+		HTTPConfig: &httpserver.Config{
+			ServerConfig: serverConfig,
+			Path:         "/test-path",
+		},
+	}
+
+	ext, err := newExtension(t.Context(), cfg, set, hostProvider, uuidProvider)
+	require.NoError(t, err)
+	ext.serializer = &mockSerializer{}
+	require.NoError(t, ext.Start(t.Context(), componenttest.NewNopHost()))
+
+	// Minimal config to trigger NotifyConfig
+	conf := confmap.NewFromStringMap(map[string]any{})
+	err = ext.NotifyConfig(t.Context(), conf)
+	require.NoError(t, err)
+
+	// Verify all resource attributes are collected (os.type is always injected as a fallback)
+	require.NotNil(t, ext.otelCollectorMetadata)
+	expected := map[string]string{
+		"deployment.environment.name": "prod",
+		"cloud.region":                "us-east",
+		"team.name":                   "backend",
+		"os.type":                     runtime.GOOS,
+	}
+	assert.Equal(t, expected, ext.otelCollectorMetadata.CollectorResourceAttributes)
+
+	// Cleanup
+	assert.NoError(t, ext.Shutdown(t.Context()))
 }
 
 func TestComponentStatusChanged(t *testing.T) {
@@ -200,21 +330,26 @@ func TestNotifyConfigErrorPaths(t *testing.T) {
 		}
 		hostProvider := &mockSourceProvider{source: source.Source{Kind: source.HostnameKind, Identifier: "test-host"}}
 		uuidProvider := &mockUUIDProvider{mockUUID: "test-uuid"}
+		serverConfig := confighttp.NewDefaultServerConfig()
+		serverConfig.NetAddr = confignet.AddrConfig{
+			Transport: confignet.TransportTypeTCP,
+			Endpoint:  "localhost:0",
+		}
 		cfg := &Config{
 			API: datadogconfig.APIConfig{Key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Site: "datadoghq.com"},
 			HTTPConfig: &httpserver.Config{
-				ServerConfig: confighttp.ServerConfig{Endpoint: "localhost:0"},
+				ServerConfig: serverConfig,
 				Path:         "/test-path",
 			},
 		}
-		ext, err := newExtension(context.Background(), cfg, set, hostProvider, uuidProvider)
+		ext, err := newExtension(t.Context(), cfg, set, hostProvider, uuidProvider)
 		require.NoError(t, err)
 
 		// Create a mock serializer that will cause SendPayload to fail
 		mockSerializer := &mockFailingSerializer{}
 		ext.serializer = mockSerializer
 
-		require.NoError(t, ext.Start(context.Background(), componenttest.NewNopHost()))
+		require.NoError(t, ext.Start(t.Context(), componenttest.NewNopHost()))
 
 		conf := confmap.NewFromStringMap(map[string]any{
 			"receivers": map[string]any{"otlp": nil},
@@ -222,12 +357,12 @@ func TestNotifyConfigErrorPaths(t *testing.T) {
 		})
 
 		// This should trigger the error path when SendPayload fails
-		err = ext.NotifyConfig(context.Background(), conf)
+		err = ext.NotifyConfig(t.Context(), conf)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "payload send failed")
 
 		// Cleanup
-		assert.NoError(t, ext.Shutdown(context.Background()))
+		assert.NoError(t, ext.Shutdown(t.Context()))
 	})
 
 	t.Run("PopulateFullComponentsJSON error", func(t *testing.T) {
@@ -237,32 +372,37 @@ func TestNotifyConfigErrorPaths(t *testing.T) {
 		}
 		hostProvider := &mockSourceProvider{source: source.Source{Kind: source.HostnameKind, Identifier: "test-host"}}
 		uuidProvider := &mockUUIDProvider{mockUUID: "test-uuid"}
+		serverConfig := confighttp.NewDefaultServerConfig()
+		serverConfig.NetAddr = confignet.AddrConfig{
+			Transport: confignet.TransportTypeTCP,
+			Endpoint:  "localhost:0",
+		}
 		cfg := &Config{
 			API: datadogconfig.APIConfig{Key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Site: "datadoghq.com"},
 			HTTPConfig: &httpserver.Config{
-				ServerConfig: confighttp.ServerConfig{Endpoint: "localhost:0"},
+				ServerConfig: serverConfig,
 				Path:         "/test-path",
 			},
 		}
-		ext, err := newExtension(context.Background(), cfg, set, hostProvider, uuidProvider)
+		ext, err := newExtension(t.Context(), cfg, set, hostProvider, uuidProvider)
 		require.NoError(t, err)
 		ext.serializer = &mockSerializer{}
 
 		// Set moduleInfos to empty to trigger error path in PopulateFullComponentsJSON
 		ext.info.modules = service.ModuleInfos{}
 
-		require.NoError(t, ext.Start(context.Background(), componenttest.NewNopHost()))
+		require.NoError(t, ext.Start(t.Context(), componenttest.NewNopHost()))
 
 		conf := confmap.NewFromStringMap(map[string]any{
 			"receivers": map[string]any{"otlp": nil},
 		})
 
 		// This should trigger warning but not fail
-		err = ext.NotifyConfig(context.Background(), conf)
+		err = ext.NotifyConfig(t.Context(), conf)
 		require.NoError(t, err) // Should not fail, just log warning
 
 		// Cleanup
-		assert.NoError(t, ext.Shutdown(context.Background()))
+		assert.NoError(t, ext.Shutdown(t.Context()))
 	})
 
 	t.Run("PopulateActiveComponents error", func(t *testing.T) {
@@ -272,18 +412,23 @@ func TestNotifyConfigErrorPaths(t *testing.T) {
 		}
 		hostProvider := &mockSourceProvider{source: source.Source{Kind: source.HostnameKind, Identifier: "test-host"}}
 		uuidProvider := &mockUUIDProvider{mockUUID: "test-uuid"}
+		serverConfig := confighttp.NewDefaultServerConfig()
+		serverConfig.NetAddr = confignet.AddrConfig{
+			Transport: confignet.TransportTypeTCP,
+			Endpoint:  "localhost:0",
+		}
 		cfg := &Config{
 			API: datadogconfig.APIConfig{Key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Site: "datadoghq.com"},
 			HTTPConfig: &httpserver.Config{
-				ServerConfig: confighttp.ServerConfig{Endpoint: "localhost:0"},
+				ServerConfig: serverConfig,
 				Path:         "/test-path",
 			},
 		}
-		ext, err := newExtension(context.Background(), cfg, set, hostProvider, uuidProvider)
+		ext, err := newExtension(t.Context(), cfg, set, hostProvider, uuidProvider)
 		require.NoError(t, err)
 		ext.serializer = &mockSerializer{}
 
-		require.NoError(t, ext.Start(context.Background(), componenttest.NewNopHost()))
+		require.NoError(t, ext.Start(t.Context(), componenttest.NewNopHost()))
 
 		// Create an invalid configuration that will cause PopulateActiveComponents to fail
 		conf := confmap.NewFromStringMap(map[string]any{
@@ -302,11 +447,11 @@ func TestNotifyConfigErrorPaths(t *testing.T) {
 		}
 
 		// This should trigger warning but not fail
-		err = ext.NotifyConfig(context.Background(), conf)
+		err = ext.NotifyConfig(t.Context(), conf)
 		require.NoError(t, err) // Should not fail, just log warning
 
 		// Cleanup
-		assert.NoError(t, ext.Shutdown(context.Background()))
+		assert.NoError(t, ext.Shutdown(t.Context()))
 	})
 }
 
@@ -315,6 +460,80 @@ func TestSimpleInterfaceMethods(t *testing.T) {
 	assert.NoError(t, ext.Ready())
 	assert.NoError(t, ext.NotReady())
 	assert.NotPanics(t, func() { ext.ComponentStatusChanged(nil, nil) })
+}
+
+func TestExtension_DeploymentTypeInPayload(t *testing.T) {
+	tests := []struct {
+		name           string
+		deploymentType string
+		expected       string
+	}{
+		{
+			name:           "gateway deployment type",
+			deploymentType: "gateway",
+			expected:       "gateway",
+		},
+		{
+			name:           "daemonset deployment type",
+			deploymentType: "daemonset",
+			expected:       "daemonset",
+		},
+		{
+			name:           "unknown deployment type",
+			deploymentType: "unknown",
+			expected:       "unknown",
+		},
+		{
+			name:           "empty defaults to unknown",
+			deploymentType: "",
+			expected:       "unknown",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			set := extension.Settings{
+				TelemetrySettings: componenttest.NewNopTelemetrySettings(),
+				BuildInfo:         component.BuildInfo{Version: "1.2.3"},
+			}
+			hostProvider := &mockSourceProvider{source: source.Source{Kind: source.HostnameKind, Identifier: "test-host"}}
+			uuidProvider := &mockUUIDProvider{mockUUID: "test-uuid"}
+			serverConfig := confighttp.NewDefaultServerConfig()
+			serverConfig.NetAddr = confignet.AddrConfig{
+				Transport: confignet.TransportTypeTCP,
+				Endpoint:  "localhost:0",
+			}
+			cfg := &Config{
+				API: datadogconfig.APIConfig{Key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Site: "datadoghq.com"},
+				HTTPConfig: &httpserver.Config{
+					ServerConfig: serverConfig,
+					Path:         "/test-path",
+				},
+				DeploymentType: tt.deploymentType,
+			}
+
+			// Validate will set the default if empty
+			err := cfg.Validate()
+			require.NoError(t, err)
+
+			ext, err := newExtension(t.Context(), cfg, set, hostProvider, uuidProvider)
+			require.NoError(t, err)
+			ext.serializer = &mockSerializer{}
+			require.NoError(t, ext.Start(t.Context(), componenttest.NewNopHost()))
+
+			// Minimal config to trigger NotifyConfig
+			conf := confmap.NewFromStringMap(map[string]any{})
+			err = ext.NotifyConfig(t.Context(), conf)
+			require.NoError(t, err)
+
+			// Verify the deployment type is set correctly in the payload
+			require.NotNil(t, ext.otelCollectorMetadata)
+			assert.Equal(t, tt.expected, ext.otelCollectorMetadata.CollectorDeploymentType, "CollectorDeploymentType should be set correctly")
+
+			// Cleanup
+			assert.NoError(t, ext.Shutdown(t.Context()))
+		})
+	}
 }
 
 func TestRealUUIDProvider(t *testing.T) {
@@ -332,20 +551,25 @@ func TestPeriodicPayloadSending(t *testing.T) {
 		}
 		hostProvider := &mockSourceProvider{source: source.Source{Kind: source.HostnameKind, Identifier: "test-host"}}
 		uuidProvider := &mockUUIDProvider{mockUUID: "test-uuid"}
+		serverConfig := confighttp.NewDefaultServerConfig()
+		serverConfig.NetAddr = confignet.AddrConfig{
+			Transport: confignet.TransportTypeTCP,
+			Endpoint:  "localhost:0",
+		}
 		cfg := &Config{
 			API: datadogconfig.APIConfig{Key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Site: "datadoghq.com"},
 			HTTPConfig: &httpserver.Config{
-				ServerConfig: confighttp.ServerConfig{Endpoint: "localhost:0"},
+				ServerConfig: serverConfig,
 				Path:         "/test-path",
 			},
 		}
-		ext, err := newExtension(context.Background(), cfg, set, hostProvider, uuidProvider)
+		ext, err := newExtension(t.Context(), cfg, set, hostProvider, uuidProvider)
 		require.NoError(t, err)
 
 		mockSerializer := &mockSerializer{}
 		ext.serializer = mockSerializer
 
-		require.NoError(t, ext.Start(context.Background(), componenttest.NewNopHost()))
+		require.NoError(t, ext.Start(t.Context(), componenttest.NewNopHost()))
 
 		conf := confmap.NewFromStringMap(map[string]any{
 			"receivers": map[string]any{"otlp": nil},
@@ -356,7 +580,7 @@ func TestPeriodicPayloadSending(t *testing.T) {
 		}}
 
 		// NotifyConfig should start the periodic payload sending
-		err = ext.NotifyConfig(context.Background(), conf)
+		err = ext.NotifyConfig(t.Context(), conf)
 		require.NoError(t, err)
 
 		// Verify periodic sending components are initialized
@@ -366,7 +590,7 @@ func TestPeriodicPayloadSending(t *testing.T) {
 		assert.NotNil(t, ext.payloadSender.channel, "payload send channel should be initialized")
 
 		// Shutdown should stop periodic sending
-		err = ext.Shutdown(context.Background())
+		err = ext.Shutdown(t.Context())
 		require.NoError(t, err)
 
 		// Verify context is cancelled
@@ -385,21 +609,26 @@ func TestPeriodicPayloadSending(t *testing.T) {
 		}
 		hostProvider := &mockSourceProvider{source: source.Source{Kind: source.HostnameKind, Identifier: "test-host"}}
 		uuidProvider := &mockUUIDProvider{mockUUID: "test-uuid"}
+		serverConfig := confighttp.NewDefaultServerConfig()
+		serverConfig.NetAddr = confignet.AddrConfig{
+			Transport: confignet.TransportTypeTCP,
+			Endpoint:  "localhost:0",
+		}
 		cfg := &Config{
 			API: datadogconfig.APIConfig{Key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Site: "datadoghq.com"},
 			HTTPConfig: &httpserver.Config{
-				ServerConfig: confighttp.ServerConfig{Endpoint: "localhost:0"},
+				ServerConfig: serverConfig,
 				Path:         "/test-path",
 			},
 		}
-		ext, err := newExtension(context.Background(), cfg, set, hostProvider, uuidProvider)
+		ext, err := newExtension(t.Context(), cfg, set, hostProvider, uuidProvider)
 		require.NoError(t, err)
 
 		// Use a counting mock serializer to track payload sends
 		mockSerializer := &countingMockSerializer{}
 		ext.serializer = mockSerializer
 
-		require.NoError(t, ext.Start(context.Background(), componenttest.NewNopHost()))
+		require.NoError(t, ext.Start(t.Context(), componenttest.NewNopHost()))
 
 		conf := confmap.NewFromStringMap(map[string]any{
 			"receivers": map[string]any{"otlp": nil},
@@ -410,7 +639,7 @@ func TestPeriodicPayloadSending(t *testing.T) {
 		}}
 
 		// NotifyConfig will send the initial payload
-		err = ext.NotifyConfig(context.Background(), conf)
+		err = ext.NotifyConfig(t.Context(), conf)
 		require.NoError(t, err)
 
 		initialCount := mockSerializer.GetSendCount()
@@ -429,7 +658,7 @@ func TestPeriodicPayloadSending(t *testing.T) {
 		}, time.Second, 10*time.Millisecond, "manual payload should be sent")
 
 		// Cleanup
-		err = ext.Shutdown(context.Background())
+		err = ext.Shutdown(t.Context())
 		require.NoError(t, err)
 	})
 
@@ -440,21 +669,26 @@ func TestPeriodicPayloadSending(t *testing.T) {
 		}
 		hostProvider := &mockSourceProvider{source: source.Source{Kind: source.HostnameKind, Identifier: "test-host"}}
 		uuidProvider := &mockUUIDProvider{mockUUID: "test-uuid"}
+		serverConfig := confighttp.NewDefaultServerConfig()
+		serverConfig.NetAddr = confignet.AddrConfig{
+			Transport: confignet.TransportTypeTCP,
+			Endpoint:  "localhost:0",
+		}
 		cfg := &Config{
 			API: datadogconfig.APIConfig{Key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Site: "datadoghq.com"},
 			HTTPConfig: &httpserver.Config{
-				ServerConfig: confighttp.ServerConfig{Endpoint: "localhost:0"},
+				ServerConfig: serverConfig,
 				Path:         "/test-path",
 			},
 		}
-		ext, err := newExtension(context.Background(), cfg, set, hostProvider, uuidProvider)
+		ext, err := newExtension(t.Context(), cfg, set, hostProvider, uuidProvider)
 		require.NoError(t, err)
 
 		// Mock serializer that fails after the first call
 		mockSerializer := &failAfterFirstCallSerializer{}
 		ext.serializer = mockSerializer
 
-		require.NoError(t, ext.Start(context.Background(), componenttest.NewNopHost()))
+		require.NoError(t, ext.Start(t.Context(), componenttest.NewNopHost()))
 
 		conf := confmap.NewFromStringMap(map[string]any{
 			"receivers": map[string]any{"otlp": nil},
@@ -465,7 +699,7 @@ func TestPeriodicPayloadSending(t *testing.T) {
 		}}
 
 		// NotifyConfig will succeed with the first payload
-		err = ext.NotifyConfig(context.Background(), conf)
+		err = ext.NotifyConfig(t.Context(), conf)
 		require.NoError(t, err)
 
 		// Trigger manual payload send which should fail but not crash
@@ -480,7 +714,7 @@ func TestPeriodicPayloadSending(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// Verify the extension is still functional by shutting down cleanly
-		err = ext.Shutdown(context.Background())
+		err = ext.Shutdown(t.Context())
 		require.NoError(t, err)
 	})
 
@@ -502,20 +736,25 @@ func TestNotifyConfigConcurrentAccess(t *testing.T) {
 		}
 		hostProvider := &mockSourceProvider{source: source.Source{Kind: source.HostnameKind, Identifier: "test-host"}}
 		uuidProvider := &mockUUIDProvider{mockUUID: "test-uuid"}
+		serverConfig := confighttp.NewDefaultServerConfig()
+		serverConfig.NetAddr = confignet.AddrConfig{
+			Transport: confignet.TransportTypeTCP,
+			Endpoint:  "localhost:0",
+		}
 		cfg := &Config{
 			API: datadogconfig.APIConfig{Key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Site: "datadoghq.com"},
 			HTTPConfig: &httpserver.Config{
-				ServerConfig: confighttp.ServerConfig{Endpoint: "localhost:0"},
+				ServerConfig: serverConfig,
 				Path:         "/test-path",
 			},
 		}
-		ext, err := newExtension(context.Background(), cfg, set, hostProvider, uuidProvider)
+		ext, err := newExtension(t.Context(), cfg, set, hostProvider, uuidProvider)
 		require.NoError(t, err)
 
 		mockSerializer := &mockSerializer{}
 		ext.serializer = mockSerializer
 
-		require.NoError(t, ext.Start(context.Background(), componenttest.NewNopHost()))
+		require.NoError(t, ext.Start(t.Context(), componenttest.NewNopHost()))
 
 		ext.info.modules = service.ModuleInfos{Receiver: map[component.Type]service.ModuleInfo{
 			component.MustNewType("otlp"): {BuilderRef: "gomod.example/otlp v1.0.0"},
@@ -542,12 +781,12 @@ func TestNotifyConfigConcurrentAccess(t *testing.T) {
 		var wg sync.WaitGroup
 		errors := make(chan error, numGoroutines)
 
-		for i := 0; i < numGoroutines; i++ {
+		for i := range numGoroutines {
 			wg.Add(1)
 			go func(confIndex int) {
 				defer wg.Done()
 				conf := confs[confIndex%len(confs)]
-				if err := ext.NotifyConfig(context.Background(), conf); err != nil {
+				if err := ext.NotifyConfig(t.Context(), conf); err != nil {
 					// First call might succeed, subsequent calls will fail due to HTTP server already running
 					// But they should not race condition or panic
 					errors <- err
@@ -565,7 +804,29 @@ func TestNotifyConfigConcurrentAccess(t *testing.T) {
 		ext.configs.mutex.RUnlock()
 
 		// Cleanup
-		assert.NoError(t, ext.Shutdown(context.Background()))
+		assert.NoError(t, ext.Shutdown(t.Context()))
+	})
+}
+
+func TestBuildAgentConfigPropagatesTLSSetting(t *testing.T) {
+	t.Run("insecure_skip_verify true propagates to skip_ssl_validation", func(t *testing.T) {
+		clientConfig := confighttp.NewDefaultClientConfig()
+		clientConfig.ForceAttemptHTTP2 = false
+		clientConfig.TLS = configtls.ClientConfig{InsecureSkipVerify: true}
+		cfg := &Config{
+			API:          datadogconfig.APIConfig{Key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Site: "datadoghq.com"},
+			ClientConfig: clientConfig,
+		}
+		agentCfg := buildAgentConfig(cfg).(pkgconfigmodel.Config)
+		assert.True(t, agentCfg.GetBool("skip_ssl_validation"))
+	})
+
+	t.Run("insecure_skip_verify false leaves skip_ssl_validation false", func(t *testing.T) {
+		cfg := &Config{
+			API: datadogconfig.APIConfig{Key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Site: "datadoghq.com"},
+		}
+		agentCfg := buildAgentConfig(cfg).(pkgconfigmodel.Config)
+		assert.False(t, agentCfg.GetBool("skip_ssl_validation"))
 	})
 }
 
@@ -575,9 +836,11 @@ var _ source.Provider = (*mockSourceProvider)(nil)
 type mockSourceProvider struct {
 	source source.Source
 	err    error
+	called bool
 }
 
 func (m *mockSourceProvider) Source(_ context.Context) (source.Source, error) {
+	m.called = true
 	if m.err != nil {
 		return source.Source{}, m.err
 	}
@@ -607,7 +870,7 @@ func (m *mockSerializer) Start() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.startCalled = true
-	m.state = defaultforwarder.Started
+	m.state = defaultforwarderimpl.Started
 	return nil
 }
 
@@ -615,7 +878,40 @@ func (m *mockSerializer) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.stopCalled = true
-	m.state = defaultforwarder.Stopped
+	m.state = defaultforwarderimpl.Stopped
+}
+
+func (*mockSerializer) SendSeriesWithMetadata(_ metrics.Series) error {
+	// Mock implementation for tests - just return success
+	return nil
+}
+
+// trackingMockSerializer is a mock serializer that tracks series sent
+type trackingMockSerializer struct {
+	mockSerializer
+	mu         sync.RWMutex
+	seriesSent []metrics.Series
+}
+
+func (m *trackingMockSerializer) SendSeriesWithMetadata(series metrics.Series) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.seriesSent = append(m.seriesSent, series)
+	return nil
+}
+
+func (m *trackingMockSerializer) GetSeriesSent() []metrics.Series {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]metrics.Series, len(m.seriesSent))
+	copy(result, m.seriesSent)
+	return result
+}
+
+func (m *trackingMockSerializer) ClearSeriesSent() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.seriesSent = nil
 }
 
 func (m *mockSerializer) State() uint32 {
@@ -624,21 +920,25 @@ func (m *mockSerializer) State() uint32 {
 	return m.state
 }
 
-func (m *mockSerializer) SendMetadata(marshaler.JSONMarshaler) error            { return nil }
-func (m *mockSerializer) SendEvents(event.Events) error                         { return nil }
-func (m *mockSerializer) SendServiceChecks(servicecheck.ServiceChecks) error    { return nil }
-func (m *mockSerializer) SendIterableSeries(metrics.SerieSource) error          { return nil }
-func (m *mockSerializer) AreSeriesEnabled() bool                                { return false }
-func (m *mockSerializer) SendSketch(metrics.SketchesSource) error               { return nil }
-func (m *mockSerializer) AreSketchesEnabled() bool                              { return false }
-func (m *mockSerializer) SendHostMetadata(marshaler.JSONMarshaler) error        { return nil }
-func (m *mockSerializer) SendProcessesMetadata(any) error                       { return nil }
-func (m *mockSerializer) SendAgentchecksMetadata(marshaler.JSONMarshaler) error { return nil }
-func (m *mockSerializer) SendOrchestratorMetadata([]types.ProcessMessageBody, string, string, int) error {
+func (*mockSerializer) SendMetadata(marshaler.JSONMarshaler) error            { return nil }
+func (*mockSerializer) SendEvents(event.Events) error                         { return nil }
+func (*mockSerializer) SendServiceChecks(servicecheck.ServiceChecks) error    { return nil }
+func (*mockSerializer) SendIterableSeries(metrics.SerieSource) error          { return nil }
+func (*mockSerializer) AreSeriesEnabled() bool                                { return false }
+func (*mockSerializer) SendSketch(metrics.SketchesSource) error               { return nil }
+func (*mockSerializer) AreSketchesEnabled() bool                              { return false }
+func (*mockSerializer) SendHostMetadata(marshaler.JSONMarshaler) error        { return nil }
+func (*mockSerializer) SendProcessesMetadata(any) error                       { return nil }
+func (*mockSerializer) SendAgentchecksMetadata(marshaler.JSONMarshaler) error { return nil }
+func (*mockSerializer) SendOrchestratorMetadata([]types.ProcessMessageBody, string, string, int) error {
 	return nil
 }
 
-func (m *mockSerializer) SendOrchestratorManifests([]types.ProcessMessageBody, string, string) error {
+func (*mockSerializer) SendOrchestratorManifests([]types.ProcessMessageBody, string, string) error {
+	return nil
+}
+
+func (*mockSerializer) SendAgentShutdownEvent(context.Context, *event.Event) error {
 	return nil
 }
 
@@ -647,7 +947,7 @@ type mockFailingSerializer struct {
 	mockSerializer
 }
 
-func (m *mockFailingSerializer) SendMetadata(marshaler.JSONMarshaler) error {
+func (*mockFailingSerializer) SendMetadata(marshaler.JSONMarshaler) error {
 	return errors.New("payload send failed")
 }
 
@@ -690,4 +990,230 @@ func (m *failAfterFirstCallSerializer) GetCallCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.callCount
+}
+
+func TestExtensionLivenessMetric(t *testing.T) {
+	t.Run("sends liveness metric with configured hostname", func(t *testing.T) {
+		// Create tracking mock serializer
+		mockSerializer := &trackingMockSerializer{}
+		mockSerializer.state = defaultforwarderimpl.Started
+
+		// Create extension with test config
+		serverConfig := confighttp.NewDefaultServerConfig()
+		serverConfig.NetAddr = confignet.AddrConfig{
+			Transport: confignet.TransportTypeTCP,
+			Endpoint:  "localhost:0",
+		}
+		cfg := &Config{
+			API: datadogconfig.APIConfig{
+				Key:  "test-api-key-1234567890123456",
+				Site: "datadoghq.com",
+			},
+			Hostname: "test-hostname-configured",
+			HTTPConfig: &httpserver.Config{
+				ServerConfig: serverConfig,
+				Path:         "/test-path",
+			},
+		}
+
+		set := extension.Settings{
+			TelemetrySettings: componenttest.NewNopTelemetrySettings(),
+			BuildInfo: component.BuildInfo{
+				Version: "test-version",
+				Command: "test-collector",
+			},
+		}
+
+		hostProvider := &mockSourceProvider{source: source.Source{Kind: source.HostnameKind, Identifier: "test-hostname-configured"}}
+		uuidProvider := &mockUUIDProvider{mockUUID: "test-uuid"}
+
+		ext, err := newExtension(t.Context(), cfg, set, hostProvider, uuidProvider)
+		require.NoError(t, err)
+		require.NotNil(t, ext)
+
+		// Replace serializer with mock
+		ext.serializer = mockSerializer
+
+		// Manually send liveness metric
+		err = ext.sendLivenessMetric(t.Context())
+		require.NoError(t, err)
+
+		// Verify metric was sent to serializer
+		allSeries := mockSerializer.GetSeriesSent()
+		require.GreaterOrEqual(t, len(allSeries), 1, "expected at least one series to be sent")
+
+		// Find the liveness metric in the sent series
+		var livenessMetric *metrics.Serie
+		for _, seriesList := range allSeries {
+			for _, serie := range seriesList {
+				if serie.Name == "otel.datadog_extension.running" {
+					livenessMetric = serie
+					break
+				}
+			}
+			if livenessMetric != nil {
+				break
+			}
+		}
+
+		require.NotNil(t, livenessMetric, "liveness metric not found in sent series")
+
+		// Verify the metric properties
+		assert.Equal(t, "otel.datadog_extension.running", livenessMetric.Name)
+		assert.Equal(t, "test-hostname-configured", livenessMetric.Host)
+		assert.Len(t, livenessMetric.Points, 1)
+		assert.Equal(t, 1.0, livenessMetric.Points[0].Value)
+
+		// Verify tags using CompositeTags.Find method
+		assert.True(t, livenessMetric.Tags.Find(func(tag string) bool { return tag == "version:test-version" }), "expected version tag")
+		assert.True(t, livenessMetric.Tags.Find(func(tag string) bool { return tag == "command:test-collector" }), "expected command tag")
+		assert.True(t, livenessMetric.Tags.Find(func(tag string) bool { return tag == "hostname_source:config" }), "expected hostname_source tag")
+	})
+
+	t.Run("sends liveness metric with inferred hostname", func(t *testing.T) {
+		// Create tracking mock serializer
+		mockSerializer := &trackingMockSerializer{}
+		mockSerializer.state = defaultforwarderimpl.Started
+
+		// Create extension without configured hostname
+		serverConfig := confighttp.NewDefaultServerConfig()
+		serverConfig.NetAddr = confignet.AddrConfig{
+			Transport: confignet.TransportTypeTCP,
+			Endpoint:  "localhost:0",
+		}
+		cfg := &Config{
+			API: datadogconfig.APIConfig{
+				Key:  "test-api-key-1234567890123456",
+				Site: "datadoghq.com",
+			},
+			// No Hostname set - will be inferred
+			HTTPConfig: &httpserver.Config{
+				ServerConfig: serverConfig,
+				Path:         "/test-path",
+			},
+		}
+
+		set := extension.Settings{
+			TelemetrySettings: componenttest.NewNopTelemetrySettings(),
+			BuildInfo: component.BuildInfo{
+				Version: "test-version",
+				Command: "test-collector",
+			},
+		}
+
+		hostProvider := &mockSourceProvider{source: source.Source{Kind: source.HostnameKind, Identifier: "inferred-hostname"}}
+		uuidProvider := &mockUUIDProvider{mockUUID: "test-uuid"}
+
+		ext, err := newExtension(t.Context(), cfg, set, hostProvider, uuidProvider)
+		require.NoError(t, err)
+		require.NotNil(t, ext)
+
+		// Replace serializer with mock
+		ext.serializer = mockSerializer
+
+		// Manually send liveness metric
+		err = ext.sendLivenessMetric(t.Context())
+		require.NoError(t, err)
+
+		// Verify metric was sent to serializer
+		allSeries := mockSerializer.GetSeriesSent()
+		require.GreaterOrEqual(t, len(allSeries), 1, "expected at least one series to be sent")
+
+		// Find the liveness metric in the sent series
+		var livenessMetric *metrics.Serie
+		for _, seriesList := range allSeries {
+			for _, serie := range seriesList {
+				if serie.Name == "otel.datadog_extension.running" {
+					livenessMetric = serie
+					break
+				}
+			}
+			if livenessMetric != nil {
+				break
+			}
+		}
+
+		require.NotNil(t, livenessMetric, "liveness metric not found in sent series")
+
+		// Verify the metric properties
+		assert.Equal(t, "otel.datadog_extension.running", livenessMetric.Name)
+		assert.Equal(t, "inferred-hostname", livenessMetric.Host)
+
+		// Verify hostname_source tag is "inferred" using CompositeTags.Find method
+		assert.True(t, livenessMetric.Tags.Find(func(tag string) bool { return tag == "hostname_source:inferred" }), "expected hostname_source:inferred tag")
+	})
+
+	t.Run("liveness metric sent periodically", func(t *testing.T) {
+		// Create tracking mock serializer
+		mockSerializer := &trackingMockSerializer{}
+		mockSerializer.state = defaultforwarderimpl.Started
+
+		// Create extension
+		serverConfig := confighttp.NewDefaultServerConfig()
+		serverConfig.NetAddr = confignet.AddrConfig{
+			Transport: confignet.TransportTypeTCP,
+			Endpoint:  "localhost:0",
+		}
+		cfg := &Config{
+			API: datadogconfig.APIConfig{
+				Key:  "test-api-key-1234567890123456",
+				Site: "datadoghq.com",
+			},
+			Hostname: "test-hostname",
+			HTTPConfig: &httpserver.Config{
+				ServerConfig: serverConfig,
+				Path:         "/test-path",
+			},
+		}
+
+		set := extension.Settings{
+			TelemetrySettings: componenttest.NewNopTelemetrySettings(),
+			BuildInfo:         component.BuildInfo{Version: "test-version", Command: "test-collector"},
+		}
+
+		hostProvider := &mockSourceProvider{source: source.Source{Kind: source.HostnameKind, Identifier: "test-hostname"}}
+		uuidProvider := &mockUUIDProvider{mockUUID: "test-uuid"}
+
+		ext, err := newExtension(t.Context(), cfg, set, hostProvider, uuidProvider)
+		require.NoError(t, err)
+		require.NotNil(t, ext)
+
+		// Replace serializer with mock
+		ext.serializer = mockSerializer
+
+		// Start the extension
+		err = ext.Start(t.Context(), componenttest.NewNopHost())
+		require.NoError(t, err)
+
+		// Trigger NotifyConfig which starts periodic sending
+		err = ext.NotifyConfig(t.Context(), confmap.New())
+		require.NoError(t, err)
+
+		// Wait a bit for the initial liveness metric to be sent
+		time.Sleep(200 * time.Millisecond)
+
+		// Verify initial liveness metric was sent on startup
+		allSeries := mockSerializer.GetSeriesSent()
+		require.GreaterOrEqual(t, len(allSeries), 1, "expected at least one series to be sent on startup")
+
+		// Find the liveness metric
+		foundLiveness := false
+		for _, seriesList := range allSeries {
+			for _, serie := range seriesList {
+				if serie.Name == "otel.datadog_extension.running" {
+					foundLiveness = true
+					assert.Equal(t, "test-hostname", serie.Host)
+					break
+				}
+			}
+			if foundLiveness {
+				break
+			}
+		}
+		assert.True(t, foundLiveness, "liveness metric should have been sent on startup")
+
+		// Cleanup
+		err = ext.Shutdown(t.Context())
+		require.NoError(t, err)
+	})
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
@@ -52,8 +53,8 @@ func Test_IsBool(t *testing.T) {
 					return tt.value, nil
 				},
 			})
-			result, err := exprFunc(context.Background(), nil)
-			assert.NoError(t, err)
+			result, err := exprFunc(t.Context(), nil)
+			require.NoError(t, err)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -66,9 +67,45 @@ func Test_IsBool_Error(t *testing.T) {
 			return nil, ottl.TypeError("")
 		},
 	})
-	result, err := exprFunc(context.Background(), nil)
+	result, err := exprFunc(t.Context(), nil)
 	assert.Equal(t, false, result)
 	assert.Error(t, err)
 	_, ok := err.(ottl.TypeError)
 	assert.False(t, ok)
+}
+
+func Test_IsBoolFactory(t *testing.T) {
+	t.Run("factory creation", func(t *testing.T) {
+		factory := NewIsBoolFactory[any]()
+		assert.Equal(t, "IsBool", factory.Name())
+	})
+
+	t.Run("default arguments", func(t *testing.T) {
+		factory := NewIsBoolFactory[any]()
+		args := factory.CreateDefaultArguments()
+
+		assert.IsType(t, &IsBoolArguments[any]{}, args)
+		assertArgumentFieldNames(t, args, []string{"Target"})
+	})
+
+	t.Run("function creation", func(t *testing.T) {
+		factory := NewIsBoolFactory[any]()
+		args := factory.CreateDefaultArguments()
+		isBoolArgs, ok := args.(*IsBoolArguments[any])
+		require.True(t, ok)
+		isBoolArgs.Target = &ottl.StandardBoolGetter[any]{
+			Getter: func(context.Context, any) (any, error) {
+				return true, nil
+			},
+		}
+
+		fn, err := factory.CreateFunction(ottl.FunctionContext{}, args)
+		require.NoError(t, err)
+		assert.NotNil(t, fn)
+	})
+
+	t.Run("invalid arguments type", func(t *testing.T) {
+		_, err := createIsBoolFunction[any](ottl.FunctionContext{}, "invalid args")
+		assert.ErrorContains(t, err, "IsBoolFactory args must be of type *IsBoolArguments[K]")
+	})
 }

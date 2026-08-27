@@ -60,7 +60,7 @@ func (si *signingRoundTripper) signRequest(req *http.Request) (*http.Request, er
 
 	// Add the runtime information to the User-Agent header of the request
 	ua := req2.Header.Get("User-Agent")
-	if len(ua) > 0 {
+	if ua != "" {
 		ua = ua + " " + si.awsSDKInfo
 	} else {
 		ua = si.awsSDKInfo
@@ -110,7 +110,7 @@ func hashPayload(req *http.Request) (string, error) {
 // inferServiceAndRegion attempts to infer a service
 // and a region from an http.request, and returns either an empty
 // string for both or a valid value for both.
-func (si *signingRoundTripper) inferServiceAndRegion(r *http.Request) (service string, region string) {
+func (si *signingRoundTripper) inferServiceAndRegion(r *http.Request) (service, region string) {
 	service = si.service
 	region = si.region
 
@@ -124,6 +124,8 @@ func (si *signingRoundTripper) inferServiceAndRegion(r *http.Request) (service s
 		service, region = extractServiceAndRegion(service, region, host, "logs")
 	case strings.HasPrefix(host, "xray"):
 		service, region = extractServiceAndRegion(service, region, host, "xray")
+	case strings.HasPrefix(host, "monitoring"):
+		service, region = extractServiceAndRegion(service, region, host, "monitoring")
 	}
 
 	if service == "" || region == "" {

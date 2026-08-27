@@ -4,7 +4,6 @@
 package snowflakereceiver
 
 import (
-	"context"
 	"database/sql/driver"
 	"path/filepath"
 	"testing"
@@ -12,7 +11,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component/componenttest"
-	"go.opentelemetry.io/collector/confmap/xconfmap"
+	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/receiver/receivertest"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/golden"
@@ -26,7 +25,7 @@ func TestScraper(t *testing.T) {
 	cfg.Username = "uname"
 	cfg.Password = "pwd"
 	cfg.Warehouse = "warehouse"
-	err := xconfmap.Validate(cfg)
+	err := confmap.Validate(cfg)
 	if err != nil {
 		t.Fatal("an error occurred when validating config", err)
 	}
@@ -50,7 +49,7 @@ func TestScraper(t *testing.T) {
 	}
 	scraper.client = &scraperClient
 
-	actualMetrics, err := scraper.scrape(context.Background())
+	actualMetrics, err := scraper.scrape(t.Context())
 	require.NoError(t, err, "error scraping metrics from mocdb")
 
 	expectedFile := filepath.Join("testdata", "scraper", "expected.yaml")
@@ -68,12 +67,12 @@ func TestStart(t *testing.T) {
 	cfg.Username = "uname"
 	cfg.Password = "pwd"
 	cfg.Warehouse = "warehouse"
-	require.NoError(t, xconfmap.Validate(cfg))
+	require.NoError(t, confmap.Validate(cfg))
 
 	scraper := newSnowflakeMetricsScraper(receivertest.NewNopSettings(metadata.Type), cfg)
-	err := scraper.start(context.Background(), componenttest.NewNopHost())
+	err := scraper.start(t.Context(), componenttest.NewNopHost())
 	require.NoError(t, err, "Problem starting scraper")
-	require.NoError(t, scraper.shutdown(context.Background()))
+	require.NoError(t, scraper.shutdown(t.Context()))
 }
 
 // wrapper type for convenience
@@ -136,7 +135,7 @@ func (m *mockDB) initMockDB() {
 		{
 			query:   storageMetricsQuery,
 			columns: []string{"storage_bytes", "stage_bytes", "failsafe_bytes"},
-			params:  []driver.Value{1, 2, 3},
+			params:  []driver.Value{1.4, 2.0, 3.67},
 		},
 	}
 

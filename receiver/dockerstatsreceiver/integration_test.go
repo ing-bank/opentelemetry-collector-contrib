@@ -20,7 +20,6 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	rcvr "go.opentelemetry.io/collector/receiver"
 	"go.opentelemetry.io/collector/receiver/receivertest"
-	conventions "go.opentelemetry.io/otel/semconv/v1.27.0"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
 
@@ -30,12 +29,12 @@ import (
 func factory() (rcvr.Factory, *Config) {
 	f := NewFactory()
 	config := f.CreateDefaultConfig().(*Config)
-	config.CollectionInterval = 1 * time.Second
+	config.ControllerConfig.CollectionInterval = 1 * time.Second
 	return f, config
 }
 
 func paramsAndContext(t *testing.T) (rcvr.Settings, context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	logger := zaptest.NewLogger(t, zaptest.WrapOptions(zap.AddCaller()))
 	settings := receivertest.NewNopSettings(metadata.Type)
 	settings.Logger = logger
@@ -64,7 +63,7 @@ func hasResourceScopeMetrics(containerID string, metrics []pmetric.Metrics) bool
 		for i := 0; i < m.ResourceMetrics().Len(); i++ {
 			rm := m.ResourceMetrics().At(i)
 
-			id, ok := rm.Resource().Attributes().Get(string(conventions.ContainerIDKey))
+			id, ok := rm.Resource().Attributes().Get("container.id")
 			if ok && id.AsString() == containerID && rm.ScopeMetrics().Len() > 0 {
 				return true
 			}
@@ -139,7 +138,7 @@ func TestExcludedImageProducesNoMetricsIntegration(t *testing.T) {
 	container := createNginxContainer(ctx, t)
 
 	f, config := factory()
-	config.ExcludedImages = append(config.ExcludedImages, "*nginx*")
+	config.Config.ExcludedImages = append(config.Config.ExcludedImages, "*nginx*")
 
 	consumer := new(consumertest.MetricsSink)
 	recv, err := f.CreateMetrics(ctx, params, config, consumer)
@@ -163,7 +162,7 @@ type nopHost struct {
 	reportFunc func(event *componentstatus.Event)
 }
 
-func (nh *nopHost) GetExtensions() map[component.ID]component.Component {
+func (*nopHost) GetExtensions() map[component.ID]component.Component {
 	return nil
 }
 

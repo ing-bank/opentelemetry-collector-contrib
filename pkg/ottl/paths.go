@@ -3,18 +3,33 @@
 
 package ottl // import "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 
-// grammarPathVisitor is used to extract all path from a parsedStatement or booleanExpression
+var _ localIdentifierScopeVisitor = (*grammarPathVisitor)(nil)
+
+// grammarPathVisitor is used to extract all paths from a parsedStatement or booleanExpression
+// localIdentifierDecl paths are not included on the grammarPathVisitor.paths results.
 type grammarPathVisitor struct {
-	paths []path
+	paths  []path
+	scopes localScopeStack
 }
 
-func (v *grammarPathVisitor) visitEditor(_ *editor)                   {}
-func (v *grammarPathVisitor) visitConverter(_ *converter)             {}
-func (v *grammarPathVisitor) visitValue(_ *value)                     {}
-func (v *grammarPathVisitor) visitMathExprLiteral(_ *mathExprLiteral) {}
+func (*grammarPathVisitor) visitEditor(*editor)                   {}
+func (*grammarPathVisitor) visitConverter(*converter)             {}
+func (*grammarPathVisitor) visitValue(*value)                     {}
+func (*grammarPathVisitor) visitMathExprLiteral(*mathExprLiteral) {}
+func (*grammarPathVisitor) visitLambdaBody(*lambdaBody)           {}
+
+func (v *grammarPathVisitor) pushLocalIdentifiers(params []localIdentifierDecl) {
+	v.scopes.push(localIdentifiersDeclToFrame(params))
+}
+
+func (v *grammarPathVisitor) popLocalIdentifiers() {
+	v.scopes.pop()
+}
 
 func (v *grammarPathVisitor) visitPath(value *path) {
-	v.paths = append(v.paths, *value)
+	if !value.inScope(v.scopes) {
+		v.paths = append(v.paths, *value)
+	}
 }
 
 func getParsedStatementPaths(ps *parsedStatement) []path {
@@ -29,5 +44,11 @@ func getParsedStatementPaths(ps *parsedStatement) []path {
 func getBooleanExpressionPaths(be *booleanExpression) []path {
 	visitor := &grammarPathVisitor{}
 	be.accept(visitor)
+	return visitor.paths
+}
+
+func getValuePaths(v *value) []path {
+	visitor := &grammarPathVisitor{}
+	v.accept(visitor)
 	return visitor.paths
 }

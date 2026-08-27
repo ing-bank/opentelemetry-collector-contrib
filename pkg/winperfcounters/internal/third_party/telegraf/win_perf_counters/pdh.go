@@ -217,7 +217,7 @@ func init() {
 //	\\LogicalDisk(C:)\% Free Space
 //
 // To view all (internationalized...) counters on a system, there are three non-programmatic ways: perfmon utility,
-// the typeperf command, and the the registry editor. perfmon.exe is perhaps the easiest way, because it's basically a
+// the typeperf command, and the registry editor. perfmon.exe is perhaps the easiest way, because it's basically a
 // full implemention of the pdh.dll API, except with a GUI and all that. The registry setting also provides an
 // interface to the available counters, and can be found at the following key:
 //
@@ -248,7 +248,8 @@ func PdhAddCounter(hQuery PDH_HQUERY, szFullCounterPath string, dwUserData uintp
 		uintptr(hQuery),
 		uintptr(unsafe.Pointer(ptxt)),
 		dwUserData,
-		uintptr(unsafe.Pointer(phCounter)))
+		uintptr(unsafe.Pointer(phCounter)),
+	)
 
 	return uint32(ret)
 }
@@ -272,7 +273,8 @@ func PdhAddEnglishCounter(hQuery PDH_HQUERY, szFullCounterPath string, dwUserDat
 		uintptr(hQuery),
 		uintptr(unsafe.Pointer(ptxt)),
 		dwUserData,
-		uintptr(unsafe.Pointer(phCounter)))
+		uintptr(unsafe.Pointer(phCounter)),
+	)
 
 	return uint32(ret)
 }
@@ -322,7 +324,8 @@ func PdhCollectQueryDataWithTime(hQuery PDH_HQUERY) (uint32, time.Time) {
 		var utcFileTime FILETIME
 		ret, _, _ := krn_LocalFileTimeToFileTime.Call(
 			uintptr(unsafe.Pointer(&localFileTime)),
-			uintptr(unsafe.Pointer(&utcFileTime)))
+			uintptr(unsafe.Pointer(&utcFileTime)),
+		)
 
 		if ret == 0 {
 			return uint32(ERROR_FAILURE), time.Now()
@@ -349,7 +352,8 @@ func PdhGetFormattedCounterValueDouble(hCounter PDH_HCOUNTER, lpdwType *uint32, 
 		uintptr(hCounter),
 		uintptr(PDH_FMT_DOUBLE|PDH_FMT_NOCAP100),
 		uintptr(unsafe.Pointer(lpdwType)),
-		uintptr(unsafe.Pointer(pValue)))
+		uintptr(unsafe.Pointer(pValue)),
+	)
 
 	return uint32(ret)
 }
@@ -391,13 +395,14 @@ func PdhGetFormattedCounterValueDouble(hCounter PDH_HCOUNTER, lpdwType *uint32, 
 //			time.Sleep(2000 * time.Millisecond)
 //		}
 //	}
-func PdhGetFormattedCounterArrayDouble(hCounter PDH_HCOUNTER, lpdwBufferSize *uint32, lpdwBufferCount *uint32, itemBuffer *byte) uint32 {
+func PdhGetFormattedCounterArrayDouble(hCounter PDH_HCOUNTER, lpdwBufferSize, lpdwBufferCount *uint32, itemBuffer *byte) uint32 {
 	ret, _, _ := pdh_GetFormattedCounterArrayW.Call(
 		uintptr(hCounter),
 		uintptr(PDH_FMT_DOUBLE|PDH_FMT_NOCAP100),
 		uintptr(unsafe.Pointer(lpdwBufferSize)),
 		uintptr(unsafe.Pointer(lpdwBufferCount)),
-		uintptr(unsafe.Pointer(itemBuffer)))
+		uintptr(unsafe.Pointer(itemBuffer)),
+	)
 
 	return uint32(ret)
 }
@@ -409,11 +414,12 @@ func PdhGetFormattedCounterArrayDouble(hCounter PDH_HCOUNTER, lpdwBufferSize *ui
 // call PdhGetCounterInfo and access dwQueryUserData of the PDH_COUNTER_INFO structure. phQuery is
 // the handle to the query, and must be used in subsequent calls. This function returns a PDH_
 // constant error code, or ERROR_SUCCESS if the call succeeded.
-func PdhOpenQuery(szDataSource uintptr, dwUserData uintptr, phQuery *PDH_HQUERY) uint32 {
+func PdhOpenQuery(szDataSource, dwUserData uintptr, phQuery *PDH_HQUERY) uint32 {
 	ret, _, _ := pdh_OpenQuery.Call(
 		szDataSource,
 		dwUserData,
-		uintptr(unsafe.Pointer(phQuery)))
+		uintptr(unsafe.Pointer(phQuery)),
+	)
 
 	return uint32(ret)
 }
@@ -457,7 +463,8 @@ func PdhExpandWildCardPath(szWildCardPath string, mszExpandedPathList *uint16, p
 		uintptr(unsafe.Pointer(ptxt)),
 		uintptr(unsafe.Pointer(mszExpandedPathList)),
 		uintptr(unsafe.Pointer(pcchPathListLength)),
-		uintptr(unsafe.Pointer(&flags)))
+		uintptr(unsafe.Pointer(&flags)),
+	)
 
 	return uint32(ret)
 }
@@ -498,7 +505,8 @@ func PdhGetCounterInfo(hCounter PDH_HCOUNTER, bRetrieveExplainText int, pdwBuffe
 		uintptr(hCounter),
 		uintptr(bRetrieveExplainText),
 		uintptr(unsafe.Pointer(pdwBufferSize)),
-		uintptr(unsafe.Pointer(lpBuffer)))
+		uintptr(unsafe.Pointer(lpBuffer)),
+	)
 
 	return uint32(ret)
 }
@@ -534,7 +542,7 @@ func PdhGetRawCounterValue(hCounter PDH_HCOUNTER, lpdwType *uint32, pValue *PDH_
 //
 // itemBuffer [out]
 // Pointer to a buffer that receives an array of PDH_RAW_COUNTER_ITEM structures. Each structure contains the raw counter value for an instance.
-func PdhGetRawCounterArrayW(hCounter PDH_HCOUNTER, lpdwBufferSize *uint32, lpdwBufferCount *uint32, itemBuffer *byte) uint32 {
+func PdhGetRawCounterArrayW(hCounter PDH_HCOUNTER, lpdwBufferSize, lpdwBufferCount *uint32, itemBuffer *byte) uint32 {
 	ret, _, _ := pdh_GetRawCounterArrayW.Call(
 		uintptr(hCounter),
 		uintptr(unsafe.Pointer(lpdwBufferSize)),

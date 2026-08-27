@@ -6,7 +6,6 @@
 package sqlserverreceiver
 
 import (
-	"context"
 	"path/filepath"
 	"testing"
 
@@ -29,18 +28,18 @@ type mockPerfCounterWatcher struct {
 }
 
 // ScrapeRawValue implements winperfcounters.PerfCounterWatcher.
-func (_m *mockPerfCounterWatcher) ScrapeRawValue(_ *int64) (bool, error) {
+func (*mockPerfCounterWatcher) ScrapeRawValue(*int64) (bool, error) {
 	panic("unimplemented")
 }
 
 // ScrapeRawValues implements winperfcounters.PerfCounterWatcher.
-func (_m *mockPerfCounterWatcher) ScrapeRawValues() ([]winperfcounters.RawCounterValue, error) {
+func (*mockPerfCounterWatcher) ScrapeRawValues() ([]winperfcounters.RawCounterValue, error) {
 	panic("unimplemented")
 }
 
 // Close provides a mock function with given fields:
-func (_m *mockPerfCounterWatcher) Close() error {
-	ret := _m.Called()
+func (w *mockPerfCounterWatcher) Close() error {
+	ret := w.Called()
 
 	var r0 error
 	if rf, ok := ret.Get(0).(func() error); ok {
@@ -53,8 +52,8 @@ func (_m *mockPerfCounterWatcher) Close() error {
 }
 
 // Path provides a mock function with given fields:
-func (_m *mockPerfCounterWatcher) Path() string {
-	ret := _m.Called()
+func (w *mockPerfCounterWatcher) Path() string {
+	ret := w.Called()
 
 	var r0 string
 	if rf, ok := ret.Get(0).(func() string); ok {
@@ -67,8 +66,8 @@ func (_m *mockPerfCounterWatcher) Path() string {
 }
 
 // ScrapeData provides a mock function with given fields:
-func (_m *mockPerfCounterWatcher) ScrapeData() ([]winperfcounters.CounterValue, error) {
-	ret := _m.Called()
+func (w *mockPerfCounterWatcher) ScrapeData() ([]winperfcounters.CounterValue, error) {
+	ret := w.Called()
 
 	var r0 []winperfcounters.CounterValue
 	if rf, ok := ret.Get(0).(func() []winperfcounters.CounterValue); ok {
@@ -87,7 +86,7 @@ func (_m *mockPerfCounterWatcher) ScrapeData() ([]winperfcounters.CounterValue, 
 	return r0, r1
 }
 
-func (_m *mockPerfCounterWatcher) Reset() error {
+func (*mockPerfCounterWatcher) Reset() error {
 	return nil
 }
 
@@ -99,23 +98,23 @@ func TestSqlServerScraper(t *testing.T) {
 	settings.Logger = zap.New(logger)
 	s := newSQLServerPCScraper(settings, cfg)
 
-	assert.NoError(t, s.start(context.Background(), nil))
+	assert.NoError(t, s.start(t.Context(), nil))
 	assert.Empty(t, s.watcherRecorders)
-	assert.Equal(t, 21, obsLogs.Len())
-	assert.Equal(t, 21, obsLogs.FilterMessageSnippet("failed to create perf counter with path \\SQLServer:").Len())
-	assert.Equal(t, 21, obsLogs.FilterMessageSnippet("The specified object was not found on the computer.").Len())
+	assert.Equal(t, 29, obsLogs.Len())
+	assert.Equal(t, 29, obsLogs.FilterMessageSnippet("failed to create perf counter with path \\SQLServer:").Len())
+	assert.Equal(t, 29, obsLogs.FilterMessageSnippet("The specified object was not found on the computer.").Len())
 	assert.Equal(t, 1, obsLogs.FilterMessageSnippet("\\SQLServer:General Statistics\\").Len())
-	assert.Equal(t, 3, obsLogs.FilterMessageSnippet("\\SQLServer:SQL Statistics\\").Len())
+	assert.Equal(t, 11, obsLogs.FilterMessageSnippet("\\SQLServer:SQL Statistics\\").Len())
 	assert.Equal(t, 2, obsLogs.FilterMessageSnippet("\\SQLServer:Locks(_Total)\\").Len())
 	assert.Equal(t, 6, obsLogs.FilterMessageSnippet("\\SQLServer:Buffer Manager\\").Len())
 	assert.Equal(t, 1, obsLogs.FilterMessageSnippet("\\SQLServer:Access Methods(_Total)\\").Len())
 	assert.Equal(t, 8, obsLogs.FilterMessageSnippet("\\SQLServer:Databases(*)\\").Len())
 
-	metrics, err := s.scrape(context.Background())
+	metrics, err := s.scrape(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, 0, metrics.ResourceMetrics().Len())
 
-	err = s.shutdown(context.Background())
+	err = s.shutdown(t.Context())
 	require.NoError(t, err)
 }
 
@@ -129,6 +128,8 @@ func TestScrape(t *testing.T) {
 	t.Run("default", func(t *testing.T) {
 		factory := NewFactory()
 		cfg := factory.CreateDefaultConfig().(*Config)
+		cfg.MetricsBuilderConfig.ResourceAttributes.ServiceName.Enabled = true
+		cfg.MetricsBuilderConfig.ResourceAttributes.ServiceNamespace.Enabled = true
 		settings := receivertest.NewNopSettings(metadata.Type)
 		scraper := newSQLServerPCScraper(settings, cfg)
 
@@ -143,14 +144,15 @@ func TestScrape(t *testing.T) {
 			}
 		}
 
-		scrapeData, err := scraper.scrape(context.Background())
+		scrapeData, err := scraper.scrape(t.Context())
 		require.NoError(t, err)
 
 		expectedMetrics, err := golden.ReadMetrics(goldenScrapePath)
 		require.NoError(t, err)
 
 		require.NoError(t, pmetrictest.CompareMetrics(expectedMetrics, scrapeData,
-			pmetrictest.IgnoreMetricDataPointsOrder(), pmetrictest.IgnoreStartTimestamp(), pmetrictest.IgnoreTimestamp()))
+			pmetrictest.IgnoreMetricDataPointsOrder(), pmetrictest.IgnoreStartTimestamp(), pmetrictest.IgnoreTimestamp(),
+			pmetrictest.IgnoreResourceAttributeValue("service.instance.id")))
 	})
 
 	t.Run("named", func(t *testing.T) {
@@ -159,13 +161,22 @@ func TestScrape(t *testing.T) {
 		cfg.MetricsBuilderConfig = metadata.MetricsBuilderConfig{
 			Metrics: metadata.DefaultMetricsConfig(),
 			ResourceAttributes: metadata.ResourceAttributesConfig{
-				SqlserverDatabaseName: metadata.ResourceAttributeConfig{
+				ServiceInstanceID: metadata.ServiceInstanceIDResourceAttributeConfig{
 					Enabled: true,
 				},
-				SqlserverInstanceName: metadata.ResourceAttributeConfig{
+				ServiceName: metadata.ServiceNameResourceAttributeConfig{
 					Enabled: true,
 				},
-				SqlserverComputerName: metadata.ResourceAttributeConfig{
+				ServiceNamespace: metadata.ServiceNamespaceResourceAttributeConfig{
+					Enabled: true,
+				},
+				SqlserverDatabaseName: metadata.SqlserverDatabaseNameResourceAttributeConfig{
+					Enabled: true,
+				},
+				SqlserverInstanceName: metadata.SqlserverInstanceNameResourceAttributeConfig{
+					Enabled: true,
+				},
+				SqlserverComputerName: metadata.SqlserverComputerNameResourceAttributeConfig{
 					Enabled: true,
 				},
 			},
@@ -187,7 +198,7 @@ func TestScrape(t *testing.T) {
 			}
 		}
 
-		scrapeData, err := scraper.scrape(context.Background())
+		scrapeData, err := scraper.scrape(t.Context())
 		require.NoError(t, err)
 
 		expectedMetrics, err := golden.ReadMetrics(goldenNamedInstanceScrapePath)

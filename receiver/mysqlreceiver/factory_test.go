@@ -4,13 +4,12 @@
 package mysqlreceiver
 
 import (
-	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/config/confignet"
-	"go.opentelemetry.io/collector/confmap/xconfmap"
+	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/receiver/receivertest"
 	"go.opentelemetry.io/collector/scraper/scraperhelper"
@@ -29,14 +28,14 @@ func TestValidConfig(t *testing.T) {
 	cfg := factory.CreateDefaultConfig().(*Config)
 	cfg.Username = "otel"
 	cfg.Password = "otel"
-	cfg.Endpoint = "localhost:3306"
-	require.NoError(t, xconfmap.Validate(cfg))
+	cfg.AddrConfig.Endpoint = "localhost:3306"
+	require.NoError(t, confmap.Validate(cfg))
 }
 
 func TestCreateMetrics(t *testing.T) {
 	factory := NewFactory()
 	metricsReceiver, err := factory.CreateMetrics(
-		context.Background(),
+		t.Context(),
 		receivertest.NewNopSettings(metadata.Type),
 		&Config{
 			ControllerConfig: scraperhelper.ControllerConfig{
@@ -53,4 +52,37 @@ func TestCreateMetrics(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.NotNil(t, metricsReceiver)
+}
+
+func TestCreateLogs(t *testing.T) {
+	factory := NewFactory()
+	logsReceiver, err := factory.CreateLogs(
+		t.Context(),
+		receivertest.NewNopSettings(metadata.Type),
+		&Config{
+			ControllerConfig: scraperhelper.ControllerConfig{
+				CollectionInterval: 10 * time.Second,
+				InitialDelay:       time.Second,
+			},
+			Username: "otel",
+			Password: "otel",
+			AddrConfig: confignet.AddrConfig{
+				Endpoint: "localhost:3306",
+			},
+			LogsBuilderConfig: metadata.LogsBuilderConfig{
+				Events: metadata.EventsConfig{
+					DbServerQuerySample: metadata.EventConfig{
+						Enabled: true,
+					},
+					DbServerTopQuery: metadata.EventConfig{
+						Enabled: true,
+					},
+				},
+				ResourceAttributes: metadata.DefaultResourceAttributesConfig(),
+			},
+		},
+		consumertest.NewNop(),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, logsReceiver)
 }

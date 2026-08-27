@@ -50,7 +50,11 @@ func (f *baseFailoverRouter[C]) reportConsumerError(idx int) {
 }
 
 func (f *baseFailoverRouter[C]) Shutdown() {
-	close(f.done)
+	select {
+	case <-f.done:
+	default:
+		close(f.done)
+	}
 }
 
 func newBaseFailoverRouter[C any](provider consumerProvider[C], cfg *Config) (*baseFailoverRouter[C], error) {
@@ -58,8 +62,6 @@ func newBaseFailoverRouter[C any](provider consumerProvider[C], cfg *Config) (*b
 	notifyRetry := make(chan struct{}, 1)
 	pSConstants := state.PSConstants{
 		RetryInterval: cfg.RetryInterval,
-		RetryGap:      cfg.RetryGap,
-		MaxRetries:    cfg.MaxRetries,
 	}
 
 	consumers := make([]C, 0)

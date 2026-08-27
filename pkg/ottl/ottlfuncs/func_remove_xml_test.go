@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 )
@@ -105,16 +106,17 @@ func Test_RemoveXML(t *testing.T) {
 				ottl.FunctionContext{},
 				&RemoveXMLArguments[any]{
 					Target: ottl.StandardStringGetter[any]{
-						Getter: func(_ context.Context, _ any) (any, error) {
+						Getter: func(context.Context, any) (any, error) {
 							return tt.document, nil
 						},
 					},
 					XPath: tt.xPath,
-				})
-			assert.NoError(t, err)
+				},
+			)
+			require.NoError(t, err)
 
-			result, err := exprFunc(context.Background(), nil)
-			assert.NoError(t, err)
+			result, err := exprFunc(t.Context(), nil)
+			require.NoError(t, err)
 			assert.Equal(t, tt.want, result)
 		})
 	}
@@ -133,7 +135,8 @@ func TestCreateRemoveXMLFunc(t *testing.T) {
 	exprFunc, err = factory.CreateFunction(
 		fCtx, &RemoveXMLArguments[any]{
 			XPath: "!",
-		})
+		},
+	)
 	assert.Error(t, err)
 	assert.Nil(t, exprFunc)
 
@@ -142,17 +145,55 @@ func TestCreateRemoveXMLFunc(t *testing.T) {
 		fCtx, &RemoveXMLArguments[any]{
 			Target: invalidXMLGetter(),
 			XPath:  "/",
-		})
-	assert.NoError(t, err)
+		},
+	)
+	require.NoError(t, err)
 	assert.NotNil(t, exprFunc)
-	_, err = exprFunc(context.Background(), nil)
+	_, err = exprFunc(t.Context(), nil)
 	assert.Error(t, err)
 }
 
 func invalidXMLGetter() ottl.StandardStringGetter[any] {
 	return ottl.StandardStringGetter[any]{
-		Getter: func(_ context.Context, _ any) (any, error) {
+		Getter: func(context.Context, any) (any, error) {
 			return `<a>>>>>>>`, nil
 		},
 	}
+}
+
+func Test_RemoveXMLFactory(t *testing.T) {
+	t.Run("factory creation", func(t *testing.T) {
+		factory := NewRemoveXMLFactory[any]()
+		assert.Equal(t, "RemoveXML", factory.Name())
+	})
+
+	t.Run("default arguments", func(t *testing.T) {
+		factory := NewRemoveXMLFactory[any]()
+		args := factory.CreateDefaultArguments()
+
+		assert.IsType(t, &RemoveXMLArguments[any]{}, args)
+		assertArgumentFieldNames(t, args, []string{"Target", "XPath"})
+	})
+
+	t.Run("function creation", func(t *testing.T) {
+		factory := NewRemoveXMLFactory[any]()
+		args := factory.CreateDefaultArguments()
+		removeArgs, ok := args.(*RemoveXMLArguments[any])
+		require.True(t, ok)
+		removeArgs.Target = ottl.StandardStringGetter[any]{
+			Getter: func(context.Context, any) (any, error) {
+				return "<a>b</a>", nil
+			},
+		}
+		removeArgs.XPath = "/a"
+
+		fn, err := factory.CreateFunction(ottl.FunctionContext{}, args)
+		require.NoError(t, err)
+		assert.NotNil(t, fn)
+	})
+
+	t.Run("invalid arguments type", func(t *testing.T) {
+		_, err := createRemoveXMLFunction[any](ottl.FunctionContext{}, "invalid args")
+		assert.ErrorContains(t, err, "RemoveXML args must be of type *RemoveXMLAguments[K]")
+	})
 }

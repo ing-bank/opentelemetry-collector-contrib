@@ -4,7 +4,6 @@
 package googlemanagedprometheusexporter // import "github.com/open-telemetry/opentelemetry-collector-contrib/exporter/googlemanagedprometheusexporter"
 
 import (
-	"context"
 	"os"
 	"testing"
 
@@ -26,11 +25,11 @@ func TestCreateExporter(t *testing.T) {
 	if os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") == "" {
 		t.Skip("Default credentials not set, skip creating Google Cloud exporter")
 	}
-	ctx := context.Background()
+	ctx := t.Context()
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 	eCfg := cfg.(*Config)
-	eCfg.ProjectID = "test"
+	eCfg.GMPConfig.ProjectID = "test"
 
 	te, err := factory.CreateTraces(ctx, exportertest.NewNopSettings(metadata.Type), eCfg)
 	assert.NoError(t, err)

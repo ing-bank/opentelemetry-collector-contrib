@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	sls "github.com/aliyun/aliyun-log-go-sdk"
-	"github.com/gogo/protobuf/proto"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
@@ -117,23 +116,23 @@ func newMetricLogFromRaw(
 ) *sls.Log {
 	labels.Sort()
 	return &sls.Log{
-		Time: proto.Uint32(uint32(nsec / 1e9)),
+		Time: new(uint32(nsec / 1e9)),
 		Contents: []*sls.LogContent{
 			{
-				Key:   proto.String(metricNameKey),
-				Value: proto.String(formatMetricName(name)),
+				Key:   new(metricNameKey),
+				Value: new(formatMetricName(name)),
 			},
 			{
-				Key:   proto.String(labelsKey),
-				Value: proto.String(labels.String()),
+				Key:   new(labelsKey),
+				Value: new(labels.String()),
 			},
 			{
-				Key:   proto.String(timeNanoKey),
-				Value: proto.String(strconv.FormatInt(nsec, 10)),
+				Key:   new(timeNanoKey),
+				Value: new(strconv.FormatInt(nsec, 10)),
 			},
 			{
-				Key:   proto.String(valueKey),
-				Value: proto.String(strconv.FormatFloat(value, 'g', -1, 64)),
+				Key:   new(valueKey),
+				Value: new(strconv.FormatFloat(value, 'g', -1, 64)),
 			},
 		},
 	}
@@ -184,14 +183,15 @@ func doubleHistogramMetricsToLogs(name string, data pmetric.HistogramDataPointSl
 		for k, v := range attributeMap.All() {
 			labels.Append(k, v.AsString())
 		}
-		logs = append(logs, newMetricLogFromRaw(name+"_sum",
-			labels,
-			int64(dataPoint.Timestamp()),
-			dataPoint.Sum()))
-		logs = append(logs, newMetricLogFromRaw(name+"_count",
-			labels,
-			int64(dataPoint.Timestamp()),
-			float64(dataPoint.Count())))
+		logs = append(logs,
+			newMetricLogFromRaw(name+"_sum",
+				labels,
+				int64(dataPoint.Timestamp()),
+				dataPoint.Sum()),
+			newMetricLogFromRaw(name+"_count",
+				labels,
+				int64(dataPoint.Timestamp()),
+				float64(dataPoint.Count())))
 
 		bounds := dataPoint.ExplicitBounds()
 		boundsStr := make([]string, bounds.Len()+1)
@@ -205,7 +205,7 @@ func doubleHistogramMetricsToLogs(name string, data pmetric.HistogramDataPointSl
 		bucketLabels := labels.Clone()
 		bucketLabels.Append(bucketLabelKey, "")
 		bucketLabels.Sort()
-		for i := 0; i < bucketCount; i++ {
+		for i := range bucketCount {
 			bucket := dataPoint.BucketCounts().At(i)
 			bucketLabels.Replace(bucketLabelKey, boundsStr[i])
 
@@ -216,7 +216,8 @@ func doubleHistogramMetricsToLogs(name string, data pmetric.HistogramDataPointSl
 					bucketLabels,
 					int64(dataPoint.Timestamp()),
 					float64(bucket),
-				))
+				),
+			)
 		}
 	}
 	return logs
@@ -230,14 +231,15 @@ func doubleSummaryMetricsToLogs(name string, data pmetric.SummaryDataPointSlice,
 		for k, v := range attributeMap.All() {
 			labels.Append(k, v.AsString())
 		}
-		logs = append(logs, newMetricLogFromRaw(name+"_sum",
-			labels,
-			int64(dataPoint.Timestamp()),
-			dataPoint.Sum()))
-		logs = append(logs, newMetricLogFromRaw(name+"_count",
-			labels,
-			int64(dataPoint.Timestamp()),
-			float64(dataPoint.Count())))
+		logs = append(logs,
+			newMetricLogFromRaw(name+"_sum",
+				labels,
+				int64(dataPoint.Timestamp()),
+				dataPoint.Sum()),
+			newMetricLogFromRaw(name+"_count",
+				labels,
+				int64(dataPoint.Timestamp()),
+				float64(dataPoint.Count())))
 
 		// Adding the "quantile" dimension.
 		summaryLabels := labels.Clone()

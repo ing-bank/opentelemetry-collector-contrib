@@ -42,7 +42,7 @@ type ssoSpan struct {
 		Name                   string         `json:"name"`
 		SchemaURL              string         `json:"schemaUrl"`
 		Version                string         `json:"version"`
-	} `json:"instrumentationScope,omitempty"`
+	} `json:"instrumentationScope,omitzero"`
 	Kind         string            `json:"kind"`
 	Links        []ssoSpanLinks    `json:"links,omitempty"`
 	Name         string            `json:"name"`
@@ -62,12 +62,13 @@ type ssoSpan struct {
 type ssoRecord struct {
 	Attributes           map[string]any `json:"attributes,omitempty"`
 	Body                 string         `json:"body"`
+	EventName            string         `json:"eventName,omitempty"`
 	InstrumentationScope struct {
 		Attributes map[string]any `json:"attributes,omitempty"`
 		Name       string         `json:"name,omitempty"`
 		SchemaURL  string         `json:"schemaUrl,omitempty"`
 		Version    string         `json:"version,omitempty"`
-	} `json:"instrumentationScope,omitempty"`
+	} `json:"instrumentationScope,omitzero"`
 	ObservedTimestamp *time.Time        `json:"observedTimestamp,omitempty"`
 	Resource          map[string]string `json:"resource,omitempty"`
 	SchemaURL         string            `json:"schemaUrl,omitempty"`

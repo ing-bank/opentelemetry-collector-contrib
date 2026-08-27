@@ -9,10 +9,12 @@ import (
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/confighttp"
+	"go.opentelemetry.io/collector/config/confignet"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/receiver"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/internal/sharedcomponent"
+	datadogconfig "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/datadog/config"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/datadogreceiver/internal/metadata"
 )
 
@@ -22,24 +24,47 @@ func NewFactory() receiver.Factory {
 		metadata.Type,
 		createDefaultConfig,
 		receiver.WithMetrics(createMetricsReceiver, metadata.MetricsStability),
-		receiver.WithTraces(createTracesReceiver, metadata.TracesStability))
+		receiver.WithTraces(createTracesReceiver, metadata.TracesStability),
+		receiver.WithLogs(createLogsReceiver, metadata.LogsStability),
+	)
 }
 
 func createDefaultConfig() component.Config {
+	netAddr := confignet.NewDefaultAddrConfig()
+	netAddr.Transport = confignet.TransportTypeTCP
+	netAddr.Endpoint = "localhost:8126"
+
+	serverConfig := confighttp.NewDefaultServerConfig()
+	// TODO: See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/49316.
+	serverConfig.WriteTimeout = 0
+	serverConfig.ReadHeaderTimeout = 0
+	serverConfig.IdleTimeout = 0           //nolint:staticcheck // SA1019: see TODO above
+	serverConfig.KeepAlivesEnabled = false //nolint:staticcheck // SA1019: see TODO above
+	serverConfig.NetAddr = netAddr
+
 	return &Config{
-		ServerConfig: confighttp.ServerConfig{
-			Endpoint: "localhost:8126",
+		ServerConfig:              serverConfig,
+		ReadTimeout:               60 * time.Second,
+		IdleSeriesTimeout:         0,
+		IdleSeriesCleanupInterval: 5 * time.Minute,
+		TraceIDCacheSize:          100,
+		Logs:                      LogsConfig{DecodeJSONMessage: true},
+		Intake: IntakeConfig{
+			Behavior: defaultConfigIntakeBehavior,
+			Proxy: ProxyConfig{
+				API: datadogconfig.APIConfig{
+					Site: defaultConfigIntakeProxyAPISite,
+				},
+			},
 		},
-		ReadTimeout:      60 * time.Second,
-		TraceIDCacheSize: 100,
 	}
 }
 
-func createTracesReceiver(_ context.Context, params receiver.Settings, cfg component.Config, consumer consumer.Traces) (receiver.Traces, error) {
+func createTracesReceiver(ctx context.Context, params receiver.Settings, cfg component.Config, consumer consumer.Traces) (receiver.Traces, error) {
 	var err error
 	rcfg := cfg.(*Config)
 	r := receivers.GetOrAdd(rcfg, func() (dd component.Component) {
-		dd, err = newDataDogReceiver(rcfg, params)
+		dd, err = newDataDogReceiver(ctx, rcfg, params)
 		return dd
 	})
 	if err != nil {
@@ -50,11 +75,11 @@ func createTracesReceiver(_ context.Context, params receiver.Settings, cfg compo
 	return r, nil
 }
 
-func createMetricsReceiver(_ context.Context, params receiver.Settings, cfg component.Config, consumer consumer.Metrics) (receiver.Metrics, error) {
+func createMetricsReceiver(ctx context.Context, params receiver.Settings, cfg component.Config, consumer consumer.Metrics) (receiver.Metrics, error) {
 	var err error
 	rcfg := cfg.(*Config)
 	r := receivers.GetOrAdd(cfg, func() (dd component.Component) {
-		dd, err = newDataDogReceiver(rcfg, params)
+		dd, err = newDataDogReceiver(ctx, rcfg, params)
 		return dd
 	})
 	if err != nil {
@@ -62,6 +87,21 @@ func createMetricsReceiver(_ context.Context, params receiver.Settings, cfg comp
 	}
 
 	r.Unwrap().(*datadogReceiver).nextMetricsConsumer = consumer
+	return r, nil
+}
+
+func createLogsReceiver(ctx context.Context, params receiver.Settings, cfg component.Config, consumer consumer.Logs) (receiver.Logs, error) {
+	var err error
+	rcfg := cfg.(*Config)
+	r := receivers.GetOrAdd(cfg, func() (dd component.Component) {
+		dd, err = newDataDogReceiver(ctx, rcfg, params)
+		return dd
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	r.Unwrap().(*datadogReceiver).nextLogsConsumer = consumer
 	return r, nil
 }
 

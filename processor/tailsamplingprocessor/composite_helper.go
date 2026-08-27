@@ -8,14 +8,15 @@ import (
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/tailsamplingprocessor/internal/sampling"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/tailsamplingprocessor/internal/telemetry"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/processor/tailsamplingprocessor/pkg/samplingpolicy"
 )
 
-func getNewCompositePolicy(settings component.TelemetrySettings, config *CompositeCfg) (sampling.PolicyEvaluator, error) {
+func getNewCompositePolicy(settings component.TelemetrySettings, config *CompositeCfg, policyExtensions map[string]samplingpolicy.Extension) (samplingpolicy.Evaluator, error) {
 	subPolicyEvalParams := make([]sampling.SubPolicyEvalParams, len(config.SubPolicyCfg))
 	rateAllocationsMap := getRateAllocationMap(config)
 	for i := range config.SubPolicyCfg {
 		policyCfg := &config.SubPolicyCfg[i]
-		policy, err := getCompositeSubPolicyEvaluator(settings, policyCfg)
+		policy, err := getCompositeSubPolicyEvaluator(settings, policyCfg, policyExtensions)
 		if err != nil {
 			return nil, err
 		}
@@ -32,26 +33,37 @@ func getNewCompositePolicy(settings component.TelemetrySettings, config *Composi
 
 // Apply rate allocations to the sub-policies
 func getRateAllocationMap(config *CompositeCfg) map[string]float64 {
-	rateAllocationsMap := make(map[string]float64)
+	rateAllocationsMap := make(map[string]float64, len(config.SubPolicyCfg))
 	maxTotalSPS := float64(config.MaxTotalSpansPerSecond)
 	// Default SPS determined by equally diving number of sub policies
 	defaultSPS := maxTotalSPS / float64(len(config.SubPolicyCfg))
+
+	percentByPolicy := make(map[string]int64, len(config.RateAllocation))
 	for _, rAlloc := range config.RateAllocation {
-		if rAlloc.Percent > 0 {
-			rateAllocationsMap[rAlloc.Policy] = (float64(rAlloc.Percent) / 100) * maxTotalSPS
+		percentByPolicy[rAlloc.Policy] = rAlloc.Percent
+	}
+
+	// Iterate over every configured sub-policy, not just the ones listed in
+	// RateAllocation, so a sub-policy left out of RateAllocation still gets
+	// its equal-share default instead of silently falling back to a zero
+	// value MaxSpansPerSecond (which permanently blocks it from sampling).
+	for i := range config.SubPolicyCfg {
+		subPolicy := &config.SubPolicyCfg[i]
+		if percent, ok := percentByPolicy[subPolicy.Name]; ok && percent > 0 {
+			rateAllocationsMap[subPolicy.Name] = (float64(percent) / 100) * maxTotalSPS
 		} else {
-			rateAllocationsMap[rAlloc.Policy] = defaultSPS
+			rateAllocationsMap[subPolicy.Name] = defaultSPS
 		}
 	}
 	return rateAllocationsMap
 }
 
 // Return instance of composite sub-policy
-func getCompositeSubPolicyEvaluator(settings component.TelemetrySettings, cfg *CompositeSubPolicyCfg) (sampling.PolicyEvaluator, error) {
+func getCompositeSubPolicyEvaluator(settings component.TelemetrySettings, cfg *CompositeSubPolicyCfg, policyExtensions map[string]samplingpolicy.Extension) (samplingpolicy.Evaluator, error) {
 	switch cfg.Type {
 	case And:
-		return getNewAndPolicy(settings, &cfg.AndCfg)
+		return getNewAndPolicy(settings, &cfg.AndCfg, policyExtensions)
 	default:
-		return getSharedPolicyEvaluator(settings, &cfg.sharedPolicyCfg)
+		return getSharedPolicyEvaluator(settings, &cfg.sharedPolicyCfg, policyExtensions)
 	}
 }

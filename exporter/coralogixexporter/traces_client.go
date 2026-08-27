@@ -12,6 +12,8 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"go.uber.org/zap"
+
+	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/coralogixexporter/internal/validation"
 )
 
 func newTracesExporter(cfg component.Config, set exporter.Settings) (*tracesExporter, error) {
@@ -20,7 +22,7 @@ func newTracesExporter(cfg component.Config, set exporter.Settings) (*tracesExpo
 		return nil, fmt.Errorf("invalid config exporter, expect type: %T, got: %T", &Config{}, cfg)
 	}
 
-	signalExporter, err := newSignalExporter(oCfg, set, oCfg.Traces.Endpoint, oCfg.Traces.Headers)
+	signalExporter, err := newSignalExporter(oCfg, set, oCfg.Traces.ClientConfig.Endpoint, oCfg.Traces.ClientConfig.Headers)
 	if err != nil {
 		return nil, err
 	}
@@ -31,7 +33,8 @@ func newTracesExporter(cfg component.Config, set exporter.Settings) (*tracesExpo
 }
 
 type tracesExporter struct {
-	traceExporter ptraceotlp.GRPCClient
+	grpcTracesExporter ptraceotlp.GRPCClient
+	httpTracesExporter httpTracesExporter
 	*signalExporter
 }
 
@@ -40,7 +43,11 @@ func (e *tracesExporter) start(ctx context.Context, host component.Host) (err er
 	if err := e.startSignalExporter(ctx, host, wrapper); err != nil {
 		return err
 	}
-	e.traceExporter = ptraceotlp.NewGRPCClient(e.clientConn)
+	if e.config.Protocol == httpProtocol {
+		e.httpTracesExporter = newHTTPTracesExporter(e.clientHTTP, e.config)
+	} else {
+		e.grpcTracesExporter = ptraceotlp.NewGRPCClient(e.clientConn)
+	}
 	return nil
 }
 
@@ -57,19 +64,39 @@ func (e *tracesExporter) pushTraces(ctx context.Context, td ptrace.Traces) error
 		resourceSpan.Resource().Attributes().PutStr(cxSubsystemNameAttrName, subsystem)
 	}
 
-	resp, err := e.traceExporter.Export(e.enhanceContext(ctx), ptraceotlp.NewExportRequestFromTraces(td), e.callOptions...)
+	er := ptraceotlp.NewExportRequestFromTraces(td)
+	var resp ptraceotlp.ExportResponse
+	var err error
+
+	if e.config.Protocol == httpProtocol {
+		resp, err = e.httpTracesExporter.Export(ctx, er)
+	} else {
+		resp, err = e.grpcTracesExporter.Export(e.enhanceContext(ctx), er, e.callOptions...)
+	}
 	if err != nil {
 		return e.processError(err)
 	}
 
 	partialSuccess := resp.PartialSuccess()
 	if partialSuccess.ErrorMessage() != "" || partialSuccess.RejectedSpans() != 0 {
-		e.settings.Logger.Error("Partial success response from Coralogix",
+		logFields := []zap.Field{
 			zap.String("message", partialSuccess.ErrorMessage()),
 			zap.Int64("rejected_spans", partialSuccess.RejectedSpans()),
-		)
+		}
+
+		if e.settings.Logger.Level() == zap.DebugLevel {
+			logFields = append(logFields, validation.BuildPartialSuccessLogFieldsForTraces(
+				partialSuccess.ErrorMessage(),
+				td,
+				cxAppNameAttrName,
+				cxSubsystemNameAttrName,
+			)...)
+		}
+
+		e.settings.Logger.Error("Partial success response from Coralogix", logFields...)
 	}
 
+	e.rateError.errorCount.Store(0)
 	return nil
 }
 

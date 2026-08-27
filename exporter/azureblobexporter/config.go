@@ -5,10 +5,16 @@ package azureblobexporter // import "github.com/open-telemetry/opentelemetry-col
 
 import (
 	"errors"
+	"fmt"
 
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/config/configcompression"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configretry"
+	"go.opentelemetry.io/collector/exporter/exporterhelper"
 )
+
+var errUnknownCompression = errors.New("unknown compression type")
 
 type TelemetryConfig struct {
 	Logs    string `mapstructure:"logs"`
@@ -26,8 +32,13 @@ type BlobNameFormat struct {
 	MetricsFormat            string            `mapstructure:"metrics_format"`
 	LogsFormat               string            `mapstructure:"logs_format"`
 	TracesFormat             string            `mapstructure:"traces_format"`
+	SerialNumEnabled         bool              `mapstructure:"serial_num_enabled"`
 	SerialNumRange           int64             `mapstructure:"serial_num_range"`
 	SerialNumBeforeExtension bool              `mapstructure:"serial_num_before_extension"`
+	Timezone                 string            `mapstructure:"timezone"`
+	TemplateEnabled          bool              `mapstructure:"template_enabled"`
+	TimeParserEnabled        bool              `mapstructure:"time_parser_enabled"`
+	TimeParserRanges         []string          `mapstructure:"time_parser_ranges"`
 	Params                   map[string]string `mapstructure:"params"`
 }
 
@@ -51,6 +62,9 @@ type Authentication struct {
 
 	// ConnectionString to the endpoint.
 	ConnectionString string `mapstructure:"connection_string"`
+
+	// FederatedTokenFile is the path to the file containing the federated token. It's needed when type is workload_identity.
+	FederatedTokenFile string `mapstructure:"federated_token_file"`
 }
 
 type AuthType string
@@ -60,30 +74,39 @@ const (
 	SystemManagedIdentity AuthType = "system_managed_identity"
 	UserManagedIdentity   AuthType = "user_managed_identity"
 	ServicePrincipal      AuthType = "service_principal"
+	WorkloadIdentity      AuthType = "workload_identity"
 )
 
 // Config contains the main configuration options for the azure storage blob exporter
 type Config struct {
+	QueueSettings   configoptional.Optional[exporterhelper.QueueBatchConfig] `mapstructure:"sending_queue"`
+	TimeoutSettings exporterhelper.TimeoutConfig                             `mapstructure:",squash"`
+
 	// URL is the endpoint to the azure storage account. This is only required until there is an azure auth extension in the future.
 	URL string `mapstructure:"url"`
 
 	// A container organizes a set of blobs, similar to a directory in a file system.
-	Container *TelemetryConfig `mapstructure:"container"`
-	Auth      *Authentication  `mapstructure:"auth"`
+	Container TelemetryConfig `mapstructure:"container"`
+	Auth      Authentication  `mapstructure:"auth"`
 
 	// BlobNameFormat is the format of the blob name. It controls the uploaded blob name, e.g. "2006/01/02/metrics_15_04_05.json"
-	BlobNameFormat *BlobNameFormat `mapstructure:"blob_name_format"`
+	BlobNameFormat BlobNameFormat `mapstructure:"blob_name_format"`
 
 	// FormatType is the format of encoded telemetry data. Supported values are json and proto.
 	FormatType string `mapstructure:"format"`
 
 	// AppendBlob configures append blob behavior
-	AppendBlob *AppendBlob `mapstructure:"append_blob"`
+	AppendBlob AppendBlob `mapstructure:"append_blob"`
+
+	// Compression sets the algorithm used to process the payload
+	// before uploading to Azure Blob Storage.
+	// Valid values are: `gzip`, `zstd`, or no value set.
+	Compression configcompression.Type `mapstructure:"compression"`
 
 	// Encoding extension to apply for logs/metrics/traces. If present, overrides the marshaler configuration option and format.
-	Encodings *Encodings `mapstructure:"encodings"`
+	Encodings Encodings `mapstructure:"encodings"`
 
-	configretry.BackOffConfig `mapstructure:"retry_on_failure"`
+	BackOffConfig configretry.BackOffConfig `mapstructure:"retry_on_failure"`
 }
 
 func (c *Config) Validate() error {
@@ -104,10 +127,24 @@ func (c *Config) Validate() error {
 		if c.Auth.ClientID == "" {
 			return errors.New("client_id cannot be empty when auth type is user_managed_identity")
 		}
+	case WorkloadIdentity:
+		if c.Auth.TenantID == "" || c.Auth.ClientID == "" || c.Auth.FederatedTokenFile == "" {
+			return errors.New("tenant_id, client_id and federated_token_file cannot be empty when auth type is workload_identity")
+		}
 	}
 
 	if c.FormatType != formatTypeJSON && c.FormatType != formatTypeProto {
 		return errors.New("unknown format type: " + c.FormatType)
+	}
+
+	if c.Compression.IsCompressed() {
+		if c.Compression != configcompression.TypeGzip && c.Compression != configcompression.TypeZstd {
+			return fmt.Errorf(
+				"%w %q, valid values are %q and %q",
+				errUnknownCompression, c.Compression,
+				configcompression.TypeGzip, configcompression.TypeZstd,
+			)
+		}
 	}
 
 	return nil

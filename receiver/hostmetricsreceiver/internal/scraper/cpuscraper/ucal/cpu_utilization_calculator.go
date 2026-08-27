@@ -51,7 +51,7 @@ func (c *CPUUtilizationCalculator) CalculateAndRecord(now pcommon.Timestamp, cpu
 }
 
 // cpuUtilization calculates the difference between 2 cpu.TimesStat using spent time between them
-func cpuUtilization(timeStart cpu.TimesStat, timeEnd cpu.TimesStat) CPUUtilization {
+func cpuUtilization(timeStart, timeEnd cpu.TimesStat) CPUUtilization {
 	elapsedSeconds := totalCPU(timeEnd) - totalCPU(timeStart)
 	if elapsedSeconds <= 0 {
 		return CPUUtilization{CPU: timeStart.CPU}
@@ -80,10 +80,12 @@ func cpuTimeForCPU(cpuNum string, times []cpu.TimesStat) (cpu.TimesStat, error) 
 	return cpu.TimesStat{}, fmt.Errorf("cpu %s : %w", cpuNum, ErrTimeStatNotFound)
 }
 
-// Copied from cpu.TimesStat.Total(), since that func is deprecated.
+// totalCPU returns the total CPU time across all states. On Linux, /proc/stat's
+// user column already includes guest time and nice already includes guest_nice
+// (the kernel increments both CPUTIME_USER and CPUTIME_GUEST in account_guest_time:
+// https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/kernel/sched/cputime.c#n150),
+// so Guest and GuestNice must not be added again to avoid double-counting.
 func totalCPU(c cpu.TimesStat) float64 {
-	total := c.User + c.System + c.Idle + c.Nice + c.Iowait + c.Irq +
-		c.Softirq + c.Steal + c.Guest + c.GuestNice
-
-	return total
+	return c.User + c.System + c.Idle + c.Nice + c.Iowait + c.Irq +
+		c.Softirq + c.Steal
 }

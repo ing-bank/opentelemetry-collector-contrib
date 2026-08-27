@@ -7,15 +7,15 @@ import (
 	"context"
 	"errors"
 	"maps"
-	"strconv"
+	"net"
 	"sync"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/component/componentstatus"
 	"go.opentelemetry.io/collector/consumer/consumererror"
-	"go.opentelemetry.io/collector/featuregate"
 	"go.opentelemetry.io/collector/receiver"
 	"go.opentelemetry.io/collector/receiver/receiverhelper"
 	"go.opentelemetry.io/otel/attribute"
@@ -26,31 +26,22 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/kafkareceiver/internal/metadata"
 )
 
-// franzGoConsumerFeatureGateName is the name of the feature gate for franz-go consumer
-const franzGoConsumerFeatureGateName = "receiver.kafkareceiver.UseFranzGo"
-
-// franzGoConsumerFeatureGate is a feature gate that controls whether the Kafka receiver
-// uses the franz-go client or the Sarama client for consuming messages. When enabled,
-// the Kafka receiver will use the franz-go client, which is more performant and has
-// better support for modern Kafka features.
-var franzGoConsumerFeatureGate = featuregate.GlobalRegistry().MustRegister(
-	franzGoConsumerFeatureGateName, featuregate.StageAlpha,
-	featuregate.WithRegisterDescription("When enabled, the Kafka receiver will use the franz-go client to consume messages."),
-	featuregate.WithRegisterFromVersion("v0.129.0"),
-)
-
 type topicPartition struct {
 	topic     string
 	partition int32
 }
 
+// brokerReadKey is the cache key for OnBrokerRead/OnBrokerWrite metric options.
+type brokerReadKey struct {
+	nodeID  int32
+	outcome string // "success" or "failure"
+}
+
 // franzConsumer implements a Kafka consumer using the franz-go client library.
-// It provides the same interface as the original kafkaConsumer but uses franz-go
-// for better performance and modern Kafka feature support.
 type franzConsumer struct {
-	id               component.ID
 	config           *Config
 	topics           []string
+	excludeTopics    []string
 	settings         receiver.Settings
 	telemetryBuilder *metadata.TelemetryBuilder
 	newConsumeFn     newConsumeMessageFunc
@@ -64,33 +55,36 @@ type franzConsumer struct {
 	client      *kgo.Client
 	obsrecv     *receiverhelper.ObsReport
 	assignments map[topicPartition]*pc
-}
 
-// pc represents the partition consumer shared information.
-type pc struct {
-	logger *zap.Logger
-	attrs  attribute.Set
+	// brokerReadOpts caches MeasurementOptions for OnBrokerRead, which fires on
+	// every fetch request. Entries are evicted in OnBrokerDisconnect; growth is
+	// bounded by 2 × number-of-brokers (success + failure).
+	brokerReadMu   sync.RWMutex
+	brokerReadOpts map[brokerReadKey]metric.MeasurementOption
 
-	ctx    context.Context
-	cancel context.CancelCauseFunc
-	// Not safe for concurrent use, this field is never accessed concurrently.
-	backOff *backoff.ExponentialBackOff
-
-	wg sync.WaitGroup
+	// ---- status reporting ----
+	host         component.Host
+	stoppingOnce sync.Once
+	stoppedOnce  sync.Once
 }
 
 // newFranzKafkaConsumer creates a new franz-go based Kafka consumer
-func newFranzKafkaConsumer(config *Config, set receiver.Settings, topics []string,
+func newFranzKafkaConsumer(
+	config *Config,
+	set receiver.Settings,
+	topics []string,
+	excludeTopics []string,
 	newConsumeFn newConsumeMessageFunc,
 ) (*franzConsumer, error) {
 	telemetryBuilder, err := metadata.NewTelemetryBuilder(set.TelemetrySettings)
 	if err != nil {
 		return nil, err
 	}
+
 	return &franzConsumer{
-		id:               set.ID,
 		config:           config,
 		topics:           topics,
+		excludeTopics:    excludeTopics,
 		newConsumeFn:     newConsumeFn,
 		settings:         set,
 		telemetryBuilder: telemetryBuilder,
@@ -98,7 +92,24 @@ func newFranzKafkaConsumer(config *Config, set receiver.Settings, topics []strin
 		consumerClosed:   make(chan struct{}),
 		closing:          make(chan struct{}),
 		assignments:      make(map[topicPartition]*pc),
+		brokerReadOpts:   make(map[brokerReadKey]metric.MeasurementOption),
 	}, nil
+}
+
+// reportStatus emits a component status event if we have a host.
+func (c *franzConsumer) reportStatus(s componentstatus.Status) {
+	if c.host == nil {
+		return
+	}
+	componentstatus.ReportStatus(c.host, componentstatus.NewEvent(s))
+}
+
+// reportRecoverable reports a recoverable error status event.
+func (c *franzConsumer) reportRecoverable(err error) {
+	if c.host == nil || err == nil {
+		return
+	}
+	componentstatus.ReportStatus(c.host, componentstatus.NewRecoverableErrorEvent(err))
 }
 
 func (c *franzConsumer) Start(ctx context.Context, host component.Host) error {
@@ -113,6 +124,10 @@ func (c *franzConsumer) Start(ctx context.Context, host component.Host) error {
 		close(c.started)
 	}
 
+	// Report "Starting" as soon as Start() is called.
+	c.host = host
+	c.reportStatus(componentstatus.StatusStarting)
+
 	obsrecv, err := receiverhelper.NewObsReport(receiverhelper.ObsReportSettings{
 		ReceiverID:             c.settings.ID,
 		Transport:              transport,
@@ -123,12 +138,13 @@ func (c *franzConsumer) Start(ctx context.Context, host component.Host) error {
 	}
 	c.obsrecv = obsrecv
 
+	var hooks kgo.Hook = c
+	if c.config.Telemetry.Metrics.KafkaReceiverRecordsDelay.Enabled {
+		hooks = franzConsumerWithOptionalHooks{c}
+	}
+
 	// Create franz-go consumer client
-	client, err := kafka.NewFranzConsumerGroup(ctx,
-		c.config.ClientConfig,
-		c.config.ConsumerConfig,
-		c.topics,
-		c.settings.Logger,
+	opts := []kgo.Opt{
 		kgo.OnPartitionsAssigned(c.assigned),
 		kgo.OnPartitionsRevoked(func(ctx context.Context, _ *kgo.Client, m map[string][]int32) {
 			c.lost(ctx, c.client, m, false)
@@ -136,6 +152,23 @@ func (c *franzConsumer) Start(ctx context.Context, host component.Host) error {
 		kgo.OnPartitionsLost(func(ctx context.Context, _ *kgo.Client, m map[string][]int32) {
 			c.lost(ctx, c.client, m, true)
 		}),
+		kgo.WithHooks(hooks),
+	}
+
+	if !c.config.ClientConfig.UseLeaderEpoch {
+		opts = append(opts, kgo.AdjustFetchOffsetsFn(makeClearLeaderEpochAdjuster()))
+	}
+
+	// Create franz-go consumer client
+	client, err := kafka.NewFranzConsumerGroup(
+		ctx,
+		host,
+		c.config.ClientConfig,
+		c.config.ConsumerConfig,
+		c.topics,
+		c.excludeTopics,
+		c.settings.Logger,
+		opts...,
 	)
 	if err != nil {
 		return err
@@ -153,14 +186,16 @@ func (c *franzConsumer) Start(ctx context.Context, host component.Host) error {
 }
 
 func (c *franzConsumer) consumeLoop(ctx context.Context) {
-	defer close(c.consumerClosed)
+	// When the loop exits, report Stopped.
+	defer func() {
+		c.stoppedOnce.Do(func() { c.reportStatus(componentstatus.StatusStopped) })
+		close(c.consumerClosed)
+	}()
 
 	for {
 		// Consume messages until the ctx is cancelled (the client is closed).
-		// NOTE(marclop) we should make the fetch size configurable. It returns
-		// all the internally buffered records. This isn't something that's
-		// configurable in Sarama, and theoretically the max records to iterate
-		// on is a factor of default / max (byte) fetch size.
+		// Passing -1 drains all records franz-go has buffered; the buffer is
+		// bounded by the byte-based fetch limits in ConsumerConfig.
 		if !c.consume(ctx, -1) {
 			return
 		}
@@ -182,9 +217,11 @@ func (c *franzConsumer) consume(ctx context.Context, size int) bool {
 	var hasError bool
 	fetch.EachError(func(topic string, partition int32, err error) {
 		c.settings.Logger.Error("consumer fetch error", zap.Error(err),
-			zap.String(attrTopic, topic),
-			zap.String(attrPartition, strconv.Itoa(int(partition))),
+			zap.String("topic", topic),
+			zap.Int64("partition", int64(partition)),
 		)
+		// Report recoverable error while consuming.
+		c.reportRecoverable(err)
 		if !hasError {
 			hasError = true
 		}
@@ -211,96 +248,56 @@ func (c *franzConsumer) consume(ctx context.Context, size int) bool {
 		}
 		tp := topicPartition{topic: p.Topic, partition: p.Partition}
 		assign, ok := assignments[tp]
-		// NOTE(marclop): This could happen if the partition is lost between
-		// the time the assignments map is copied and the partition is accessed.
+		// The partition may have been revoked between the time the assignments
+		// map was snapshotted above and now.
 		if !ok {
 			c.settings.Logger.Warn(
 				"attempted to process records for a partition not assigned to this consumer",
-				zap.String(attrTopic, tp.topic),
-				zap.String(attrPartition, strconv.Itoa(int(tp.partition))),
+				zap.String("topic", tp.topic),
+				zap.Int64("partition", int64(tp.partition)),
 			)
 			return
 		}
+		// Try to add a new in-flight message processing goroutine to the
+		// partition consumer. Return immediately if the partition has been
+		// lost or reassigned.
+		if !assign.add(1) {
+			return
+		}
 		wg.Add(1)
-		assign.wg.Add(1)
 		assign.logger.Debug("processing fetched records",
 			zap.Int("count", count),
 			zap.Int64("start_offset", p.Records[0].Offset),
 			zap.Int64("end_offset", p.Records[count-1].Offset),
 		)
-		go func(pc *pc, msgs []*kgo.Record) {
+		go func(pc *pc, partition kgo.FetchTopicPartition) {
 			defer wg.Done()
-			defer pc.wg.Done()
-			fatalOffset := int64(-1)
-			var lastProcessed *kgo.Record
-			for _, msg := range msgs {
-				if !c.config.MessageMarking.After {
-					c.client.MarkCommitRecords(msg)
-				}
-				if err := c.handleMessage(pc, wrapFranzMsg(msg)); err != nil {
-					pc.logger.Error("unable to process message",
-						zap.Error(err),
-						zap.Int64("offset", msg.Offset),
-					)
-					// To keep both Sarama and Franz implementations consistent,
-					// we pause consumption for partitions that have fatal errors,
-					// which isn't ideal since there needs to be some sort of manual
-					// intervention to unlock the partition. But this is already
-					// mentioned in the docs and also happens with Sarama.
-					if !c.config.MessageMarking.OnError {
-						fatalOffset = msg.Offset
-						break // Stop processing messages.
-					}
-				}
-				lastProcessed = msg // Store so we can commit later.
-			}
-			// Pause topic/partition processing locally, any rebalances that move
-			// away the process the partition regularly, which will re-process
-			// the message.
-			if fatalOffset > -1 {
-				c.client.PauseFetchPartitions(map[string][]int32{
-					p.Topic: {p.Partition},
-				})
-				// We don't return false since we want to avoid shutting down
-				// the consumer loop and consumption due to message poisoning.
-				// If we did, we would cause an eventual systematic failure if
-				// there are more topic / partitions in this consumer group when
-				// the partition is rebalanced to another consumer in the group.
-				//
-				// Ideally, we would attempt to re-process permanent errors
-				// for up to N times and then pause processing, or even better,
-				// produce the message to a dead letter topic.
-				pc.logger.Error("unable to process message: pausing consumption of this topic / partition on this consumer instance due to MessageMarking.OnError=false",
-					zap.Int64("offset", fatalOffset),
-				)
-			}
-			if lastProcessed == nil {
-				return // No metrics nor marks to update.
-			}
-			// Otherwise, publish consumer lag.
-			c.telemetryBuilder.KafkaReceiverOffsetLag.Record(
-				context.Background(),
-				(p.HighWatermark-1)-(lastProcessed.Offset),
-				metric.WithAttributeSet(pc.attrs),
-			)
-			if c.config.MessageMarking.After {
-				c.client.MarkCommitRecords(lastProcessed)
-			}
-		}(assign, p.Records)
+			defer pc.done()
+			c.processPartitionBatch(ctx, pc, partition)
+		}(assign, p)
 	})
 	// Wait for all records to be processed and commit if autocommit=false.
 	wg.Wait()
-	if !c.config.AutoCommit.Enable {
+	if !c.config.ConsumerConfig.AutoCommit.Enable {
 		if err := c.client.CommitMarkedOffsets(ctx); err != nil {
 			c.settings.Logger.Error("failed to commit offsets", zap.Error(err))
+			// Surface as recoverable error.
+			c.reportRecoverable(err)
 		}
 	}
 	return true
 }
 
 func (c *franzConsumer) Shutdown(ctx context.Context) error {
+	// Report Stopping at shutdown start.
+	c.stoppingOnce.Do(func() { c.reportStatus(componentstatus.StatusStopping) })
+
 	if !c.triggerShutdown() {
-		return errors.New("kafka consumer: consumer isn't running")
+		// Idempotent: never fail if not started.
+		// We still want to ensure Stopped is eventually emitted (consumeLoop defer handles it).
+		// However, if the loop was never started, emit Stopped here too.
+		c.stoppedOnce.Do(func() { c.reportStatus(componentstatus.StatusStopped) })
+		return nil
 	}
 
 	select {
@@ -308,6 +305,7 @@ func (c *franzConsumer) Shutdown(ctx context.Context) error {
 		return context.Cause(ctx)
 	case <-c.consumerClosed:
 	}
+
 	return nil
 }
 
@@ -326,35 +324,44 @@ func (c *franzConsumer) triggerShutdown() bool {
 		return true
 	default:
 		close(c.closing)
+		client := c.client
 		c.mu.Unlock()
 		// Close the client without holding the write mutex, otherwise, the
 		// Shutdown will deadlock when `franzConsumer` inevitably calls the
 		// lost/assigned callback.
-		c.client.Close()
+		if client != nil {
+			client.Close()
+		}
 	}
 	return true
 }
 
 // assigned must be set as kgo.OnPartitionsAssigned callback. Ensuring all
 // assigned partitions to this consumer process received records.
-func (c *franzConsumer) assigned(ctx context.Context, _ *kgo.Client, assigned map[string][]int32) {
+func (c *franzConsumer) assigned(ctx context.Context, cl *kgo.Client, assigned map[string][]int32) {
+	// Report OK on each successful assignment so we can recover status after transient errors.
+	c.reportStatus(componentstatus.StatusOK)
+
+	// Resume any partitions that were previously paused due to processing errors.
+	// PauseFetchPartitions persists across rebalances in franz-go, so we must
+	// explicitly resume partitions when they are (re)assigned.
+	// ResumeFetchPartitions is a no-op for partitions that are not paused.
+	cl.ResumeFetchPartitions(assigned)
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for topic, partitions := range assigned {
 		for _, partition := range partitions {
-			c.telemetryBuilder.KafkaReceiverPartitionStart.Add(context.Background(),
-				1, metric.WithAttributes(attribute.String(attrInstanceName, c.id.Name())),
-			)
+			c.telemetryBuilder.KafkaReceiverPartitionStart.Add(context.Background(), 1)
 			partitionConsumer := pc{
 				backOff: newExponentialBackOff(c.config.ErrorBackOff),
 				logger: c.settings.Logger.With(
-					zap.String(attrTopic, topic),
-					zap.String(attrPartition, strconv.Itoa(int(partition))),
+					zap.String("topic", topic),
+					zap.Int64("partition", int64(partition)),
 				),
 				attrs: attribute.NewSet(
-					attribute.String(attrInstanceName, c.id.String()),
-					attribute.String(attrTopic, topic),
-					attribute.String(attrPartition, strconv.Itoa(int(partition))),
+					attribute.String("topic", topic),
+					attribute.Int64("partition", int64(partition)),
 				),
 			}
 			partitionConsumer.ctx, partitionConsumer.cancel = context.WithCancelCause(ctx)
@@ -377,19 +384,26 @@ func (c *franzConsumer) lost(ctx context.Context, _ *kgo.Client,
 	for topic, partitions := range lost {
 		for _, partition := range partitions {
 			tp := topicPartition{topic: topic, partition: partition}
-			pc := c.assignments[tp]
-			delete(c.assignments, tp)
-			pc.cancel(errors.New(
-				"stopping processing: partition reassigned or lost",
-			))
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				pc.wg.Wait()
-			}()
-			c.telemetryBuilder.KafkaReceiverPartitionClose.Add(context.Background(),
-				1, metric.WithAttributes(attribute.String(attrInstanceName, c.id.Name())),
-			)
+			// In some cases, it is possible for the `lost` to be called with
+			// no assignments. So, check if assignments exists first.
+			//
+			// - OnPartitionLost can be called without the group ever joining
+			// and getting assigned.
+			// - OnPartitionRevoked can be called multiple times for cooperative
+			// balancer on topic lost/deleted.
+			if pc, ok := c.assignments[tp]; ok {
+				delete(c.assignments, tp)
+				// Cancel also locks the partition consumer. This ensures that
+				// the partition consumer stops processing messages when the
+				// partition is lost or reassigned.
+				pc.cancelContext(errors.New(
+					"stopping processing: partition reassigned or lost",
+				))
+				wg.Go(func() {
+					pc.wait()
+				})
+				c.telemetryBuilder.KafkaReceiverPartitionClose.Add(context.Background(), 1)
+			}
 		}
 	}
 	if fatal {
@@ -397,21 +411,24 @@ func (c *franzConsumer) lost(ctx context.Context, _ *kgo.Client,
 	}
 	// Wait for all partition consumers to exit before committing marked offsets.
 	wg.Wait()
-	// NOTE(marclop) commit the marked offsets when the partition is rebalanced
-	// away from this consumer.
+	// Commit synchronously here (rather than relying on autocommit) so progress
+	// is persisted before the partition is reassigned to another consumer,
+	// avoiding duplicate processing by the next owner.
 	if err := c.client.CommitMarkedOffsets(ctx); err != nil {
 		c.settings.Logger.Error("failed to commit marked offsets", zap.Error(err))
+		// Report recoverable error on commit errors.
+		c.reportRecoverable(err)
 	}
 }
 
 // handleMessage is called on a per-partition basis.
-func (c *franzConsumer) handleMessage(pc *pc, msg kafkaMessage) error {
+func (c *franzConsumer) handleMessage(pc *pc, record *kgo.Record) error {
 	if pc.backOff != nil {
 		defer pc.backOff.Reset()
 	}
 
 	for {
-		err := c.consumeMessage(pc.ctx, msg, pc.attrs)
+		err := c.consumeMessage(pc.ctx, record, pc.attrs)
 		if err == nil {
 			return nil // Successfully processed.
 		}
@@ -442,14 +459,196 @@ func (c *franzConsumer) handleMessage(pc *pc, msg kafkaMessage) error {
 				zap.Duration("max_elapsed_time", pc.backOff.MaxElapsedTime),
 			)
 		}
-		if c.config.MessageMarking.After && !c.config.MessageMarking.OnError {
+
+		isPermanent := consumererror.IsPermanent(err)
+		shouldMark := (!isPermanent && c.config.MessageMarking.OnError) || (isPermanent && c.config.MessageMarking.OnPermanentError)
+
+		if c.config.MessageMarking.After && !shouldMark {
 			// Only return an error if messages are marked after successful processing.
 			return err
 		}
 		pc.logger.Error("failed to consume message, skipping due to message_marking config",
 			zap.Error(err),
-			zap.Int64("offset", msg.offset()),
+			zap.Int64("offset", record.Offset),
 		)
 		return nil
+	}
+}
+
+// The methods below implement the relevant franz-go hook interfaces
+// record the metrics defined in the metadata telemetry.
+
+// brokerReadOpt returns a cached metric.MeasurementOption for broker read/write hooks.
+func (c *franzConsumer) brokerReadOpt(nodeID int32, outcome string) metric.MeasurementOption {
+	key := brokerReadKey{nodeID: nodeID, outcome: outcome}
+	c.brokerReadMu.RLock()
+	opt, ok := c.brokerReadOpts[key]
+	c.brokerReadMu.RUnlock()
+	if ok {
+		return opt
+	}
+	opt = metric.WithAttributeSet(attribute.NewSet(
+		attribute.String("node_id", kgo.NodeName(nodeID)),
+		attribute.String("outcome", outcome),
+	))
+	c.brokerReadMu.Lock()
+	c.brokerReadOpts[key] = opt
+	c.brokerReadMu.Unlock()
+	return opt
+}
+
+func (c *franzConsumer) OnBrokerConnect(meta kgo.BrokerMetadata, _ time.Duration, _ net.Conn, err error) {
+	outcome := "success"
+	if err != nil {
+		outcome = "failure"
+	}
+	c.telemetryBuilder.KafkaBrokerConnects.Add(
+		context.Background(),
+		1,
+		metric.WithAttributeSet(attribute.NewSet(
+			attribute.String("node_id", kgo.NodeName(meta.NodeID)),
+			attribute.String("outcome", outcome),
+		)),
+	)
+}
+
+func (c *franzConsumer) OnBrokerDisconnect(meta kgo.BrokerMetadata, _ net.Conn) {
+	c.telemetryBuilder.KafkaBrokerClosed.Add(
+		context.Background(),
+		1,
+		metric.WithAttributeSet(attribute.NewSet(
+			attribute.String("node_id", kgo.NodeName(meta.NodeID)),
+		)),
+	)
+	// Evict cached read opts for this broker.
+	c.brokerReadMu.Lock()
+	delete(c.brokerReadOpts, brokerReadKey{nodeID: meta.NodeID, outcome: "success"})
+	delete(c.brokerReadOpts, brokerReadKey{nodeID: meta.NodeID, outcome: "failure"})
+	c.brokerReadMu.Unlock()
+}
+
+func (c *franzConsumer) OnBrokerThrottle(meta kgo.BrokerMetadata, throttleInterval time.Duration, _ bool) {
+	opt := metric.WithAttributeSet(attribute.NewSet(
+		attribute.String("node_id", kgo.NodeName(meta.NodeID)),
+	))
+	// KafkaBrokerThrottlingDuration is deprecated in favor of KafkaBrokerThrottlingLatency.
+	c.telemetryBuilder.KafkaBrokerThrottlingDuration.Record(
+		context.Background(),
+		throttleInterval.Milliseconds(),
+		opt,
+	)
+	c.telemetryBuilder.KafkaBrokerThrottlingLatency.Record(
+		context.Background(),
+		throttleInterval.Seconds(),
+		opt,
+	)
+}
+
+func (c *franzConsumer) OnBrokerRead(meta kgo.BrokerMetadata, _ int16, _ int, readWait, timeToRead time.Duration, err error) {
+	outcome := "success"
+	if err != nil {
+		outcome = "failure"
+	}
+	opt := c.brokerReadOpt(meta.NodeID, outcome)
+	// KafkaReceiverLatency is deprecated in favor of KafkaReceiverReadLatency.
+	c.telemetryBuilder.KafkaReceiverLatency.Record(
+		context.Background(),
+		readWait.Milliseconds()+timeToRead.Milliseconds(),
+		opt,
+	)
+	c.telemetryBuilder.KafkaReceiverReadLatency.Record(
+		context.Background(),
+		readWait.Seconds()+timeToRead.Seconds(),
+		opt,
+	)
+}
+
+// OnFetchBatchRead is called once per batch read from Kafka.
+// https://pkg.go.dev/github.com/twmb/franz-go/pkg/kgo#HookFetchBatchRead
+func (c *franzConsumer) OnFetchBatchRead(meta kgo.BrokerMetadata, topic string, partition int32, m kgo.FetchBatchMetrics) {
+	opt := metric.WithAttributeSet(attribute.NewSet(
+		attribute.String("node_id", kgo.NodeName(meta.NodeID)),
+		attribute.String("topic", topic),
+		attribute.Int64("partition", int64(partition)),
+		attribute.String("compression_codec", compressionFromCodec(m.CompressionType)),
+		attribute.String("outcome", "success"),
+	))
+	// KafkaReceiverMessages is deprecated in favor of KafkaReceiverRecords.
+	c.telemetryBuilder.KafkaReceiverMessages.Add(
+		context.Background(),
+		int64(m.NumRecords),
+		opt,
+	)
+	c.telemetryBuilder.KafkaReceiverRecords.Add(
+		context.Background(),
+		int64(m.NumRecords),
+		opt,
+	)
+	c.telemetryBuilder.KafkaReceiverBytes.Add(
+		context.Background(),
+		int64(m.CompressedBytes),
+		opt,
+	)
+	c.telemetryBuilder.KafkaReceiverBytesUncompressed.Add(
+		context.Background(),
+		int64(m.UncompressedBytes),
+		opt,
+	)
+}
+
+// franzConsumerWithOptionalHooks wraps franzConsumer
+// so the optional OnFetchRecordUnbuffered can be enabled.
+type franzConsumerWithOptionalHooks struct {
+	*franzConsumer
+}
+
+// OnFetchRecordUnbuffered is called when a fetched record is unbuffered and ready to be processed.
+// Note that this hook may slow down high-volume consuming a bit.
+// https://pkg.go.dev/github.com/twmb/franz-go/pkg/kgo#HookFetchRecordUnbuffered
+func (c franzConsumerWithOptionalHooks) OnFetchRecordUnbuffered(r *kgo.Record, polled bool) {
+	if !polled {
+		return // Record metrics when polled by `client.PollRecords()`.
+	}
+	opt := metric.WithAttributeSet(attribute.NewSet(
+		attribute.String("topic", r.Topic),
+		attribute.Int64("partition", int64(r.Partition)),
+	))
+	c.telemetryBuilder.KafkaReceiverRecordsDelay.Record(
+		context.Background(),
+		time.Since(r.Timestamp).Seconds(),
+		opt,
+	)
+}
+
+func compressionFromCodec(c uint8) string {
+	// CompressionType signifies which algorithm the batch was compressed
+	// with.
+	//
+	// 0 is no compression, 1 is gzip, 2 is snappy, 3 is lz4, and 4 is
+	// zstd.
+	switch c {
+	case 0:
+		return "none"
+	case 1:
+		return "gzip"
+	case 2:
+		return "snappy"
+	case 3:
+		return "lz4"
+	case 4:
+		return "zstd"
+	default:
+		return "unknown"
+	}
+}
+
+func makeClearLeaderEpochAdjuster() func(context.Context, map[string]map[int32]kgo.Offset) (map[string]map[int32]kgo.Offset, error) {
+	return func(_ context.Context, topics map[string]map[int32]kgo.Offset) (map[string]map[int32]kgo.Offset, error) {
+		for _, parts := range topics {
+			for p, off := range parts {
+				parts[p] = off.WithEpoch(-1)
+			}
+		}
+		return topics, nil
 	}
 }

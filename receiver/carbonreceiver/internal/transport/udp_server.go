@@ -66,9 +66,9 @@ func (u *udpServer) ListenAndServe(
 			u.reporter.OnDebugf(
 				"UDP Transport (%s) - ReadFrom error: %v",
 				u.packetConn.LocalAddr(),
-				err)
-			var netErr net.Error
-			if errors.As(err, &netErr) {
+				err,
+			)
+			if netErr, ok := errors.AsType[net.Error](err); ok {
 				if netErr.Timeout() {
 					continue
 				}
@@ -96,7 +96,7 @@ func (u *udpServer) handlePacket(
 
 	buf := bytes.NewBuffer(data)
 	for {
-		bytes, err := buf.ReadBytes((byte)('\n'))
+		bytes, err := buf.ReadBytes(byte('\n'))
 		if errors.Is(err, io.EOF) {
 			if len(bytes) == 0 {
 				// Completed without errors.

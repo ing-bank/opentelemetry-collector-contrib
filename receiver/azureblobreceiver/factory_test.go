@@ -4,7 +4,6 @@
 package azureblobreceiver // import "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/azureblobreceiver"
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -24,7 +23,7 @@ func TestNewFactory(t *testing.T) {
 
 func TestCreateTraces(t *testing.T) {
 	f := NewFactory()
-	ctx := context.Background()
+	ctx := t.Context()
 	params := receivertest.NewNopSettings(metadata.Type)
 	receiver, err := f.CreateTraces(ctx, params, getConfig(), consumertest.NewNop())
 
@@ -34,7 +33,7 @@ func TestCreateTraces(t *testing.T) {
 
 func TestCreateLogs(t *testing.T) {
 	f := NewFactory()
-	ctx := context.Background()
+	ctx := t.Context()
 	params := receivertest.NewNopSettings(metadata.Type)
 	receiver, err := f.CreateLogs(ctx, params, getConfig(), consumertest.NewNop())
 
@@ -44,7 +43,7 @@ func TestCreateLogs(t *testing.T) {
 
 func TestTracesAndLogsReceiversAreSame(t *testing.T) {
 	f := NewFactory()
-	ctx := context.Background()
+	ctx := t.Context()
 	params := receivertest.NewNopSettings(metadata.Type)
 	config := getConfig()
 	logsReceiver, err := f.CreateLogs(ctx, params, config, consumertest.NewNop())
@@ -60,7 +59,7 @@ func getConfig() component.Config {
 	return &Config{
 		Authentication:   "connection_string",
 		ConnectionString: goodConnectionString,
-		Logs:             LogsConfig{ContainerName: logsContainerName},
-		Traces:           TracesConfig{ContainerName: tracesContainerName},
+		Logs:             LogsConfig{ContainerName: logsContainerName, Encoding: EncodingOTLPJSON},
+		Traces:           TracesConfig{ContainerName: tracesContainerName, Encoding: EncodingOTLPJSON},
 	}
 }

@@ -79,7 +79,8 @@ func (wp *wavefrontParser) Parse(line string) (pmetric.Metric, error) {
 		// Timestamp can be omitted so it is only correct if the string was a tag.
 		if strings.IndexByte(timestampStr, '=') == -1 {
 			return pmetric.Metric{}, fmt.Errorf(
-				"invalid timestamp for wavefront metric [%s]", line)
+				"invalid timestamp for wavefront metric [%s]", line,
+			)
 		}
 		// Assume timestamp was omitted, get current time and adjust index.
 		ts = time.Now()
@@ -116,7 +117,7 @@ func (wp *wavefrontParser) Parse(line string) (pmetric.Metric, error) {
 	return metric, nil
 }
 
-func (wp *wavefrontParser) injectCollectDLabels(
+func (*wavefrontParser) injectCollectDLabels(
 	metricName string,
 	attributes pcommon.Map,
 ) string {
@@ -144,7 +145,7 @@ func (wp *wavefrontParser) injectCollectDLabels(
 func buildLabels(attributes pcommon.Map, tags string) error {
 	for {
 		tags = strings.TrimLeft(tags, " ")
-		if len(tags) == 0 {
+		if tags == "" {
 			return nil
 		}
 

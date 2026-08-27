@@ -13,7 +13,7 @@ import (
 
 	stefgrpc "github.com/splunk/stef/go/grpc"
 	"github.com/splunk/stef/go/grpc/stef_proto"
-	"github.com/splunk/stef/go/otel/oteltef"
+	"github.com/splunk/stef/go/otel/otelstef"
 	"github.com/splunk/stef/go/pkg"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,7 +66,7 @@ func (m *mockMetricDestServer) start() {
 
 	m.grpcServer = grpcServer
 
-	schema, err := oteltef.MetricsWireSchema()
+	schema, err := otelstef.MetricsWireSchema()
 	if err != nil {
 		m.logger.Fatal("Failed to load schema", zap.Error(err))
 	}
@@ -96,7 +96,7 @@ func (m *mockMetricDestServer) stop() {
 func (m *mockMetricDestServer) onStream(grpcReader stefgrpc.GrpcReader, stream stefgrpc.STEFStream) error {
 	m.logger.Info("Incoming TEF/gRPC connection.")
 
-	reader, err := oteltef.NewMetricsReader(grpcReader)
+	reader, err := otelstef.NewMetricsReader(grpcReader)
 	if err != nil {
 		m.logger.Error("Error creating metrics reader from connection", zap.Error(err))
 		return err
@@ -143,9 +143,9 @@ func runTest(
 	if cfg == nil {
 		cfg = factory.CreateDefaultConfig().(*Config)
 	}
-	cfg.Endpoint = mockSrv.endpoint
+	cfg.ClientConfig.Endpoint = mockSrv.endpoint
 	// Use insecure mode for tests so that we don't bother with certificates.
-	cfg.TLS.Insecure = true
+	cfg.ClientConfig.TLS.Insecure = true
 
 	// Make retries quick. We will be testing failure modes and don't want test to take too long.
 	cfg.RetryConfig.InitialInterval = 10 * time.Millisecond
@@ -153,16 +153,16 @@ func runTest(
 	set := exportertest.NewNopSettings(metadata.Type)
 	set.Logger = logger
 
-	exp, err := factory.CreateMetrics(context.Background(), set, cfg)
+	exp, err := factory.CreateMetrics(t.Context(), set, cfg)
 	require.NoError(t, err)
 	require.NotNil(t, exp)
 
 	defer func() {
-		assert.NoError(t, exp.Shutdown(context.Background()))
+		assert.NoError(t, exp.Shutdown(t.Context()))
 	}()
 
 	host := componenttest.NewNopHost()
-	require.NoError(t, exp.Start(context.Background(), host))
+	require.NoError(t, exp.Start(t.Context(), host))
 
 	f(cfg, mockSrv, exp)
 }
@@ -174,7 +174,7 @@ func TestExport(t *testing.T) {
 			compression, func(t *testing.T) {
 				factory := NewFactory()
 				cfg := factory.CreateDefaultConfig().(*Config)
-				cfg.Compression = configcompression.Type(compression)
+				cfg.ClientConfig.Compression = configcompression.Type(compression)
 
 				runTest(
 					t,
@@ -187,10 +187,10 @@ func TestExport(t *testing.T) {
 						// the case where exporter begins to forcedly flush
 						// encoded data.
 						pointCount := int64(0)
-						for i := 0; i < 2*cfg.QueueConfig.NumConsumers; i++ {
+						for i := 0; i < 2*cfg.QueueConfig.Get().NumConsumers; i++ {
 							md := testdata.GenerateMetrics(1)
 							pointCount += int64(md.DataPointCount())
-							err := exp.ConsumeMetrics(context.Background(), md)
+							err := exp.ConsumeMetrics(t.Context(), md)
 							require.NoError(t, err)
 						}
 
@@ -214,7 +214,7 @@ func TestReconnect(t *testing.T) {
 	// Shorten max ack waiting time so that the attempt to send on a failed
 	// connection times out quickly and attempt to send again is tried
 	// until the broken connection is detected and reconnection happens.
-	cfg.Timeout = 300 * time.Millisecond
+	cfg.TimeoutConfig.Timeout = 300 * time.Millisecond
 
 	runTest(
 		t,
@@ -224,7 +224,7 @@ func TestReconnect(t *testing.T) {
 
 			md := testdata.GenerateMetrics(1)
 			pointCount := int64(md.DataPointCount())
-			err := exp.ConsumeMetrics(context.Background(), md)
+			err := exp.ConsumeMetrics(t.Context(), md)
 			require.NoError(t, err)
 
 			// Wait for data to be received.
@@ -245,7 +245,7 @@ func TestReconnect(t *testing.T) {
 			// Send more data
 			md = testdata.GenerateMetrics(1)
 			pointCount += int64(md.DataPointCount())
-			err = exp.ConsumeMetrics(context.Background(), md)
+			err = exp.ConsumeMetrics(t.Context(), md)
 			require.NoError(t, err)
 
 			// Wait for data to be received.
@@ -263,7 +263,7 @@ func TestAckTimeout(t *testing.T) {
 
 	// Shorten max ack waiting time so that tests run fast.
 	// Increase this if the second eventually() below fails sporadically.
-	cfg.Timeout = 300 * time.Millisecond
+	cfg.TimeoutConfig.Timeout = 300 * time.Millisecond
 
 	runTest(
 		t,
@@ -275,7 +275,7 @@ func TestAckTimeout(t *testing.T) {
 			// Fail to ack the first pointCount records. We want acks to succeed on the second try only.
 			mockSrv.failAckCount.Store(pointCount)
 
-			err := exp.ConsumeMetrics(context.Background(), md)
+			err := exp.ConsumeMetrics(t.Context(), md)
 			require.NoError(t, err)
 
 			// Wait for data to be received.
@@ -324,11 +324,11 @@ func TestStartServerAfterClient(t *testing.T) {
 	require.NotNil(t, exp)
 
 	defer func() {
-		assert.NoError(t, exp.Shutdown(context.Background()))
+		assert.NoError(t, exp.Shutdown(t.Context()))
 	}()
 
 	host := componenttest.NewNopHost()
-	require.NoError(t, exp.Start(context.Background(), host))
+	require.NoError(t, exp.Start(t.Context(), host))
 
 	// Trying sending with server down.
 	md := testdata.GenerateMetrics(1)
@@ -343,7 +343,7 @@ func TestStartServerAfterClient(t *testing.T) {
 
 	// This likely executes before the server is up
 	// (but can also be before, which is good, we want to test the races).
-	err := exp.exportMetrics(context.Background(), md)
+	err := exp.exportMetrics(t.Context(), md)
 
 	// Sending must succeed since exportMetrics() waits until the server is up
 	// and connection can be established.
@@ -381,11 +381,11 @@ func TestCancelBlockedExport(t *testing.T) {
 	require.NotNil(t, exp)
 
 	defer func() {
-		assert.NoError(t, exp.Shutdown(context.Background()))
+		assert.NoError(t, exp.Shutdown(t.Context()))
 	}()
 
 	host := componenttest.NewNopHost()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	require.NoError(t, exp.Start(ctx, host))
 
 	// Cancel after Start() returns.
@@ -395,12 +395,12 @@ func TestCancelBlockedExport(t *testing.T) {
 	md := testdata.GenerateMetrics(1)
 
 	// Do some attempts send with cancellation to help trigger races if there is any.
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		// Trying sending with server down. The connection attempt will block
 		// because listener does not accept connections. However exportMetrics()
 		// will return almost immediately because connection attempt
 		// context is cancelled.
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		go func() { cancel() }()
 		err = exp.exportMetrics(ctx, md)
 
@@ -432,7 +432,7 @@ func TestCancelAfterExport(t *testing.T) {
 	require.NotNil(t, exp)
 
 	defer func() {
-		assert.NoError(t, exp.Shutdown(context.Background()))
+		assert.NoError(t, exp.Shutdown(t.Context()))
 	}()
 
 	// Start the server.
@@ -440,16 +440,16 @@ func TestCancelAfterExport(t *testing.T) {
 	defer mockSrv.stop()
 
 	host := componenttest.NewNopHost()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	// Cancel the context to cause connection attempt in Start() to fail.
 	cancel()
 	require.NoError(t, exp.Start(ctx, host))
 
 	var pointCount int64
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		md := testdata.GenerateMetrics(1)
 		pointCount += int64(md.DataPointCount())
-		ctx, cancel = context.WithCancel(context.Background())
+		ctx, cancel = context.WithCancel(t.Context())
 
 		err := exp.exportMetrics(ctx, md)
 		require.NoError(t, err)

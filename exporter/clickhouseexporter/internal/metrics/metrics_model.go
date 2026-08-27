@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -17,7 +16,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
-	conventions "go.opentelemetry.io/otel/semconv/v1.27.0"
+	conventions "go.opentelemetry.io/otel/semconv/v1.40.0"
 	"go.uber.org/zap"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter/internal/sqltemplates"
@@ -43,7 +42,8 @@ type MetricTypeConfig struct {
 // any type of metrics need implement it.
 type MetricsModel interface {
 	// Add used to bind MetricsMetaData to a specific metric then put them into a slice
-	Add(resAttr pcommon.Map, resURL string, scopeInstr pcommon.InstrumentationScope, scopeURL string, metrics any, name string, description string, unit string) error
+	Add(resAttr pcommon.Map, resURL string, scopeInstr pcommon.InstrumentationScope, scopeURL string, metrics pmetric.Metric)
+
 	// insert is used to insert metric data to clickhouse
 	insert(ctx context.Context, db driver.Conn) error
 }
@@ -114,14 +114,16 @@ func InsertMetrics(ctx context.Context, db driver.Conn, metricsMap map[pmetric.M
 }
 
 func convertExemplars(exemplars pmetric.ExemplarSlice) (clickhouse.ArraySet, clickhouse.ArraySet, clickhouse.ArraySet, clickhouse.ArraySet, clickhouse.ArraySet) {
-	var (
-		attrs    clickhouse.ArraySet
-		times    clickhouse.ArraySet
-		values   clickhouse.ArraySet
-		traceIDs clickhouse.ArraySet
-		spanIDs  clickhouse.ArraySet
-	)
-	for i := 0; i < exemplars.Len(); i++ {
+	n := exemplars.Len()
+	if n == 0 {
+		return nil, nil, nil, nil, nil
+	}
+	attrs := make(clickhouse.ArraySet, 0, n)
+	times := make(clickhouse.ArraySet, 0, n)
+	values := make(clickhouse.ArraySet, 0, n)
+	traceIDs := make(clickhouse.ArraySet, 0, n)
+	spanIDs := make(clickhouse.ArraySet, 0, n)
+	for i := range n {
 		exemplar := exemplars.At(i)
 		attrs = append(attrs, AttributesToMap(exemplar.FilteredAttributes()))
 		times = append(times, exemplar.Timestamp().AsTime())
@@ -145,7 +147,6 @@ func getValue(intValue int64, floatValue float64, dataType any) float64 {
 		case pmetric.ExemplarValueTypeInt:
 			return float64(intValue)
 		case pmetric.ExemplarValueTypeEmpty:
-			logger.Warn("Examplar value type is unset, use 0.0 as default")
 			return 0.0
 		default:
 			logger.Warn("Can't find a suitable value for ExemplarValueType, use 0.0 as default")
@@ -158,7 +159,6 @@ func getValue(intValue int64, floatValue float64, dataType any) float64 {
 		case pmetric.NumberDataPointValueTypeInt:
 			return float64(intValue)
 		case pmetric.NumberDataPointValueTypeEmpty:
-			logger.Warn("DataPoint value type is unset, use 0.0 as default")
 			return 0.0
 		default:
 			logger.Warn("Can't find a suitable value for NumberDataPointValueType, use 0.0 as default")
@@ -172,9 +172,9 @@ func getValue(intValue int64, floatValue float64, dataType any) float64 {
 
 func AttributesToMap(attributes pcommon.Map) column.IterableOrderedMap {
 	return orderedmap.CollectN(func(yield func(string, string) bool) {
-		for k, v := range attributes.All() {
-			yield(k, v.AsString())
-		}
+		attributes.Range(func(k string, v pcommon.Value) bool {
+			return yield(k, v.AsString())
+		})
 	}, attributes.Len())
 }
 
@@ -187,7 +187,7 @@ func GetServiceName(resAttr pcommon.Map) string {
 }
 
 func convertSliceToArraySet[T any](slice []T) clickhouse.ArraySet {
-	var set clickhouse.ArraySet
+	set := make(clickhouse.ArraySet, 0, len(slice))
 	for _, item := range slice {
 		set = append(set, item)
 	}
@@ -195,24 +195,16 @@ func convertSliceToArraySet[T any](slice []T) clickhouse.ArraySet {
 }
 
 func convertValueAtQuantile(valueAtQuantile pmetric.SummaryDataPointValueAtQuantileSlice) (clickhouse.ArraySet, clickhouse.ArraySet) {
-	var (
-		quantiles clickhouse.ArraySet
-		values    clickhouse.ArraySet
-	)
-	for i := 0; i < valueAtQuantile.Len(); i++ {
+	n := valueAtQuantile.Len()
+	if n == 0 {
+		return nil, nil
+	}
+	quantiles := make(clickhouse.ArraySet, 0, n)
+	values := make(clickhouse.ArraySet, 0, n)
+	for i := range n {
 		value := valueAtQuantile.At(i)
 		quantiles = append(quantiles, value.Quantile())
 		values = append(values, value.Value())
 	}
 	return quantiles, values
-}
-
-func newPlaceholder(count int) *string {
-	var b strings.Builder
-	for i := 0; i < count; i++ {
-		b.WriteString(",?")
-	}
-	b.WriteString("),")
-	placeholder := strings.Replace(b.String(), ",", "(", 1)
-	return &placeholder
 }

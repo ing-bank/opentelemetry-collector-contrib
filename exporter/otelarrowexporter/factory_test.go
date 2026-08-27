@@ -4,7 +4,6 @@
 package otelarrowexporter
 
 import (
-	"context"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -16,6 +15,7 @@ import (
 	"go.opentelemetry.io/collector/config/configcompression"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/configopaque"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configretry"
 	"go.opentelemetry.io/collector/config/configtls"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
@@ -39,7 +39,7 @@ func TestCreateDefaultConfig(t *testing.T) {
 	assert.NotEqual(t, ocfg.QueueSettings, exporterhelper.NewDefaultQueueConfig())
 
 	assert.Equal(t, ocfg.TimeoutSettings, exporterhelper.NewDefaultTimeoutConfig())
-	assert.Equal(t, configcompression.TypeZstd, ocfg.Compression)
+	assert.Equal(t, configcompression.TypeZstd, ocfg.ClientConfig.Compression)
 	assert.Equal(t, ArrowConfig{
 		Disabled:           false,
 		NumStreams:         max(1, runtime.NumCPU()/2),
@@ -53,10 +53,10 @@ func TestCreateDefaultConfig(t *testing.T) {
 func TestCreateMetrics(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
-	cfg.Endpoint = testutil.GetAvailableLocalAddress(t)
+	cfg.ClientConfig.Endpoint = testutil.GetAvailableLocalAddress(t)
 
 	set := exportertest.NewNopSettings(metadata.Type)
-	oexp, err := factory.CreateMetrics(context.Background(), set, cfg)
+	oexp, err := factory.CreateMetrics(t.Context(), set, cfg)
 	require.NoError(t, err)
 	require.NotNil(t, oexp)
 }
@@ -94,11 +94,11 @@ func TestCreateTraces(t *testing.T) {
 			config: Config{
 				ClientConfig: configgrpc.ClientConfig{
 					Endpoint: endpoint,
-					Keepalive: &configgrpc.KeepaliveClientConfig{
+					Keepalive: configoptional.Some(configgrpc.KeepaliveClientConfig{
 						Time:                30 * time.Second,
 						Timeout:             25 * time.Second,
 						PermitWithoutStream: true,
-					},
+					}),
 				},
 			},
 		},
@@ -143,9 +143,9 @@ func TestCreateTraces(t *testing.T) {
 			config: Config{
 				ClientConfig: configgrpc.ClientConfig{
 					Endpoint: endpoint,
-					Headers: map[string]configopaque.String{
-						"hdr1": "val1",
-						"hdr2": "val2",
+					Headers: configopaque.MapList{
+						{Name: "hdr1", Value: "val1"},
+						{Name: "hdr2", Value: "val2"},
 					},
 				},
 			},
@@ -192,21 +192,21 @@ func TestCreateTraces(t *testing.T) {
 			factory := NewFactory()
 			set := exportertest.NewNopSettings(metadata.Type)
 			cfg := tt.config
-			consumer, err := factory.CreateTraces(context.Background(), set, &cfg)
+			consumer, err := factory.CreateTraces(t.Context(), set, &cfg)
 			if tt.mustFailOnCreate {
 				assert.Error(t, err)
 				return
 			}
 			assert.NoError(t, err)
 			assert.NotNil(t, consumer)
-			err = consumer.Start(context.Background(), componenttest.NewNopHost())
+			err = consumer.Start(t.Context(), componenttest.NewNopHost())
 			if tt.mustFailOnStart {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
 			}
 			// Shutdown is called even when Start fails
-			err = consumer.Shutdown(context.Background())
+			err = consumer.Shutdown(t.Context())
 			if err != nil {
 				// Since the endpoint of OTLP exporter doesn't actually exist,
 				// exporter may already stop because it cannot connect.
@@ -219,10 +219,10 @@ func TestCreateTraces(t *testing.T) {
 func TestCreateLogs(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
-	cfg.Endpoint = testutil.GetAvailableLocalAddress(t)
+	cfg.ClientConfig.Endpoint = testutil.GetAvailableLocalAddress(t)
 
 	set := exportertest.NewNopSettings(metadata.Type)
-	oexp, err := factory.CreateLogs(context.Background(), set, cfg)
+	oexp, err := factory.CreateLogs(t.Context(), set, cfg)
 	require.NoError(t, err)
 	require.NotNil(t, oexp)
 }
@@ -230,12 +230,12 @@ func TestCreateLogs(t *testing.T) {
 func TestCreateArrowTracesExporter(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
-	cfg.Endpoint = testutil.GetAvailableLocalAddress(t)
+	cfg.ClientConfig.Endpoint = testutil.GetAvailableLocalAddress(t)
 	cfg.Arrow = ArrowConfig{
 		NumStreams: 1,
 	}
 	set := exportertest.NewNopSettings(metadata.Type)
-	oexp, err := factory.CreateTraces(context.Background(), set, cfg)
+	oexp, err := factory.CreateTraces(t.Context(), set, cfg)
 	require.NoError(t, err)
 	require.NotNil(t, oexp)
 }

@@ -1,5 +1,9 @@
 resourceMetrics:
-  - resource: {}
+  - resource:
+      attributes:
+        - key: service.instance.id
+          value:
+            stringValue: SAMBALAM-M-P4X5:5432
     scopeMetrics:
       - metrics:
           - description: Number of buffers allocated.
@@ -119,7 +123,7 @@ resourceMetrics:
           - description: The number of database locks.
             gauge:
               dataPoints:
-                - asInt: "5600"
+                - asInt: "2"
                   attributes:
                     - key: lock_type
                       value:
@@ -129,20 +133,7 @@ resourceMetrics:
                         stringValue: AccessShareLock
                     - key: relation
                       value:
-                        stringValue: pg_class
-                  startTimeUnixNano: "1000000"
-                  timeUnixNano: "2000000"
-                - asInt: "3600"
-                  attributes:
-                    - key: lock_type
-                      value:
-                        stringValue: relation
-                    - key: mode
-                      value:
-                        stringValue: AccessShareLock
-                    - key: relation
-                      value:
-                        stringValue: pg_locks
+                        stringValue: pg_database
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
             name: postgresql.database.locks
@@ -210,9 +201,12 @@ resourceMetrics:
         - key: postgresql.database.name
           value:
             stringValue: open
+        - key: service.instance.id
+          value:
+            stringValue: SAMBALAM-M-P4X5:5432
     scopeMetrics:
       - metrics:
-          - description: The number of backends.
+          - description: The number of backend processes associated with each database. Counts backends across all connection states (active, idle, idle-in-transaction) and all backend types, including non-client backends such as autovacuum and parallel workers.
             name: postgresql.backends
             sum:
               aggregationTemporality: 2
@@ -221,7 +215,7 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
             unit: "1"
-          - description: Number of times disk blocks were found already in the buffer cache. 
+          - description: Number of times disk blocks were found already in the buffer cache.
             name: postgresql.blks_hit
             sum:
               aggregationTemporality: 2
@@ -231,7 +225,7 @@ resourceMetrics:
                   timeUnixNano: "2000000"
               isMonotonic: true
             unit: '{blks_hit}'
-          - description: Number of disk blocks read in this database. 
+          - description: Number of disk blocks read in this database.
             name: postgresql.blks_read
             sum:
               aggregationTemporality: 2
@@ -240,7 +234,7 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
               isMonotonic: true
-            unit: '{blks_read}'            
+            unit: '{blks_read}'
           - description: The number of commits.
             name: postgresql.commits
             sum:
@@ -251,6 +245,37 @@ resourceMetrics:
                   timeUnixNano: "2000000"
               isMonotonic: true
             unit: "1"
+          - description: The number of database locks.
+            gauge:
+              dataPoints:
+                - asInt: "5601"
+                  attributes:
+                    - key: lock_type
+                      value:
+                        stringValue: relation
+                    - key: mode
+                      value:
+                        stringValue: AccessShareLock
+                    - key: relation
+                      value:
+                        stringValue: pg_class
+                  startTimeUnixNano: "1000000"
+                  timeUnixNano: "2000000"
+                - asInt: "3601"
+                  attributes:
+                    - key: lock_type
+                      value:
+                        stringValue: relation
+                    - key: mode
+                      value:
+                        stringValue: AccessShareLock
+                    - key: relation
+                      value:
+                        stringValue: pg_locks
+                  startTimeUnixNano: "1000000"
+                  timeUnixNano: "2000000"
+            name: postgresql.database.locks
+            unit: '{lock}'
           - description: The database disk usage.
             name: postgresql.db_size
             sum:
@@ -289,6 +314,16 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
             unit: '{table}'
+          - description: Total amount of data written to temporary files by queries.
+            name: postgresql.temp.io
+            sum:
+              aggregationTemporality: 2
+              dataPoints:
+                - asInt: "13"
+                  startTimeUnixNano: "1000000"
+                  timeUnixNano: "2000000"
+              isMonotonic: true
+            unit: By
           - description: The number of temp files.
             name: postgresql.temp_files
             sum:
@@ -308,7 +343,7 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
               isMonotonic: true
-            unit: '{tup_deleted}'            
+            unit: '{tup_deleted}'
           - description: Number of rows fetched by queries in the database.
             name: postgresql.tup_fetched
             sum:
@@ -328,7 +363,7 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
               isMonotonic: true
-            unit: '{tup_inserted}'            
+            unit: '{tup_inserted}'
           - description: Number of rows returned by queries in the database.
             name: postgresql.tup_returned
             sum:
@@ -357,9 +392,12 @@ resourceMetrics:
         - key: postgresql.database.name
           value:
             stringValue: otel
+        - key: service.instance.id
+          value:
+            stringValue: SAMBALAM-M-P4X5:5432
     scopeMetrics:
       - metrics:
-          - description: The number of backends.
+          - description: The number of backend processes associated with each database. Counts backends across all connection states (active, idle, idle-in-transaction) and all backend types, including non-client backends such as autovacuum and parallel workers.
             name: postgresql.backends
             sum:
               aggregationTemporality: 2
@@ -368,7 +406,7 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
             unit: "1"
-          - description: Number of times disk blocks were found already in the buffer cache. 
+          - description: Number of times disk blocks were found already in the buffer cache.
             name: postgresql.blks_hit
             sum:
               aggregationTemporality: 2
@@ -378,7 +416,7 @@ resourceMetrics:
                   timeUnixNano: "2000000"
               isMonotonic: true
             unit: '{blks_hit}'
-          - description: Number of disk blocks read in this database. 
+          - description: Number of disk blocks read in this database.
             name: postgresql.blks_read
             sum:
               aggregationTemporality: 2
@@ -387,7 +425,7 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
               isMonotonic: true
-            unit: '{blks_read}'            
+            unit: '{blks_read}'
           - description: The number of commits.
             name: postgresql.commits
             sum:
@@ -398,6 +436,37 @@ resourceMetrics:
                   timeUnixNano: "2000000"
               isMonotonic: true
             unit: "1"
+          - description: The number of database locks.
+            gauge:
+              dataPoints:
+                - asInt: "5600"
+                  attributes:
+                    - key: lock_type
+                      value:
+                        stringValue: relation
+                    - key: mode
+                      value:
+                        stringValue: AccessShareLock
+                    - key: relation
+                      value:
+                        stringValue: pg_class
+                  startTimeUnixNano: "1000000"
+                  timeUnixNano: "2000000"
+                - asInt: "3600"
+                  attributes:
+                    - key: lock_type
+                      value:
+                        stringValue: relation
+                    - key: mode
+                      value:
+                        stringValue: AccessShareLock
+                    - key: relation
+                      value:
+                        stringValue: pg_locks
+                  startTimeUnixNano: "1000000"
+                  timeUnixNano: "2000000"
+            name: postgresql.database.locks
+            unit: '{lock}'
           - description: The database disk usage.
             name: postgresql.db_size
             sum:
@@ -436,6 +505,16 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
             unit: '{table}'
+          - description: Total amount of data written to temporary files by queries.
+            name: postgresql.temp.io
+            sum:
+              aggregationTemporality: 2
+              dataPoints:
+                - asInt: "12"
+                  startTimeUnixNano: "1000000"
+                  timeUnixNano: "2000000"
+              isMonotonic: true
+            unit: By
           - description: The number of temp files.
             name: postgresql.temp_files
             sum:
@@ -455,7 +534,7 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
               isMonotonic: true
-            unit: '{tup_deleted}'            
+            unit: '{tup_deleted}'
           - description: Number of rows fetched by queries in the database.
             name: postgresql.tup_fetched
             sum:
@@ -475,7 +554,7 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
               isMonotonic: true
-            unit: '{tup_inserted}'            
+            unit: '{tup_inserted}'
           - description: Number of rows returned by queries in the database.
             name: postgresql.tup_returned
             sum:
@@ -504,9 +583,12 @@ resourceMetrics:
         - key: postgresql.database.name
           value:
             stringValue: telemetry
+        - key: service.instance.id
+          value:
+            stringValue: SAMBALAM-M-P4X5:5432
     scopeMetrics:
       - metrics:
-          - description: The number of backends.
+          - description: The number of backend processes associated with each database. Counts backends across all connection states (active, idle, idle-in-transaction) and all backend types, including non-client backends such as autovacuum and parallel workers.
             name: postgresql.backends
             sum:
               aggregationTemporality: 2
@@ -515,7 +597,7 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
             unit: "1"
-          - description: Number of times disk blocks were found already in the buffer cache. 
+          - description: Number of times disk blocks were found already in the buffer cache.
             name: postgresql.blks_hit
             sum:
               aggregationTemporality: 2
@@ -525,7 +607,7 @@ resourceMetrics:
                   timeUnixNano: "2000000"
               isMonotonic: true
             unit: '{blks_hit}'
-          - description: Number of disk blocks read in this database. 
+          - description: Number of disk blocks read in this database.
             name: postgresql.blks_read
             sum:
               aggregationTemporality: 2
@@ -534,7 +616,7 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
               isMonotonic: true
-            unit: '{blks_read}'            
+            unit: '{blks_read}'
           - description: The number of commits.
             name: postgresql.commits
             sum:
@@ -545,6 +627,37 @@ resourceMetrics:
                   timeUnixNano: "2000000"
               isMonotonic: true
             unit: "1"
+          - description: The number of database locks.
+            gauge:
+              dataPoints:
+                - asInt: "5602"
+                  attributes:
+                    - key: lock_type
+                      value:
+                        stringValue: relation
+                    - key: mode
+                      value:
+                        stringValue: AccessShareLock
+                    - key: relation
+                      value:
+                        stringValue: pg_class
+                  startTimeUnixNano: "1000000"
+                  timeUnixNano: "2000000"
+                - asInt: "3602"
+                  attributes:
+                    - key: lock_type
+                      value:
+                        stringValue: relation
+                    - key: mode
+                      value:
+                        stringValue: AccessShareLock
+                    - key: relation
+                      value:
+                        stringValue: pg_locks
+                  startTimeUnixNano: "1000000"
+                  timeUnixNano: "2000000"
+            name: postgresql.database.locks
+            unit: '{lock}'
           - description: The database disk usage.
             name: postgresql.db_size
             sum:
@@ -583,6 +696,16 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
             unit: '{table}'
+          - description: Total amount of data written to temporary files by queries.
+            name: postgresql.temp.io
+            sum:
+              aggregationTemporality: 2
+              dataPoints:
+                - asInt: "14"
+                  startTimeUnixNano: "1000000"
+                  timeUnixNano: "2000000"
+              isMonotonic: true
+            unit: By
           - description: The number of temp files.
             name: postgresql.temp_files
             sum:
@@ -602,7 +725,7 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
               isMonotonic: true
-            unit: '{tup_deleted}'            
+            unit: '{tup_deleted}'
           - description: Number of rows fetched by queries in the database.
             name: postgresql.tup_fetched
             sum:
@@ -622,7 +745,7 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
               isMonotonic: true
-            unit: '{tup_inserted}'            
+            unit: '{tup_inserted}'
           - description: Number of rows returned by queries in the database.
             name: postgresql.tup_returned
             sum:
@@ -654,6 +777,9 @@ resourceMetrics:
         - key: postgresql.table.name
           value:
             stringValue: public.table1
+        - key: service.instance.id
+          value:
+            stringValue: SAMBALAM-M-P4X5:5432
     scopeMetrics:
       - metrics:
           - description: The number of blocks read.
@@ -802,7 +928,7 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
               isMonotonic: true
-            unit: '{vacuums}'
+            unit: '{vacuum}'
         scope:
           name: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/postgresqlreceiver
           version: latest
@@ -814,6 +940,9 @@ resourceMetrics:
         - key: postgresql.table.name
           value:
             stringValue: public.table2
+        - key: service.instance.id
+          value:
+            stringValue: SAMBALAM-M-P4X5:5432
     scopeMetrics:
       - metrics:
           - description: The number of blocks read.
@@ -962,7 +1091,7 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
               isMonotonic: true
-            unit: '{vacuums}'
+            unit: '{vacuum}'
         scope:
           name: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/postgresqlreceiver
           version: latest
@@ -974,6 +1103,9 @@ resourceMetrics:
         - key: postgresql.table.name
           value:
             stringValue: public.table1
+        - key: service.instance.id
+          value:
+            stringValue: SAMBALAM-M-P4X5:5432
     scopeMetrics:
       - metrics:
           - description: The number of blocks read.
@@ -1122,7 +1254,7 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
               isMonotonic: true
-            unit: '{vacuums}'
+            unit: '{vacuum}'
         scope:
           name: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/postgresqlreceiver
           version: latest
@@ -1134,6 +1266,9 @@ resourceMetrics:
         - key: postgresql.table.name
           value:
             stringValue: public.table2
+        - key: service.instance.id
+          value:
+            stringValue: SAMBALAM-M-P4X5:5432
     scopeMetrics:
       - metrics:
           - description: The number of blocks read.
@@ -1282,7 +1417,7 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
               isMonotonic: true
-            unit: '{vacuums}'
+            unit: '{vacuum}'
         scope:
           name: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/postgresqlreceiver
           version: latest
@@ -1294,6 +1429,9 @@ resourceMetrics:
         - key: postgresql.table.name
           value:
             stringValue: public.table1
+        - key: service.instance.id
+          value:
+            stringValue: SAMBALAM-M-P4X5:5432
     scopeMetrics:
       - metrics:
           - description: The number of blocks read.
@@ -1442,7 +1580,7 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
               isMonotonic: true
-            unit: '{vacuums}'
+            unit: '{vacuum}'
         scope:
           name: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/postgresqlreceiver
           version: latest
@@ -1454,6 +1592,9 @@ resourceMetrics:
         - key: postgresql.table.name
           value:
             stringValue: public.table2
+        - key: service.instance.id
+          value:
+            stringValue: SAMBALAM-M-P4X5:5432
     scopeMetrics:
       - metrics:
           - description: The number of blocks read.
@@ -1602,7 +1743,7 @@ resourceMetrics:
                   startTimeUnixNano: "1000000"
                   timeUnixNano: "2000000"
               isMonotonic: true
-            unit: '{vacuums}'
+            unit: '{vacuum}'
         scope:
           name: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/postgresqlreceiver
           version: latest
@@ -1617,6 +1758,9 @@ resourceMetrics:
         - key: postgresql.table.name
           value:
             stringValue: table1
+        - key: service.instance.id
+          value:
+            stringValue: SAMBALAM-M-P4X5:5432
     scopeMetrics:
       - metrics:
           - description: The number of index scans on a table.
@@ -1651,6 +1795,9 @@ resourceMetrics:
         - key: postgresql.table.name
           value:
             stringValue: table2
+        - key: service.instance.id
+          value:
+            stringValue: SAMBALAM-M-P4X5:5432
     scopeMetrics:
       - metrics:
           - description: The number of index scans on a table.
@@ -1685,6 +1832,9 @@ resourceMetrics:
         - key: postgresql.table.name
           value:
             stringValue: table1
+        - key: service.instance.id
+          value:
+            stringValue: SAMBALAM-M-P4X5:5432
     scopeMetrics:
       - metrics:
           - description: The number of index scans on a table.
@@ -1719,6 +1869,9 @@ resourceMetrics:
         - key: postgresql.table.name
           value:
             stringValue: table2
+        - key: service.instance.id
+          value:
+            stringValue: SAMBALAM-M-P4X5:5432
     scopeMetrics:
       - metrics:
           - description: The number of index scans on a table.
@@ -1753,6 +1906,9 @@ resourceMetrics:
         - key: postgresql.table.name
           value:
             stringValue: table1
+        - key: service.instance.id
+          value:
+            stringValue: SAMBALAM-M-P4X5:5432
     scopeMetrics:
       - metrics:
           - description: The number of index scans on a table.
@@ -1787,6 +1943,9 @@ resourceMetrics:
         - key: postgresql.table.name
           value:
             stringValue: table2
+        - key: service.instance.id
+          value:
+            stringValue: SAMBALAM-M-P4X5:5432
     scopeMetrics:
       - metrics:
           - description: The number of index scans on a table.

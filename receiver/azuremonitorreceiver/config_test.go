@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
-	"go.opentelemetry.io/collector/confmap/xconfmap"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/azuremonitorreceiver/internal/metadata"
 )
@@ -43,6 +43,26 @@ func TestLoadConfig(t *testing.T) {
 				cfg := createDefaultConfig().(*Config)
 				cfg.DiscoverSubscriptions = true
 				cfg.Credentials = defaultCredentials
+				return cfg
+			}(),
+		},
+		{
+			id: component.NewIDWithName(metadata.Type, "append_tags_all"),
+			expected: func() component.Config {
+				cfg := createDefaultConfig().(*Config)
+				cfg.SubscriptionIDs = []string{"test"}
+				cfg.Credentials = defaultCredentials
+				cfg.AppendTagsAsAttributes = []string{"*"}
+				return cfg
+			}(),
+		},
+		{
+			id: component.NewIDWithName(metadata.Type, "append_tags_specific"),
+			expected: func() component.Config {
+				cfg := createDefaultConfig().(*Config)
+				cfg.SubscriptionIDs = []string{"test"}
+				cfg.Credentials = defaultCredentials
+				cfg.AppendTagsAsAttributes = []string{"service", "environment"}
 				return cfg
 			}(),
 		},
@@ -109,6 +129,10 @@ func TestLoadConfig(t *testing.T) {
 				return cfg
 			}(),
 		},
+		{
+			id:          component.NewIDWithName(metadata.Type, "max_resources_per_batch_negative_value"),
+			expectedErr: errInvalidMaxResPerBatch.Error(),
+		},
 	}
 
 	for _, tt := range tests {
@@ -120,7 +144,7 @@ func TestLoadConfig(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, sub.Unmarshal(cfg))
 
-			err = xconfmap.Validate(cfg)
+			err = confmap.Validate(cfg)
 			if tt.expectedErr != "" {
 				assert.ErrorContains(t, err, tt.expectedErr)
 			} else {

@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
@@ -70,7 +71,7 @@ func TestExport_Success(t *testing.T) {
 	traceClient, selfExp, selfProv := makeTraceServiceClient(t, traceSink)
 
 	go traceSink.unblock()
-	resp, err := traceClient.Export(context.Background(), req)
+	resp, err := traceClient.Export(t.Context(), req)
 	require.NoError(t, err, "Failed to export trace: %v", err)
 	require.NotNil(t, resp, "The response is missing")
 
@@ -78,7 +79,7 @@ func TestExport_Success(t *testing.T) {
 	assert.Equal(t, td, traceSink.AllTraces()[0])
 
 	// One self-tracing spans is issued.
-	require.NoError(t, selfProv.ForceFlush(context.Background()))
+	require.NoError(t, selfProv.ForceFlush(t.Context()))
 	require.Len(t, selfExp.GetSpans(), 1)
 }
 
@@ -88,14 +89,14 @@ func TestExport_EmptyRequest(t *testing.T) {
 	empty := ptraceotlp.NewExportRequest()
 
 	go traceSink.unblock()
-	resp, err := traceClient.Export(context.Background(), empty)
+	resp, err := traceClient.Export(t.Context(), empty)
 	assert.NoError(t, err, "Failed to export trace: %v", err)
 	assert.NotNil(t, resp, "The response is missing")
 
 	require.Empty(t, traceSink.AllTraces())
 
 	// No self-tracing spans are issued.
-	require.NoError(t, selfProv.ForceFlush(context.Background()))
+	require.NoError(t, selfProv.ForceFlush(t.Context()))
 	require.Empty(t, selfExp.GetSpans())
 }
 
@@ -104,29 +105,82 @@ func TestExport_ErrorConsumer(t *testing.T) {
 	req := ptraceotlp.NewExportRequestFromTraces(td)
 
 	traceClient, selfExp, selfProv := makeTraceServiceClient(t, consumertest.NewErr(errors.New("my error")))
-	resp, err := traceClient.Export(context.Background(), req)
-	assert.EqualError(t, err, "rpc error: code = Unknown desc = my error")
+	resp, err := traceClient.Export(t.Context(), req)
+	// Non-permanent errors should be mapped to Unavailable (retryable), not Unknown.
+	assert.EqualError(t, err, "rpc error: code = Unavailable desc = my error")
 	assert.Equal(t, ptraceotlp.ExportResponse{}, resp)
 
 	// One self-tracing spans is issued.
-	require.NoError(t, selfProv.ForceFlush(context.Background()))
+	require.NoError(t, selfProv.ForceFlush(t.Context()))
+	require.Len(t, selfExp.GetSpans(), 1)
+}
+
+func TestExport_PermanentErrorConsumer(t *testing.T) {
+	td := testdata.GenerateTraces(1)
+	req := ptraceotlp.NewExportRequestFromTraces(td)
+
+	traceClient, selfExp, selfProv := makeTraceServiceClient(t, consumertest.NewErr(consumererror.NewPermanent(errors.New("bad data"))))
+	resp, err := traceClient.Export(t.Context(), req)
+	// Permanent errors should be mapped to Internal, not Unknown.
+	assert.EqualError(t, err, "rpc error: code = Internal desc = Permanent error: bad data")
+	assert.Equal(t, ptraceotlp.ExportResponse{}, resp)
+
+	// One self-tracing spans is issued.
+	require.NoError(t, selfProv.ForceFlush(t.Context()))
 	require.Len(t, selfExp.GetSpans(), 1)
 }
 
 func TestExport_AdmissionRequestTooLarge(t *testing.T) {
-	td := testdata.GenerateTraces(10)
-	traceSink := newTestSink()
-	req := ptraceotlp.NewExportRequestFromTraces(td)
-	traceClient, selfExp, selfProv := makeTraceServiceClient(t, traceSink)
+	t.Run("with data points", func(t *testing.T) {
+		td := testdata.GenerateTraces(10)
+		traceSink := newTestSink()
+		req := ptraceotlp.NewExportRequestFromTraces(td)
+		traceClient, selfExp, selfProv := makeTraceServiceClient(t, traceSink)
 
-	go traceSink.unblock()
-	resp, err := traceClient.Export(context.Background(), req)
-	assert.EqualError(t, err, "rpc error: code = InvalidArgument desc = rejecting request, request is too large")
-	assert.Equal(t, ptraceotlp.ExportResponse{}, resp)
+		go traceSink.unblock()
+		resp, err := traceClient.Export(t.Context(), req)
+		assert.EqualError(t, err, "rpc error: code = InvalidArgument desc = rejecting request, request is too large")
+		assert.Equal(t, ptraceotlp.ExportResponse{}, resp)
 
-	// One self-tracing spans is issued.
-	require.NoError(t, selfProv.ForceFlush(context.Background()))
-	require.Len(t, selfExp.GetSpans(), 1)
+		// One self-tracing spans is issued.
+		require.NoError(t, selfProv.ForceFlush(t.Context()))
+		require.Len(t, selfExp.GetSpans(), 1)
+	})
+
+	t.Run("with metadata only", func(t *testing.T) {
+		// Create traces with metadata but no actual spans.
+		// This should still go through admission control based on size.
+		td := ptrace.NewTraces()
+		for range 100 {
+			rs := td.ResourceSpans().AppendEmpty()
+			// Add large attributes to the resource.
+			for range 10 {
+				rs.Resource().Attributes().PutStr(
+					"large.attribute.key.that.takes.space",
+					"This is a large attribute value that demonstrates metadata can be significant even without spans",
+				)
+			}
+			// Add scope but no spans.
+			ss := rs.ScopeSpans().AppendEmpty()
+			ss.Scope().SetName("test-scope")
+		}
+
+		require.Equal(t, 0, td.SpanCount(), "Test setup: should have no spans")
+
+		sizer := &ptrace.ProtoMarshaler{}
+		sizeBytes := sizer.TracesSize(td)
+		require.Greater(t, sizeBytes, maxBytes, "Test setup: metadata size should exceed admission limit")
+
+		req := ptraceotlp.NewExportRequestFromTraces(td)
+		traceSink := newTestSink()
+		traceClient, _, _ := makeTraceServiceClient(t, traceSink)
+
+		// No need to call unblock() - request is rejected by admission control
+		// before ConsumeTraces is ever called.
+		_, err := traceClient.Export(t.Context(), req)
+		// Should be rejected by admission control due to size, not accepted with early return.
+		assert.ErrorContains(t, err, "rejecting request", "Should be rejected by admission control")
+	})
 }
 
 func TestExport_AdmissionLimitExceeded(t *testing.T) {
@@ -141,10 +195,10 @@ func TestExport_AdmissionLimitExceeded(t *testing.T) {
 
 	var expectSuccess atomic.Int32
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		go func() {
 			defer wait.Done()
-			_, err := traceClient.Export(context.Background(), req)
+			_, err := traceClient.Export(t.Context(), req)
 			if err == nil {
 				// some succeed!
 				expectSuccess.Add(1)
@@ -158,7 +212,7 @@ func TestExport_AdmissionLimitExceeded(t *testing.T) {
 	wait.Wait()
 
 	// 10 self-tracing spans are issued
-	require.NoError(t, selfProv.ForceFlush(context.Background()))
+	require.NoError(t, selfProv.ForceFlush(t.Context()))
 	require.Len(t, selfExp.GetSpans(), 10)
 
 	// Expect the correct number of success and failure.

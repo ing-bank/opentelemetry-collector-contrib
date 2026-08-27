@@ -47,7 +47,7 @@ func TestProxyCreationFailed(t *testing.T) {
 	assert.NoError(t, err, "there should be address available")
 
 	sink := new(consumertest.TracesSink)
-	_, err = newReceiver(
+	rcvr, err := newReceiver(
 		&Config{
 			AddrConfig: confignet.AddrConfig{
 				Endpoint:  addr,
@@ -62,7 +62,8 @@ func TestProxyCreationFailed(t *testing.T) {
 		sink,
 		receivertest.NewNopSettings(metadata.Type),
 	)
-	assert.Error(t, err, "receiver creation should fail due to failure to create TCP proxy")
+	assert.NoError(t, err, "receiver should be created before proxy startup")
+	assert.Error(t, rcvr.Start(t.Context(), componenttest.NewNopHost()), "receiver start should fail due to failure to create TCP proxy")
 }
 
 func TestPollerCreationFailed(t *testing.T) {
@@ -91,14 +92,14 @@ func TestSegmentsPassedToConsumer(t *testing.T) {
 	receiverID := component.MustNewID("TestSegmentsPassedToConsumer")
 	tt := componenttest.NewTelemetry()
 	defer func() {
-		assert.NoError(t, tt.Shutdown(context.Background()))
+		assert.NoError(t, tt.Shutdown(t.Context()))
 	}()
 
 	t.Setenv(defaultRegionEnvName, mockRegion)
 
 	addr, rcvr, _ := createAndOptionallyStartReceiver(t, nil, true, receiver.Settings{ID: receiverID, TelemetrySettings: tt.NewTelemetrySettings(), BuildInfo: component.NewDefaultBuildInfo()})
 	defer func() {
-		assert.NoError(t, rcvr.Shutdown(context.Background()))
+		assert.NoError(t, rcvr.Shutdown(t.Context()))
 	}()
 
 	content, err := os.ReadFile(filepath.Join("../../internal/aws/xray", "testdata", "ddbSample.txt"))
@@ -121,14 +122,14 @@ func TestTranslatorErrorsOut(t *testing.T) {
 	receiverID := component.MustNewID("TestTranslatorErrorsOut")
 	tt := componenttest.NewTelemetry()
 	defer func() {
-		assert.NoError(t, tt.Shutdown(context.Background()))
+		assert.NoError(t, tt.Shutdown(t.Context()))
 	}()
 
 	t.Setenv(defaultRegionEnvName, mockRegion)
 
 	addr, rcvr, recordedLogs := createAndOptionallyStartReceiver(t, nil, true, receiver.Settings{ID: receiverID, TelemetrySettings: tt.NewTelemetrySettings(), BuildInfo: component.NewDefaultBuildInfo()})
 	defer func() {
-		assert.NoError(t, rcvr.Shutdown(context.Background()))
+		assert.NoError(t, rcvr.Shutdown(t.Context()))
 	}()
 
 	err := writePacket(t, addr, segmentHeader+"invalidSegment")
@@ -147,14 +148,14 @@ func TestSegmentsConsumerErrorsOut(t *testing.T) {
 	receiverID := component.MustNewID("TestSegmentsConsumerErrorsOut")
 	tt := componenttest.NewTelemetry()
 	defer func() {
-		assert.NoError(t, tt.Shutdown(context.Background()))
+		assert.NoError(t, tt.Shutdown(t.Context()))
 	}()
 
 	t.Setenv(defaultRegionEnvName, mockRegion)
 
 	addr, rcvr, recordedLogs := createAndOptionallyStartReceiver(t, consumertest.NewErr(errors.New("can't consume traces")), true, receiver.Settings{ID: receiverID, TelemetrySettings: tt.NewTelemetrySettings(), BuildInfo: component.NewDefaultBuildInfo()})
 	defer func() {
-		assert.NoError(t, rcvr.Shutdown(context.Background()))
+		assert.NoError(t, rcvr.Shutdown(t.Context()))
 	}()
 
 	content, err := os.ReadFile(filepath.Join("../../internal/aws/xray", "testdata", "serverSample.txt"))
@@ -176,7 +177,7 @@ func TestPollerCloseError(t *testing.T) {
 	receiverID := component.MustNewID("TestPollerCloseError")
 	tt := componenttest.NewTelemetry()
 	defer func() {
-		assert.NoError(t, tt.Shutdown(context.Background()))
+		assert.NoError(t, tt.Shutdown(t.Context()))
 	}()
 
 	t.Setenv(defaultRegionEnvName, mockRegion)
@@ -185,7 +186,7 @@ func TestPollerCloseError(t *testing.T) {
 	mPoller := &mockPoller{closeErr: errors.New("mockPollerCloseErr")}
 	rcvr.(*xrayReceiver).poller = mPoller
 	rcvr.(*xrayReceiver).server = &mockProxy{}
-	err := rcvr.Shutdown(context.Background())
+	err := rcvr.Shutdown(t.Context())
 	assert.ErrorIs(t, err, mPoller.closeErr, "expected error")
 }
 
@@ -193,7 +194,7 @@ func TestProxyCloseError(t *testing.T) {
 	receiverID := component.MustNewID("TestPollerCloseError")
 	tt := componenttest.NewTelemetry()
 	defer func() {
-		assert.NoError(t, tt.Shutdown(context.Background()))
+		assert.NoError(t, tt.Shutdown(t.Context()))
 	}()
 
 	t.Setenv(defaultRegionEnvName, mockRegion)
@@ -202,7 +203,7 @@ func TestProxyCloseError(t *testing.T) {
 	mProxy := &mockProxy{closeErr: errors.New("mockProxyCloseErr")}
 	rcvr.(*xrayReceiver).poller = &mockPoller{}
 	rcvr.(*xrayReceiver).server = mProxy
-	err := rcvr.Shutdown(context.Background())
+	err := rcvr.Shutdown(t.Context())
 	assert.ErrorIs(t, err, mProxy.closeErr, "expected error")
 }
 
@@ -210,7 +211,7 @@ func TestBothPollerAndProxyCloseError(t *testing.T) {
 	receiverID := component.MustNewID("TestBothPollerAndProxyCloseError")
 	tt := componenttest.NewTelemetry()
 	defer func() {
-		assert.NoError(t, tt.Shutdown(context.Background()))
+		assert.NoError(t, tt.Shutdown(t.Context()))
 	}()
 
 	t.Setenv(defaultRegionEnvName, mockRegion)
@@ -220,7 +221,7 @@ func TestBothPollerAndProxyCloseError(t *testing.T) {
 	mProxy := &mockProxy{closeErr: errors.New("mockProxyCloseErr")}
 	rcvr.(*xrayReceiver).poller = mPoller
 	rcvr.(*xrayReceiver).server = mProxy
-	err := rcvr.Shutdown(context.Background())
+	err := rcvr.Shutdown(t.Context())
 	assert.ErrorIs(t, err, mPoller.closeErr, "expected error")
 	assert.ErrorIs(t, err, mProxy.closeErr, "expected error")
 }
@@ -229,11 +230,11 @@ type mockPoller struct {
 	closeErr error
 }
 
-func (m *mockPoller) SegmentsChan() <-chan udppoller.RawSegment {
+func (*mockPoller) SegmentsChan() <-chan udppoller.RawSegment {
 	return make(chan udppoller.RawSegment, 1)
 }
 
-func (m *mockPoller) Start(_ context.Context) {}
+func (*mockPoller) Start(context.Context) {}
 
 func (m *mockPoller) Close() error {
 	if m.closeErr != nil {
@@ -246,7 +247,7 @@ type mockProxy struct {
 	closeErr error
 }
 
-func (m *mockProxy) ListenAndServe() error {
+func (*mockProxy) ListenAndServe() error {
 	return errors.New("returning from ListenAndServe() always errors out")
 }
 
@@ -294,7 +295,7 @@ func createAndOptionallyStartReceiver(
 	assert.NoError(t, err, "receiver should be created")
 
 	if start {
-		err = rcvr.Start(context.Background(), componenttest.NewNopHost())
+		err = rcvr.Start(t.Context(), componenttest.NewNopHost())
 		assert.NoError(t, err, "receiver should be started")
 	}
 	return addr, rcvr, recorded
@@ -338,13 +339,28 @@ func logSetup() (*zap.Logger, *observer.ObservedLogs) {
 }
 
 func assertReceiverTraces(t *testing.T, tt *componenttest.Telemetry, id component.ID, accepted, refused int64) {
-	got, err := tt.GetMetric("otelcol_receiver_accepted_spans")
-	assert.NoError(t, err)
+	var got metricdata.Metrics
+	var err error
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		got, err = tt.GetMetric("otelcol_receiver_accepted_spans")
+		assert.NoError(c, err)
+		if err != nil {
+			return
+		}
+		sum, ok := got.Data.(metricdata.Sum[int64])
+		assert.True(c, ok)
+		if !ok {
+			return
+		}
+		if assert.Len(c, sum.DataPoints, 1) {
+			assert.Equal(c, accepted, sum.DataPoints[0].Value)
+		}
+	}, 5*time.Second, 100*time.Millisecond)
 	metricdatatest.AssertEqual(t,
 		metricdata.Metrics{
 			Name:        "otelcol_receiver_accepted_spans",
-			Description: "Number of spans successfully pushed into the pipeline. [alpha]",
-			Unit:        "{spans}",
+			Description: "Number of spans successfully pushed into the pipeline. [Alpha]",
+			Unit:        "{span}",
 			Data: metricdata.Sum[int64]{
 				Temporality: metricdata.CumulativeTemporality,
 				IsMonotonic: true,
@@ -352,20 +368,34 @@ func assertReceiverTraces(t *testing.T, tt *componenttest.Telemetry, id componen
 					{
 						Attributes: attribute.NewSet(
 							attribute.String("receiver", id.String()),
-							attribute.String("transport", udppoller.Transport)),
+							attribute.String("transport", udppoller.Transport),
+						),
 						Value: accepted,
 					},
 				},
 			},
 		}, got, metricdatatest.IgnoreTimestamp(), metricdatatest.IgnoreExemplars())
 
-	got, err = tt.GetMetric("otelcol_receiver_refused_spans")
-	assert.NoError(t, err)
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		got, err = tt.GetMetric("otelcol_receiver_refused_spans")
+		assert.NoError(c, err)
+		if err != nil {
+			return
+		}
+		sum, ok := got.Data.(metricdata.Sum[int64])
+		assert.True(c, ok)
+		if !ok {
+			return
+		}
+		if assert.Len(c, sum.DataPoints, 1) {
+			assert.Equal(c, refused, sum.DataPoints[0].Value)
+		}
+	}, 5*time.Second, 100*time.Millisecond)
 	metricdatatest.AssertEqual(t,
 		metricdata.Metrics{
 			Name:        "otelcol_receiver_refused_spans",
-			Description: "Number of spans that could not be pushed into the pipeline. [alpha]",
-			Unit:        "{spans}",
+			Description: "Number of spans that could not be pushed into the pipeline. [Alpha]",
+			Unit:        "{span}",
 			Data: metricdata.Sum[int64]{
 				Temporality: metricdata.CumulativeTemporality,
 				IsMonotonic: true,
@@ -373,7 +403,8 @@ func assertReceiverTraces(t *testing.T, tt *componenttest.Telemetry, id componen
 					{
 						Attributes: attribute.NewSet(
 							attribute.String("receiver", id.String()),
-							attribute.String("transport", udppoller.Transport)),
+							attribute.String("transport", udppoller.Transport),
+						),
 						Value: refused,
 					},
 				},

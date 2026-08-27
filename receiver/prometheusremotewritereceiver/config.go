@@ -10,12 +10,14 @@ import (
 
 // Config holds common fields and embedded protocol-specific configurations
 type Config struct {
-	confighttp.ServerConfig `mapstructure:",squash"`
+	ServerConfig confighttp.ServerConfig `mapstructure:",squash"`
+	// prevent unkeyed literal initialization
+	_ struct{}
 }
 
 var _ component.Config = (*Config)(nil)
 
 // Validate checks the receiver configuration is valid
-func (cfg *Config) Validate() error {
+func (*Config) Validate() error {
 	return nil
 }

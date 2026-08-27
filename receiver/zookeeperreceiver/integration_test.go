@@ -26,7 +26,7 @@ func TestIntegration(t *testing.T) {
 	t.Run("3.5.10-standalone", integrationTest("3.5.10-standalone", "docker.io/library/zookeeper:3.5.10", true))
 }
 
-func integrationTest(name string, image string, standalone bool) func(*testing.T) {
+func integrationTest(name, image string, standalone bool) func(*testing.T) {
 	return scraperinttest.NewIntegrationTest(
 		NewFactory(),
 		scraperinttest.WithContainerRequest(
@@ -38,14 +38,17 @@ func integrationTest(name string, image string, standalone bool) func(*testing.T
 				},
 				ExposedPorts: []string{zookeeperPort},
 				WaitingFor:   wait.ForListeningPort(zookeeperPort),
-			}),
+			},
+		),
 		scraperinttest.WithCustomConfig(
 			func(t *testing.T, cfg component.Config, ci *scraperinttest.ContainerInfo) {
 				rCfg := cfg.(*Config)
-				rCfg.Endpoint = fmt.Sprintf("%s:%s", ci.Host(t), ci.MappedPort(t, zookeeperPort))
-			}),
+				rCfg.Config.TCPAddrConfig.Endpoint = fmt.Sprintf("%s:%s", ci.Host(t), ci.MappedPort(t, zookeeperPort))
+			},
+		),
 		scraperinttest.WithExpectedFile(
-			filepath.Join("testdata", "integration", fmt.Sprintf("expected-%s.yaml", name))),
+			filepath.Join("testdata", "integration", fmt.Sprintf("expected-%s.yaml", name)),
+		),
 		scraperinttest.WithCompareOptions(
 			pmetrictest.IgnoreMetricValues(),
 			pmetrictest.IgnoreStartTimestamp(),

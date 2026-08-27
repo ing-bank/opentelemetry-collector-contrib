@@ -17,9 +17,9 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pipeline"
 
-	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/routingconnector/internal/common"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/routingconnector/internal/metadata"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/routingconnector/internal/pmetricutiltest"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl/contexts/ottlresource"
 )
 
@@ -28,6 +28,9 @@ func TestMetricsRegisterConsumersForValidRoute(t *testing.T) {
 	metrics0 := pipeline.NewIDWithName(pipeline.SignalMetrics, "0")
 	metrics1 := pipeline.NewIDWithName(pipeline.SignalMetrics, "1")
 
+	// The unqualified `attributes["X-Tenant"]` syntax is the legacy form that
+	// defaults to resource context for backward compatibility. The modern form
+	// is `resource.attributes["X-Tenant"]` which explicitly specifies the context.
 	cfg := &Config{
 		DefaultPipelines: []pipeline.ID{metricsDefault},
 		Table: []RoutingTableItem{
@@ -52,7 +55,7 @@ func TestMetricsRegisterConsumersForValidRoute(t *testing.T) {
 		metrics1:       &sink1,
 	})
 
-	conn, err := NewFactory().CreateMetricsToMetrics(context.Background(),
+	conn, err := NewFactory().CreateMetricsToMetrics(t.Context(),
 		connectortest.NewNopSettings(metadata.Type), cfg, router.(consumer.Metrics))
 
 	require.NoError(t, err)
@@ -63,21 +66,133 @@ func TestMetricsRegisterConsumersForValidRoute(t *testing.T) {
 	require.NoError(t, err)
 	require.Same(t, &defaultSink, rtConn.router.defaultConsumer)
 
-	route, ok := rtConn.router.routes[rtConn.router.table[0].Statement]
+	route, ok := rtConn.router.routes[key("resource", rtConn.router.routeSlice[0].statementText)]
 	assert.True(t, ok)
 	require.Same(t, &sink0, route.consumer)
 
-	route, ok = rtConn.router.routes[rtConn.router.table[1].Statement]
+	route, ok = rtConn.router.routes[key("resource", rtConn.router.routeSlice[1].statementText)]
 	assert.True(t, ok)
 
 	routeConsumer, err := router.Consumer(metrics0, metrics1)
 	require.NoError(t, err)
 	require.Equal(t, routeConsumer, route.consumer)
 
-	require.NoError(t, conn.Start(context.Background(), componenttest.NewNopHost()))
-	defer func() {
-		assert.NoError(t, conn.Shutdown(context.Background()))
-	}()
+	require.NoError(t, conn.Start(t.Context(), componenttest.NewNopHost()))
+	assert.NoError(t, conn.Shutdown(t.Context()))
+}
+
+func TestMetricsRoutingWithInferredContexts(t *testing.T) {
+	// This test demonstrates context inference with explicit context-qualified paths.
+	metricsDefault := pipeline.NewIDWithName(pipeline.SignalMetrics, "default")
+	metricsProd := pipeline.NewIDWithName(pipeline.SignalMetrics, "prod")
+	metricsHTTP := pipeline.NewIDWithName(pipeline.SignalMetrics, "http")
+
+	cfg := &Config{
+		DefaultPipelines: []pipeline.ID{metricsDefault},
+		Table: []RoutingTableItem{
+			{
+				Condition: `resource.attributes["env"] == "prod"`,
+				Pipelines: []pipeline.ID{metricsProd},
+			},
+			{
+				Condition: `metric.name == "http_requests_total"`,
+				Pipelines: []pipeline.ID{metricsHTTP},
+			},
+		},
+	}
+
+	var defaultSink, prodSink, httpSink consumertest.MetricsSink
+
+	router := connector.NewMetricsRouter(map[pipeline.ID]consumer.Metrics{
+		metricsDefault: &defaultSink,
+		metricsProd:    &prodSink,
+		metricsHTTP:    &httpSink,
+	})
+
+	factory := NewFactory()
+	conn, err := factory.CreateMetricsToMetrics(
+		t.Context(),
+		connectortest.NewNopSettings(metadata.Type),
+		cfg,
+		router.(consumer.Metrics),
+	)
+	require.NoError(t, err)
+
+	// Helper function to create metrics with specific attributes
+	createMetrics := func(env, metricName string) pmetric.Metrics {
+		metrics := pmetric.NewMetrics()
+		rm := metrics.ResourceMetrics().AppendEmpty()
+		rm.Resource().Attributes().PutStr("env", env)
+		m := rm.ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
+		m.SetName(metricName)
+		m.SetEmptyGauge().DataPoints().AppendEmpty()
+		return metrics
+	}
+
+	// Helper function to reset all sinks
+	resetSinks := func() {
+		prodSink.Reset()
+		httpSink.Reset()
+		defaultSink.Reset()
+	}
+
+	// Helper function to assert sink counts
+	assertSinkCounts := func(t *testing.T, prodCount, httpCount, defaultCount int) {
+		assert.Len(t, prodSink.AllMetrics(), prodCount, "prod sink count")
+		assert.Len(t, httpSink.AllMetrics(), httpCount, "http sink count")
+		assert.Len(t, defaultSink.AllMetrics(), defaultCount, "default sink count")
+	}
+
+	testCases := []struct {
+		name            string
+		env             string
+		metricName      string
+		expectedProd    int
+		expectedHTTP    int
+		expectedDefault int
+	}{
+		{
+			name:            "resource context routing: env=prod routes to prod sink",
+			env:             "prod",
+			metricName:      "other_metric",
+			expectedProd:    1,
+			expectedHTTP:    0,
+			expectedDefault: 0,
+		},
+		{
+			name:            "metric context routing: http_requests_total routes to http sink",
+			env:             "dev",
+			metricName:      "http_requests_total",
+			expectedProd:    0,
+			expectedHTTP:    1,
+			expectedDefault: 0,
+		},
+		{
+			name:            "default routing: non-matching metrics go to default",
+			env:             "dev",
+			metricName:      "other_metric",
+			expectedProd:    0,
+			expectedHTTP:    0,
+			expectedDefault: 1,
+		},
+		{
+			name:            "multiple route matches: both prod env and http_requests_total metric",
+			env:             "prod",
+			metricName:      "http_requests_total",
+			expectedProd:    1,
+			expectedHTTP:    0,
+			expectedDefault: 0,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetSinks()
+			metrics := createMetrics(tc.env, tc.metricName)
+			require.NoError(t, conn.ConsumeMetrics(t.Context(), metrics))
+			assertSinkCounts(t, tc.expectedProd, tc.expectedHTTP, tc.expectedDefault)
+		})
+	}
 }
 
 func TestMetricsAreCorrectlySplitPerResourceAttributeWithOTTL(t *testing.T) {
@@ -119,7 +234,7 @@ func TestMetricsAreCorrectlySplitPerResourceAttributeWithOTTL(t *testing.T) {
 
 	factory := NewFactory()
 	conn, err := factory.CreateMetricsToMetrics(
-		context.Background(),
+		t.Context(),
 		connectortest.NewNopSettings(metadata.Type),
 		cfg,
 		router.(consumer.Metrics),
@@ -127,9 +242,9 @@ func TestMetricsAreCorrectlySplitPerResourceAttributeWithOTTL(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, conn)
-	require.NoError(t, conn.Start(context.Background(), componenttest.NewNopHost()))
+	require.NoError(t, conn.Start(t.Context(), componenttest.NewNopHost()))
 	defer func() {
-		assert.NoError(t, conn.Shutdown(context.Background()))
+		assert.NoError(t, conn.Shutdown(t.Context()))
 	}()
 
 	t.Run("metric matched by no expressions", func(t *testing.T) {
@@ -143,7 +258,7 @@ func TestMetricsAreCorrectlySplitPerResourceAttributeWithOTTL(t *testing.T) {
 		metric.SetEmptyGauge()
 		metric.SetName("cpu")
 
-		require.NoError(t, conn.ConsumeMetrics(context.Background(), m))
+		require.NoError(t, conn.ConsumeMetrics(t.Context(), m))
 
 		assert.Len(t, defaultSink.AllMetrics(), 1)
 		assert.Empty(t, sink0.AllMetrics())
@@ -161,7 +276,7 @@ func TestMetricsAreCorrectlySplitPerResourceAttributeWithOTTL(t *testing.T) {
 		metric.SetEmptyGauge()
 		metric.SetName("cpu")
 
-		require.NoError(t, conn.ConsumeMetrics(context.Background(), m))
+		require.NoError(t, conn.ConsumeMetrics(t.Context(), m))
 
 		assert.Empty(t, defaultSink.AllMetrics())
 		assert.Len(t, sink0.AllMetrics(), 1)
@@ -179,7 +294,7 @@ func TestMetricsAreCorrectlySplitPerResourceAttributeWithOTTL(t *testing.T) {
 		metric.SetEmptyGauge()
 		metric.SetName("cpu")
 
-		require.NoError(t, conn.ConsumeMetrics(context.Background(), m))
+		require.NoError(t, conn.ConsumeMetrics(t.Context(), m))
 
 		assert.Len(t, defaultSink.AllMetrics(), 1)
 		assert.Len(t, sink0.AllMetrics(), 1)
@@ -230,7 +345,7 @@ func TestMetricsAreCorrectlyMatchOnceWithOTTL(t *testing.T) {
 
 	factory := NewFactory()
 	conn, err := factory.CreateMetricsToMetrics(
-		context.Background(),
+		t.Context(),
 		connectortest.NewNopSettings(metadata.Type),
 		cfg,
 		router.(consumer.Metrics),
@@ -238,9 +353,9 @@ func TestMetricsAreCorrectlyMatchOnceWithOTTL(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, conn)
-	require.NoError(t, conn.Start(context.Background(), componenttest.NewNopHost()))
+	require.NoError(t, conn.Start(t.Context(), componenttest.NewNopHost()))
 	defer func() {
-		assert.NoError(t, conn.Shutdown(context.Background()))
+		assert.NoError(t, conn.Shutdown(t.Context()))
 	}()
 
 	t.Run("metric matched by no expressions", func(t *testing.T) {
@@ -254,7 +369,7 @@ func TestMetricsAreCorrectlyMatchOnceWithOTTL(t *testing.T) {
 		metric.SetEmptyGauge()
 		metric.SetName("cpu")
 
-		require.NoError(t, conn.ConsumeMetrics(context.Background(), m))
+		require.NoError(t, conn.ConsumeMetrics(t.Context(), m))
 
 		assert.Len(t, defaultSink.AllMetrics(), 1)
 		assert.Empty(t, sink0.AllMetrics())
@@ -272,7 +387,7 @@ func TestMetricsAreCorrectlyMatchOnceWithOTTL(t *testing.T) {
 		metric.SetEmptyGauge()
 		metric.SetName("cpu")
 
-		require.NoError(t, conn.ConsumeMetrics(context.Background(), m))
+		require.NoError(t, conn.ConsumeMetrics(t.Context(), m))
 
 		assert.Empty(t, defaultSink.AllMetrics())
 		assert.Len(t, sink0.AllMetrics(), 1)
@@ -296,7 +411,7 @@ func TestMetricsAreCorrectlyMatchOnceWithOTTL(t *testing.T) {
 		metric.SetEmptyGauge()
 		metric.SetName("cpu1")
 
-		require.NoError(t, conn.ConsumeMetrics(context.Background(), m))
+		require.NoError(t, conn.ConsumeMetrics(t.Context(), m))
 
 		assert.Empty(t, defaultSink.AllMetrics())
 		assert.Len(t, sink0.AllMetrics(), 1)
@@ -322,7 +437,7 @@ func TestMetricsAreCorrectlyMatchOnceWithOTTL(t *testing.T) {
 		metric.SetEmptyGauge()
 		metric.SetName("cpu1")
 
-		require.NoError(t, conn.ConsumeMetrics(context.Background(), m))
+		require.NoError(t, conn.ConsumeMetrics(t.Context(), m))
 
 		assert.Len(t, defaultSink.AllMetrics(), 1)
 		assert.Len(t, sink0.AllMetrics(), 1)
@@ -331,7 +446,7 @@ func TestMetricsAreCorrectlyMatchOnceWithOTTL(t *testing.T) {
 		rmetric := defaultSink.AllMetrics()[0].ResourceMetrics().At(0)
 		attr, ok := rmetric.Resource().Attributes().Get("value")
 		assert.True(t, ok, "routing attribute must exist")
-		assert.Equal(t, attr.Double(), float64(-1.0))
+		assert.Equal(t, float64(-1.0), attr.Double())
 	})
 
 	t.Run("metric matched by one expression, multiple pipelines", func(t *testing.T) {
@@ -345,7 +460,7 @@ func TestMetricsAreCorrectlyMatchOnceWithOTTL(t *testing.T) {
 		metric.SetEmptyGauge()
 		metric.SetName("cpu")
 
-		require.NoError(t, conn.ConsumeMetrics(context.Background(), m))
+		require.NoError(t, conn.ConsumeMetrics(t.Context(), m))
 
 		assert.Len(t, defaultSink.AllMetrics(), 1)
 		assert.Len(t, sink0.AllMetrics(), 1)
@@ -380,7 +495,7 @@ func TestMetricsResourceAttributeDroppedByOTTL(t *testing.T) {
 
 	factory := NewFactory()
 	conn, err := factory.CreateMetricsToMetrics(
-		context.Background(),
+		t.Context(),
 		connectortest.NewNopSettings(metadata.Type),
 		cfg,
 		router.(consumer.Metrics),
@@ -388,9 +503,9 @@ func TestMetricsResourceAttributeDroppedByOTTL(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, conn)
-	require.NoError(t, conn.Start(context.Background(), componenttest.NewNopHost()))
+	require.NoError(t, conn.Start(t.Context(), componenttest.NewNopHost()))
 	defer func() {
-		assert.NoError(t, conn.Shutdown(context.Background()))
+		assert.NoError(t, conn.Shutdown(t.Context()))
 	}()
 
 	m := pmetric.NewMetrics()
@@ -398,7 +513,7 @@ func TestMetricsResourceAttributeDroppedByOTTL(t *testing.T) {
 	rm.Resource().Attributes().PutStr("X-Tenant", "acme")
 	rm.Resource().Attributes().PutStr("attr", "acme")
 
-	assert.NoError(t, conn.ConsumeMetrics(context.Background(), m))
+	assert.NoError(t, conn.ConsumeMetrics(t.Context(), m))
 	metrics := sink1.AllMetrics()
 	require.Len(t, metrics, 1, "metric should be routed to non default exporter")
 	require.Equal(t, 1, metrics[0].ResourceMetrics().Len())
@@ -431,7 +546,7 @@ func TestMetricsConnectorCapabilities(t *testing.T) {
 
 	factory := NewFactory()
 	conn, err := factory.CreateMetricsToMetrics(
-		context.Background(),
+		t.Context(),
 		connectortest.NewNopSettings(metadata.Type),
 		cfg,
 		router.(consumer.Metrics),
@@ -455,9 +570,9 @@ func TestMetricsConnectorDetailed(t *testing.T) {
 
 	// IsMap and IsString are just candidate for Standard Converter Function to prevent any unknown regressions for this component
 	isResourceString := `IsString(attributes["resourceName"]) == true`
-	require.Contains(t, common.Functions[ottlresource.TransformContext](), "IsString")
+	require.Contains(t, standardFunctions[*ottlresource.TransformContext](), "IsString")
 	isAttributesMap := `IsMap(attributes) == true`
-	require.Contains(t, common.Functions[ottlresource.TransformContext](), "IsMap")
+	require.Contains(t, standardFunctions[*ottlresource.TransformContext](), "IsMap")
 
 	isMetricE := `name == "metricE"`
 	isMetricF := `name == "metricF"`
@@ -488,7 +603,7 @@ func TestMetricsConnectorDetailed(t *testing.T) {
 				withRoute("request", isAcme, idSink0),
 				withDefault(idSinkD),
 			),
-			ctx:         context.Background(),
+			ctx:         t.Context(),
 			input:       pmetricutiltest.NewGauges("AB", "CD", "EF", "GH"),
 			expectSink0: pmetric.Metrics{},
 			expectSink1: pmetric.Metrics{},
@@ -502,7 +617,7 @@ func TestMetricsConnectorDetailed(t *testing.T) {
 			),
 			ctx: withGRPCMetadata(
 				withHTTPMetadata(
-					context.Background(),
+					t.Context(),
 					map[string][]string{"X-Tenant": {"acme"}},
 				),
 				map[string]string{"X-Tenant": "notacme"},
@@ -518,7 +633,7 @@ func TestMetricsConnectorDetailed(t *testing.T) {
 				withRoute("request", isAcme, idSink0),
 				withDefault(idSinkD),
 			),
-			ctx:         withGRPCMetadata(context.Background(), map[string]string{"X-Tenant": "acme"}),
+			ctx:         withGRPCMetadata(t.Context(), map[string]string{"X-Tenant": "acme"}),
 			input:       pmetricutiltest.NewGauges("AB", "CD", "EF", "GH"),
 			expectSink0: pmetricutiltest.NewGauges("AB", "CD", "EF", "GH"),
 			expectSink1: pmetric.Metrics{},
@@ -530,7 +645,7 @@ func TestMetricsConnectorDetailed(t *testing.T) {
 				withRoute("request", isAcme, idSink0),
 				withDefault(idSinkD),
 			),
-			ctx:         withGRPCMetadata(context.Background(), map[string]string{"X-Tenant": "notacme"}),
+			ctx:         withGRPCMetadata(t.Context(), map[string]string{"X-Tenant": "notacme"}),
 			input:       pmetricutiltest.NewGauges("AB", "CD", "EF", "GH"),
 			expectSink0: pmetric.Metrics{},
 			expectSink1: pmetric.Metrics{},
@@ -542,7 +657,7 @@ func TestMetricsConnectorDetailed(t *testing.T) {
 				withRoute("request", isAcme, idSink0),
 				withDefault(idSinkD),
 			),
-			ctx:         withHTTPMetadata(context.Background(), map[string][]string{"X-Tenant": {"acme"}}),
+			ctx:         withHTTPMetadata(t.Context(), map[string][]string{"X-Tenant": {"acme"}}),
 			input:       pmetricutiltest.NewGauges("AB", "CD", "EF", "GH"),
 			expectSink0: pmetricutiltest.NewGauges("AB", "CD", "EF", "GH"),
 			expectSink1: pmetric.Metrics{},
@@ -554,7 +669,7 @@ func TestMetricsConnectorDetailed(t *testing.T) {
 				withRoute("request", isAcme, idSink0),
 				withDefault(idSinkD),
 			),
-			ctx:         withHTTPMetadata(context.Background(), map[string][]string{"X-Tenant": {"notacme", "acme"}}),
+			ctx:         withHTTPMetadata(t.Context(), map[string][]string{"X-Tenant": {"notacme", "acme"}}),
 			input:       pmetricutiltest.NewGauges("AB", "CD", "EF", "GH"),
 			expectSink0: pmetricutiltest.NewGauges("AB", "CD", "EF", "GH"),
 			expectSink1: pmetric.Metrics{},
@@ -566,7 +681,7 @@ func TestMetricsConnectorDetailed(t *testing.T) {
 				withRoute("request", isAcme, idSink0),
 				withDefault(idSinkD),
 			),
-			ctx:         withHTTPMetadata(context.Background(), map[string][]string{"X-Tenant": {"notacme"}}),
+			ctx:         withHTTPMetadata(t.Context(), map[string][]string{"X-Tenant": {"notacme"}}),
 			input:       pmetricutiltest.NewGauges("AB", "CD", "EF", "GH"),
 			expectSink0: pmetric.Metrics{},
 			expectSink1: pmetric.Metrics{},
@@ -1042,7 +1157,7 @@ func TestMetricsConnectorDetailed(t *testing.T) {
 				withRoute("request", isAcme, idSink1),
 				withDefault(idSinkD),
 			),
-			ctx:         withGRPCMetadata(context.Background(), map[string]string{"X-Tenant": "acme"}),
+			ctx:         withGRPCMetadata(t.Context(), map[string]string{"X-Tenant": "acme"}),
 			input:       pmetricutiltest.NewGauges("AB", "CD", "EF", "GH"),
 			expectSink0: pmetricutiltest.NewGauges("A", "CD", "EF", "GH"),
 			expectSink1: pmetricutiltest.NewGauges("B", "CD", "EF", "GH"),
@@ -1055,7 +1170,7 @@ func TestMetricsConnectorDetailed(t *testing.T) {
 				withRoute("request", isAcme, idSink1),
 				withDefault(idSinkD),
 			),
-			ctx:         withGRPCMetadata(context.Background(), map[string]string{"X-Tenant": "acme"}),
+			ctx:         withGRPCMetadata(t.Context(), map[string]string{"X-Tenant": "acme"}),
 			input:       pmetricutiltest.NewGauges("AB", "CD", "EF", "GH"),
 			expectSink0: pmetricutiltest.NewGauges("AB", "CD", "F", "GH"),
 			expectSink1: pmetricutiltest.NewGauges("AB", "CD", "E", "GH"),
@@ -1068,7 +1183,7 @@ func TestMetricsConnectorDetailed(t *testing.T) {
 				withRoute("request", isAcme, idSink1),
 				withDefault(idSinkD),
 			),
-			ctx:         withGRPCMetadata(context.Background(), map[string]string{"X-Tenant": "acme"}),
+			ctx:         withGRPCMetadata(t.Context(), map[string]string{"X-Tenant": "acme"}),
 			input:       pmetricutiltest.NewGauges("AB", "CD", "EF", "GH"),
 			expectSink0: pmetricutiltest.NewGauges("AB", "CD", "EF", "G"),
 			expectSink1: pmetricutiltest.NewGauges("AB", "CD", "EF", "H"),
@@ -1081,7 +1196,7 @@ func TestMetricsConnectorDetailed(t *testing.T) {
 				withRoute("request", isAcme, idSink1),
 				withDefault(idSinkD),
 			),
-			ctx:         withHTTPMetadata(context.Background(), map[string][]string{"X-Tenant": {"acme"}}),
+			ctx:         withHTTPMetadata(t.Context(), map[string][]string{"X-Tenant": {"acme"}}),
 			input:       pmetricutiltest.NewGauges("AB", "CD", "EF", "GH"),
 			expectSink0: pmetricutiltest.NewGauges("A", "CD", "EF", "GH"),
 			expectSink1: pmetricutiltest.NewGauges("B", "CD", "EF", "GH"),
@@ -1094,7 +1209,7 @@ func TestMetricsConnectorDetailed(t *testing.T) {
 				withRoute("request", isAcme, idSink1),
 				withDefault(idSinkD),
 			),
-			ctx:         withHTTPMetadata(context.Background(), map[string][]string{"X-Tenant": {"acme"}}),
+			ctx:         withHTTPMetadata(t.Context(), map[string][]string{"X-Tenant": {"acme"}}),
 			input:       pmetricutiltest.NewGauges("AB", "CD", "EF", "GH"),
 			expectSink0: pmetricutiltest.NewGauges("AB", "CD", "F", "GH"),
 			expectSink1: pmetricutiltest.NewGauges("AB", "CD", "E", "GH"),
@@ -1107,7 +1222,7 @@ func TestMetricsConnectorDetailed(t *testing.T) {
 				withRoute("request", isAcme, idSink1),
 				withDefault(idSinkD),
 			),
-			ctx:         withHTTPMetadata(context.Background(), map[string][]string{"X-Tenant": {"acme"}}),
+			ctx:         withHTTPMetadata(t.Context(), map[string][]string{"X-Tenant": {"acme"}}),
 			input:       pmetricutiltest.NewGauges("AB", "CD", "EF", "GH"),
 			expectSink0: pmetricutiltest.NewGauges("AB", "CD", "EF", "G"),
 			expectSink1: pmetricutiltest.NewGauges("AB", "CD", "EF", "H"),
@@ -1125,14 +1240,14 @@ func TestMetricsConnectorDetailed(t *testing.T) {
 			})
 
 			conn, err := NewFactory().CreateMetricsToMetrics(
-				context.Background(),
+				t.Context(),
 				connectortest.NewNopSettings(metadata.Type),
 				tt.cfg,
 				router.(consumer.Metrics),
 			)
 			require.NoError(t, err)
 
-			ctx := context.Background()
+			ctx := t.Context()
 			if tt.ctx != nil {
 				ctx = tt.ctx
 			}
@@ -1152,4 +1267,178 @@ func TestMetricsConnectorDetailed(t *testing.T) {
 			assertExpected(&sinkD, tt.expectSinkD, "sinkD")
 		})
 	}
+}
+
+func TestMetricsForPropagateError(t *testing.T) {
+	metricsDefault := pipeline.NewIDWithName(pipeline.SignalMetrics, "default")
+	metrics0 := pipeline.NewIDWithName(pipeline.SignalMetrics, "0")
+
+	cfg := &Config{
+		ErrorMode:        ottl.PropagateError,
+		DefaultPipelines: []pipeline.ID{metricsDefault},
+		Table: []RoutingTableItem{
+			{
+				Statement: `route() where ToLowerCase(attributes["unknown"]) == "acme"`,
+				Pipelines: []pipeline.ID{metrics0},
+			},
+		},
+	}
+	require.NoError(t, cfg.Validate())
+
+	var defaultSink, sink0 consumertest.MetricsSink
+	conn, err := NewFactory().CreateMetricsToMetrics(t.Context(),
+		connectortest.NewNopSettings(metadata.Type), cfg, connector.NewMetricsRouter(map[pipeline.ID]consumer.Metrics{
+			metricsDefault: &defaultSink,
+			metrics0:       &sink0,
+		}))
+	require.NoError(t, err)
+
+	require.NoError(t, conn.Start(t.Context(), componenttest.NewNopHost()))
+	require.Error(t, conn.ConsumeMetrics(t.Context(), pmetricutiltest.NewGauges("1", "2", "3", "4")))
+	require.NoError(t, conn.Shutdown(t.Context()))
+
+	assert.Empty(t, sink0.AllMetrics(), 0)
+	assert.Empty(t, defaultSink.AllMetrics(), 0)
+}
+
+func TestMetricsForIgnoreError(t *testing.T) {
+	metricsDefault := pipeline.NewIDWithName(pipeline.SignalMetrics, "default")
+	metrics0 := pipeline.NewIDWithName(pipeline.SignalMetrics, "0")
+
+	cfg := &Config{
+		ErrorMode:        ottl.IgnoreError,
+		DefaultPipelines: []pipeline.ID{metricsDefault},
+		Table: []RoutingTableItem{
+			{
+				Statement: `route() where ToLowerCase(attributes["unknown"]) == "acme"`,
+				Pipelines: []pipeline.ID{metrics0},
+			},
+		},
+	}
+	require.NoError(t, cfg.Validate())
+
+	var defaultSink, sink0 consumertest.MetricsSink
+	conn, err := NewFactory().CreateMetricsToMetrics(t.Context(),
+		connectortest.NewNopSettings(metadata.Type), cfg, connector.NewMetricsRouter(map[pipeline.ID]consumer.Metrics{
+			metricsDefault: &defaultSink,
+			metrics0:       &sink0,
+		}))
+	require.NoError(t, err)
+
+	require.NoError(t, conn.Start(t.Context(), componenttest.NewNopHost()))
+	require.NoError(t, conn.ConsumeMetrics(t.Context(), pmetricutiltest.NewGauges("1", "2", "3", "4")))
+	require.NoError(t, conn.Shutdown(t.Context()))
+
+	assert.Empty(t, sink0.AllMetrics(), 0)
+	assert.Len(t, defaultSink.AllMetrics(), 1)
+	assert.Equal(t, pmetricutiltest.NewGauges("1", "2", "3", "4"), defaultSink.AllMetrics()[0])
+}
+
+func TestMetricsCopyAndMoveConfig(t *testing.T) {
+	metricsDefault := pipeline.NewIDWithName(pipeline.SignalMetrics, "default")
+	metrics0 := pipeline.NewIDWithName(pipeline.SignalMetrics, "0")
+	metrics1 := pipeline.NewIDWithName(pipeline.SignalMetrics, "1")
+
+	cfg := &Config{
+		DefaultPipelines: []pipeline.ID{metricsDefault},
+		Table: []RoutingTableItem{
+			{
+				Condition: `attributes["value"] > 2.5`,
+				Pipelines: []pipeline.ID{metrics0},
+				Action:    Copy,
+			},
+			{
+				Statement: `route() where attributes["value"] > 3.0`,
+				Pipelines: []pipeline.ID{metrics1},
+				Action:    Move,
+			},
+			{
+				Statement: `route() where attributes["value"] == 1.0`,
+				Pipelines: []pipeline.ID{metricsDefault, metrics0},
+			},
+		},
+	}
+
+	var defaultSink, sink0, sink1 consumertest.MetricsSink
+
+	router := connector.NewMetricsRouter(map[pipeline.ID]consumer.Metrics{
+		metricsDefault: &defaultSink,
+		metrics0:       &sink0,
+		metrics1:       &sink1,
+	})
+
+	resetSinks := func() {
+		defaultSink.Reset()
+		sink0.Reset()
+		sink1.Reset()
+	}
+
+	factory := NewFactory()
+	conn, err := factory.CreateMetricsToMetrics(
+		t.Context(),
+		connectortest.NewNopSettings(metadata.Type),
+		cfg,
+		router.(consumer.Metrics),
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, conn)
+	require.NoError(t, conn.Start(t.Context(), componenttest.NewNopHost()))
+	defer func() {
+		assert.NoError(t, conn.Shutdown(t.Context()))
+	}()
+
+	t.Run("Metrics copied correctly", func(t *testing.T) {
+		resetSinks()
+
+		m := pmetric.NewMetrics()
+
+		rm := m.ResourceMetrics().AppendEmpty()
+		rm.Resource().Attributes().PutDouble("value", 2.6)
+		metric := rm.ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
+		metric.SetEmptyGauge()
+		metric.SetName("cpu")
+
+		require.NoError(t, conn.ConsumeMetrics(t.Context(), m))
+
+		assert.Len(t, defaultSink.AllMetrics(), 1)
+		assert.Len(t, sink0.AllMetrics(), 1)
+		assert.Empty(t, sink1.AllMetrics())
+	})
+
+	t.Run("Metrics moved correctly", func(t *testing.T) {
+		resetSinks()
+
+		m := pmetric.NewMetrics()
+
+		rm := m.ResourceMetrics().AppendEmpty()
+		rm.Resource().Attributes().PutDouble("value", 0)
+		metric := rm.ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
+		metric.SetEmptyGauge()
+		metric.SetName("cpu")
+
+		require.NoError(t, conn.ConsumeMetrics(t.Context(), m))
+
+		assert.Len(t, defaultSink.AllMetrics(), 1)
+		assert.Empty(t, sink0.AllMetrics())
+		assert.Empty(t, sink1.AllMetrics())
+	})
+
+	t.Run("Metrics copied & moved correctly", func(t *testing.T) {
+		resetSinks()
+
+		m := pmetric.NewMetrics()
+
+		rm := m.ResourceMetrics().AppendEmpty()
+		rm.Resource().Attributes().PutDouble("value", 4)
+		metric := rm.ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
+		metric.SetEmptyGauge()
+		metric.SetName("cpu")
+
+		require.NoError(t, conn.ConsumeMetrics(t.Context(), m))
+
+		assert.Empty(t, defaultSink.AllMetrics())
+		assert.Len(t, sink0.AllMetrics(), 1)
+		assert.Len(t, sink1.AllMetrics(), 1)
+	})
 }

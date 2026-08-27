@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,11 +39,125 @@ func TestStart(t *testing.T) {
 		},
 	}, sink)
 
-	err := logsRcvr.Start(context.Background(), componenttest.NewNopHost())
+	err := logsRcvr.Start(t.Context(), componenttest.NewNopHost())
 	require.NoError(t, err)
 
-	err = logsRcvr.Shutdown(context.Background())
+	err = logsRcvr.Shutdown(t.Context())
 	require.NoError(t, err)
+}
+
+func TestInitialLookback(t *testing.T) {
+	fixedNow := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	originalNow := nowFunc
+	nowFunc = func() time.Time { return fixedNow }
+	t.Cleanup(func() { nowFunc = originalNow })
+
+	cfg := createDefaultConfig().(*Config)
+	cfg.Region = "us-west-1"
+	cfg.Logs.Groups = GroupConfig{
+		NamedConfigs: map[string]StreamConfig{
+			"my-log-group": {},
+		},
+	}
+	cfg.Logs.InitialLookback = time.Hour
+
+	mc := &mockClient{}
+	expectedStart := fixedNow.Add(-time.Hour).UnixMilli()
+	expectedEnd := fixedNow.UnixMilli()
+	mc.On("FilterLogEvents", mock.Anything, mock.MatchedBy(func(input *cloudwatchlogs.FilterLogEventsInput) bool {
+		return input.StartTime != nil && *input.StartTime == expectedStart &&
+			input.EndTime != nil && *input.EndTime == expectedEnd
+	}), mock.Anything).Return(&cloudwatchlogs.FilterLogEventsOutput{}, nil)
+
+	logsRcvr := newLogsReceiver(cfg, receiver.Settings{
+		TelemetrySettings: component.TelemetrySettings{
+			Logger: zap.NewNop(),
+		},
+	}, &consumertest.LogsSink{})
+	logsRcvr.client = mc
+
+	require.Equal(t, fixedNow.Add(-time.Hour), logsRcvr.initialStartTime)
+	require.NoError(t, logsRcvr.poll(t.Context()))
+	mc.AssertExpectations(t)
+}
+
+func TestInitialLookbackOverriddenByCheckpoint(t *testing.T) {
+	fixedNow := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	originalNow := nowFunc
+	nowFunc = func() time.Time { return fixedNow }
+	t.Cleanup(func() { nowFunc = originalNow })
+
+	const groupName = "my-log-group"
+	cfg := createDefaultConfig().(*Config)
+	cfg.Region = "us-west-1"
+	cfg.Logs.Groups = GroupConfig{
+		NamedConfigs: map[string]StreamConfig{
+			groupName: {},
+		},
+	}
+	cfg.Logs.InitialLookback = time.Hour
+
+	checkpointTime := fixedNow.Add(-30 * time.Minute)
+
+	mc := &mockClient{}
+	mc.On("FilterLogEvents", mock.Anything, mock.MatchedBy(func(input *cloudwatchlogs.FilterLogEventsInput) bool {
+		return input.StartTime != nil && *input.StartTime == checkpointTime.UnixMilli() &&
+			input.EndTime != nil && *input.EndTime == fixedNow.UnixMilli()
+	}), mock.Anything).Return(&cloudwatchlogs.FilterLogEventsOutput{}, nil)
+
+	logsRcvr := newLogsReceiver(cfg, receiver.Settings{
+		TelemetrySettings: component.TelemetrySettings{
+			Logger: zap.NewNop(),
+		},
+	}, &consumertest.LogsSink{})
+	logsRcvr.client = mc
+
+	mockStorage := newMockStorageClient()
+	logsRcvr.cloudwatchCheckpointPersister = newCloudwatchCheckpointPersister(mockStorage, zap.NewNop())
+	require.NoError(t, logsRcvr.cloudwatchCheckpointPersister.SetCheckpoint(t.Context(), groupName, checkpointTime.Format(time.RFC3339)))
+
+	require.NoError(t, logsRcvr.poll(t.Context()))
+	mc.AssertExpectations(t)
+}
+
+func TestInitialLookbackSlidesAcrossPolls(t *testing.T) {
+	t1 := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	t2 := t1.Add(5 * time.Minute)
+	current := t1
+	originalNow := nowFunc
+	nowFunc = func() time.Time { return current }
+	t.Cleanup(func() { nowFunc = originalNow })
+
+	cfg := createDefaultConfig().(*Config)
+	cfg.Region = "us-west-1"
+	cfg.Logs.Groups = GroupConfig{
+		NamedConfigs: map[string]StreamConfig{
+			"my-log-group": {},
+		},
+	}
+	cfg.Logs.InitialLookback = time.Hour
+
+	mc := &mockClient{}
+	mc.On("FilterLogEvents", mock.Anything, mock.MatchedBy(func(input *cloudwatchlogs.FilterLogEventsInput) bool {
+		return input.StartTime != nil && *input.StartTime == t1.Add(-time.Hour).UnixMilli() &&
+			input.EndTime != nil && *input.EndTime == t1.UnixMilli()
+	}), mock.Anything).Return(&cloudwatchlogs.FilterLogEventsOutput{}, nil).Once()
+	mc.On("FilterLogEvents", mock.Anything, mock.MatchedBy(func(input *cloudwatchlogs.FilterLogEventsInput) bool {
+		return input.StartTime != nil && *input.StartTime == t1.UnixMilli() &&
+			input.EndTime != nil && *input.EndTime == t2.UnixMilli()
+	}), mock.Anything).Return(&cloudwatchlogs.FilterLogEventsOutput{}, nil).Once()
+
+	logsRcvr := newLogsReceiver(cfg, receiver.Settings{
+		TelemetrySettings: component.TelemetrySettings{
+			Logger: zap.NewNop(),
+		},
+	}, &consumertest.LogsSink{})
+	logsRcvr.client = mc
+
+	require.NoError(t, logsRcvr.poll(t.Context()))
+	current = t2
+	require.NoError(t, logsRcvr.poll(t.Context()))
+	mc.AssertExpectations(t)
 }
 
 func TestPrefixedConfig(t *testing.T) {
@@ -64,14 +180,14 @@ func TestPrefixedConfig(t *testing.T) {
 	}, sink)
 	alertRcvr.client = defaultMockClient()
 
-	err := alertRcvr.Start(context.Background(), componenttest.NewNopHost())
+	err := alertRcvr.Start(t.Context(), componenttest.NewNopHost())
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
 		return sink.LogRecordCount() > 0
 	}, 2*time.Second, 10*time.Millisecond)
 
-	err = alertRcvr.Shutdown(context.Background())
+	err = alertRcvr.Shutdown(t.Context())
 	require.NoError(t, err)
 
 	logs := sink.AllLogs()[0]
@@ -100,7 +216,7 @@ func TestPrefixedNamedStreamsConfig(t *testing.T) {
 	}, sink)
 	alertRcvr.client = defaultMockClient()
 
-	err := alertRcvr.Start(context.Background(), componenttest.NewNopHost())
+	err := alertRcvr.Start(t.Context(), componenttest.NewNopHost())
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
@@ -111,7 +227,7 @@ func TestPrefixedNamedStreamsConfig(t *testing.T) {
 	require.Len(t, groupRequests, 1)
 	require.Equal(t, "test-log-group-name", groupRequests[0].groupName())
 
-	err = alertRcvr.Shutdown(context.Background())
+	err = alertRcvr.Shutdown(t.Context())
 	require.NoError(t, err)
 
 	logs := sink.AllLogs()[0]
@@ -138,7 +254,7 @@ func TestNamedConfigNoStreamFilter(t *testing.T) {
 	}, sink)
 	alertRcvr.client = defaultMockClient()
 
-	err := alertRcvr.Start(context.Background(), componenttest.NewNopHost())
+	err := alertRcvr.Start(t.Context(), componenttest.NewNopHost())
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
@@ -149,7 +265,7 @@ func TestNamedConfigNoStreamFilter(t *testing.T) {
 	require.Len(t, groupRequests, 1)
 	require.Equal(t, "test-log-group-name", groupRequests[0].groupName())
 
-	err = alertRcvr.Shutdown(context.Background())
+	err = alertRcvr.Shutdown(t.Context())
 	require.NoError(t, err)
 
 	logs := sink.AllLogs()[0]
@@ -180,12 +296,12 @@ func TestDiscovery(t *testing.T) {
 	}, sink)
 	logsRcvr.client = defaultMockClient()
 
-	require.NoError(t, logsRcvr.Start(context.Background(), componenttest.NewNopHost()))
+	require.NoError(t, logsRcvr.Start(t.Context(), componenttest.NewNopHost()))
 	require.Eventually(t, func() bool {
 		return sink.LogRecordCount() > 0
 	}, 2*time.Second, 10*time.Millisecond)
 	require.Len(t, logsRcvr.groupRequests, 2)
-	require.NoError(t, logsRcvr.Shutdown(context.Background()))
+	require.NoError(t, logsRcvr.Shutdown(t.Context()))
 }
 
 // Test to ensure that mid collection while streaming results we will
@@ -217,7 +333,7 @@ func TestShutdownWhileCollecting(t *testing.T) {
 		WaitUntil(doneChan)
 	alertRcvr.client = mc
 
-	err := alertRcvr.Start(context.Background(), componenttest.NewNopHost())
+	err := alertRcvr.Start(t.Context(), componenttest.NewNopHost())
 	require.NoError(t, err)
 
 	require.Never(t, func() bool {
@@ -225,7 +341,84 @@ func TestShutdownWhileCollecting(t *testing.T) {
 	}, 3*time.Second, 10*time.Millisecond)
 
 	close(doneChan)
-	require.NoError(t, alertRcvr.Shutdown(context.Background()))
+	require.NoError(t, alertRcvr.Shutdown(t.Context()))
+}
+
+func TestAutodiscoverPattern(t *testing.T) {
+	mc := &mockClient{}
+
+	mc.On(
+		"DescribeLogGroups",
+		mock.Anything,
+		mock.MatchedBy(func(input *cloudwatchlogs.DescribeLogGroupsInput) bool {
+			if input.LogGroupNamePattern != nil && strings.Contains(testLogGroupName, *input.LogGroupNamePattern) {
+				return true
+			}
+
+			return false
+		}),
+		mock.Anything,
+	).Return(
+		&cloudwatchlogs.DescribeLogGroupsOutput{
+			LogGroups: []types.LogGroup{
+				{
+					LogGroupName: &testLogGroupName,
+				},
+			},
+			NextToken: nil,
+		}, nil,
+	)
+
+	mc.On(
+		"DescribeLogGroups",
+		mock.Anything,
+		mock.MatchedBy(func(input *cloudwatchlogs.DescribeLogGroupsInput) bool {
+			fmt.Printf("The log group name pattern %s", *input.LogGroupNamePattern)
+			if input.LogGroupNamePattern == nil || !strings.Contains(testLogGroupName, *input.LogGroupNamePattern) {
+				return true
+			}
+
+			return false
+		}),
+		mock.Anything,
+	).Return(
+		&cloudwatchlogs.DescribeLogGroupsOutput{
+			LogGroups: []types.LogGroup{},
+			NextToken: nil,
+		}, nil,
+	)
+
+	cfg := createDefaultConfig().(*Config)
+	cfg.Region = "us-west-1"
+	cfg.Logs.Groups = GroupConfig{
+		AutodiscoverConfig: &AutodiscoverConfig{
+			Limit:   1,
+			Pattern: testLogGroupName[2:5],
+		},
+	}
+
+	sink := &consumertest.LogsSink{}
+	alertRcvr := newLogsReceiver(cfg, receiver.Settings{
+		TelemetrySettings: component.TelemetrySettings{
+			Logger: zap.NewNop(),
+		},
+	}, sink)
+	alertRcvr.client = mc
+
+	grs, err := alertRcvr.discoverGroups(t.Context(), cfg.Logs.Groups.AutodiscoverConfig)
+	require.NoError(t, err)
+	require.Len(t, grs, 1)
+
+	cfg.Logs.Groups = GroupConfig{
+		AutodiscoverConfig: &AutodiscoverConfig{
+			Limit:   1,
+			Pattern: testLogGroupName[5:] + "-no-matches",
+		},
+	}
+
+	grs, err = alertRcvr.discoverGroups(t.Context(), cfg.Logs.Groups.AutodiscoverConfig)
+	require.NoError(t, err)
+	require.Empty(t, grs)
 }
 
 func TestAutodiscoverLimit(t *testing.T) {
@@ -242,13 +435,15 @@ func TestAutodiscoverLimit(t *testing.T) {
 		&cloudwatchlogs.DescribeLogGroupsOutput{
 			LogGroups: logGroups[:50],
 			NextToken: &token,
-		}, nil).Once()
+		}, nil,
+	).Once()
 
 	mc.On("DescribeLogGroups", mock.Anything, mock.Anything, mock.Anything).Return(
 		&cloudwatchlogs.DescribeLogGroupsOutput{
 			LogGroups: logGroups[50:],
 			NextToken: nil,
-		}, nil)
+		}, nil,
+	)
 
 	numGroups := 100
 
@@ -269,9 +464,586 @@ func TestAutodiscoverLimit(t *testing.T) {
 	}, sink)
 	alertRcvr.client = mc
 
-	grs, err := alertRcvr.discoverGroups(context.Background(), cfg.Logs.Groups.AutodiscoverConfig)
+	grs, err := alertRcvr.discoverGroups(t.Context(), cfg.Logs.Groups.AutodiscoverConfig)
 	require.NoError(t, err)
 	require.Len(t, grs, cfg.Logs.Groups.AutodiscoverConfig.Limit)
+}
+
+func TestAutodiscoverAccountIdentifiers(t *testing.T) {
+	mc := &mockClient{}
+
+	testAccountID := "123456789012"
+
+	mc.On(
+		"DescribeLogGroups",
+		mock.Anything,
+		mock.MatchedBy(func(input *cloudwatchlogs.DescribeLogGroupsInput) bool {
+			// Ensure the request includes the expected account ID and that IncludeLinkedAccounts is enabled.
+			if input.IncludeLinkedAccounts == nil || !*input.IncludeLinkedAccounts {
+				return false
+			}
+			return slices.Contains(input.AccountIdentifiers, testAccountID)
+		}),
+		mock.Anything,
+	).Return(
+		&cloudwatchlogs.DescribeLogGroupsOutput{
+			LogGroups: []types.LogGroup{
+				{
+					LogGroupName: &testLogGroupName,
+				},
+			},
+			NextToken: nil,
+		}, nil,
+	)
+
+	// Otherwise, return no groups
+	mc.On("DescribeLogGroups", mock.Anything, mock.Anything, mock.Anything).Return(
+		&cloudwatchlogs.DescribeLogGroupsOutput{
+			LogGroups: []types.LogGroup{},
+			NextToken: nil,
+		}, nil,
+	)
+
+	cfg := createDefaultConfig().(*Config)
+	cfg.Region = "us-west-1"
+	cfg.Logs.Groups = GroupConfig{
+		AutodiscoverConfig: &AutodiscoverConfig{
+			Limit:                 1,
+			AccountIdentifiers:    []string{testAccountID},
+			IncludeLinkedAccounts: aws.Bool(true),
+		},
+	}
+
+	sink := &consumertest.LogsSink{}
+	alertRcvr := newLogsReceiver(cfg, receiver.Settings{
+		TelemetrySettings: component.TelemetrySettings{
+			Logger: zap.NewNop(),
+		},
+	}, sink)
+	alertRcvr.client = mc
+
+	grs, err := alertRcvr.discoverGroups(t.Context(), cfg.Logs.Groups.AutodiscoverConfig)
+	require.NoError(t, err)
+	require.Len(t, grs, 1)
+	require.Equal(t, testLogGroupName, grs[0].groupName())
+	mc.AssertExpectations(t)
+
+	// Filtering by a different account ID does not return any groups
+	cfg.Logs.Groups.AutodiscoverConfig.AccountIdentifiers = []string{"987654321098"}
+	grs, err = alertRcvr.discoverGroups(t.Context(), cfg.Logs.Groups.AutodiscoverConfig)
+	require.NoError(t, err)
+	require.Empty(t, grs)
+	mc.AssertExpectations(t)
+}
+
+func TestShutdownCheckpointer(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Region = "us-west-1"
+
+	sink := &consumertest.LogsSink{}
+	logsRcvr := newLogsReceiver(cfg, receiver.Settings{
+		TelemetrySettings: component.TelemetrySettings{
+			Logger: zap.NewNop(),
+		},
+	}, sink)
+
+	mockStorage := newMockStorageClient()
+	logsRcvr.cloudwatchCheckpointPersister = newCloudwatchCheckpointPersister(mockStorage, zap.NewNop())
+
+	err := logsRcvr.Shutdown(t.Context())
+	require.NoError(t, err)
+
+	require.Nil(t, mockStorage.cache)
+}
+
+func TestShutdownCheckpointerWithError(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Region = "us-west-1"
+
+	sink := &consumertest.LogsSink{}
+	logsRcvr := newLogsReceiver(cfg, receiver.Settings{
+		TelemetrySettings: component.TelemetrySettings{
+			Logger: zap.NewNop(),
+		},
+	}, sink)
+
+	// Create a mock storage client that returns an error on Close
+	mockStorage := newMockStorageClient()
+	mockStorage.forceError = true
+
+	cloudwatchCheckpointPersister := newCloudwatchCheckpointPersister(mockStorage, zap.NewNop())
+	logsRcvr.cloudwatchCheckpointPersister = cloudwatchCheckpointPersister
+
+	err := logsRcvr.Shutdown(t.Context())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "forced storage error")
+}
+
+func TestShutdownWithoutCheckpointer(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Region = "us-west-1"
+
+	sink := &consumertest.LogsSink{}
+	logsRcvr := newLogsReceiver(cfg, receiver.Settings{
+		TelemetrySettings: component.TelemetrySettings{
+			Logger: zap.NewNop(),
+		},
+	}, sink)
+
+	// Don't set a checkpointer (should be nil by default)
+	require.Nil(t, logsRcvr.cloudwatchCheckpointPersister)
+
+	// Call Shutdown and verify it doesn't error when checkpointer is nil
+	err := logsRcvr.Shutdown(t.Context())
+	require.NoError(t, err)
+}
+
+func TestDeletedLogGroupContinuesPolling(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Region = "us-west-1"
+	cfg.Logs.PollInterval = 100 * time.Millisecond
+	cfg.Logs.Groups = GroupConfig{
+		NamedConfigs: map[string]StreamConfig{
+			"existing-group": {
+				Names: []*string{aws.String("stream1")},
+			},
+			"deleted-group": {
+				Names: []*string{aws.String("stream2")},
+			},
+		},
+	}
+
+	sink := &consumertest.LogsSink{}
+	logsRcvr := newLogsReceiver(cfg, receiver.Settings{
+		TelemetrySettings: component.TelemetrySettings{
+			Logger: zap.NewNop(),
+		},
+	}, sink)
+	mc := &mockClient{}
+
+	mc.On("FilterLogEvents", mock.Anything, mock.MatchedBy(func(input *cloudwatchlogs.FilterLogEventsInput) bool {
+		return *input.LogGroupName == "existing-group"
+	}), mock.Anything).Return(&cloudwatchlogs.FilterLogEventsOutput{
+		Events: []types.FilteredLogEvent{
+			{
+				EventId:       aws.String("event1"),
+				LogStreamName: aws.String("stream1"),
+				Message:       aws.String("test message"),
+				Timestamp:     aws.Int64(time.Now().UnixMilli()),
+			},
+		},
+		NextToken: nil,
+	}, nil)
+
+	mc.On("FilterLogEvents", mock.Anything, mock.MatchedBy(func(input *cloudwatchlogs.FilterLogEventsInput) bool {
+		return *input.LogGroupName == "deleted-group"
+	}), mock.Anything).Return((*cloudwatchlogs.FilterLogEventsOutput)(nil), &types.ResourceNotFoundException{
+		Message: aws.String("The specified log group does not exist"),
+	})
+
+	logsRcvr.client = mc
+
+	err := logsRcvr.Start(t.Context(), componenttest.NewNopHost())
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		return sink.LogRecordCount() > 1
+	}, 2*time.Second, 10*time.Millisecond)
+	logs := sink.AllLogs()
+	require.GreaterOrEqual(t, len(logs), 2)
+	require.Equal(t, 1, logs[0].LogRecordCount())
+
+	logRecord := logs[0].ResourceLogs().At(0)
+	require.Equal(t, "existing-group", logRecord.Resource().Attributes().AsRaw()["cloudwatch.log.group.name"])
+
+	err = logsRcvr.Shutdown(t.Context())
+	require.NoError(t, err)
+
+	// Verify all mock expectations were met
+	mc.AssertExpectations(t)
+}
+
+func TestDeletedLogGroupDuringAutodiscover(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Region = "us-west-1"
+	cfg.Logs.PollInterval = 1 * time.Second
+	cfg.Logs.Groups = GroupConfig{
+		AutodiscoverConfig: &AutodiscoverConfig{
+			Limit:  3,
+			Prefix: "/aws/",
+		},
+	}
+
+	firstPollDone := make(chan struct{}, 1)
+
+	sink := &consumertest.LogsSink{}
+	logsRcvr := newLogsReceiver(cfg, receiver.Settings{
+		TelemetrySettings: component.TelemetrySettings{
+			Logger: zap.NewNop(),
+		},
+	}, sink)
+
+	mc := &mockClient{}
+
+	// First DescribeLogGroups call returns two groups
+	mc.On("DescribeLogGroups", mock.Anything, mock.MatchedBy(func(input *cloudwatchlogs.DescribeLogGroupsInput) bool {
+		return input.LogGroupNamePrefix != nil && *input.LogGroupNamePrefix == "/aws/"
+	}), mock.Anything).Return(&cloudwatchlogs.DescribeLogGroupsOutput{
+		LogGroups: []types.LogGroup{
+			{
+				LogGroupName: aws.String("/aws/working-group"),
+			},
+			{
+				LogGroupName: aws.String("/aws/delete-group"),
+			},
+			{
+				LogGroupName: aws.String("/aws/third-group"),
+			},
+		},
+		NextToken: nil,
+	}, nil).Once()
+
+	// Second DescribeLogGroups call returns working group plus a new group
+	mc.On("DescribeLogGroups", mock.Anything, mock.MatchedBy(func(input *cloudwatchlogs.DescribeLogGroupsInput) bool {
+		return input.LogGroupNamePrefix != nil && *input.LogGroupNamePrefix == "/aws/"
+	}), mock.Anything).Return(&cloudwatchlogs.DescribeLogGroupsOutput{
+		LogGroups: []types.LogGroup{
+			{
+				LogGroupName: aws.String("/aws/working-group"),
+			},
+			{
+				LogGroupName: aws.String("/aws/third-group"),
+			},
+		},
+		NextToken: nil,
+	}, nil).Run(func(_ mock.Arguments) {
+		close(firstPollDone)
+	})
+
+	// Setup mock for working-group to return normal logs
+	mc.On("FilterLogEvents", mock.Anything, mock.MatchedBy(func(input *cloudwatchlogs.FilterLogEventsInput) bool {
+		return input.LogGroupName != nil && *input.LogGroupName == "/aws/working-group"
+	}), mock.Anything).Return(&cloudwatchlogs.FilterLogEventsOutput{
+		Events: []types.FilteredLogEvent{
+			{
+				EventId:       aws.String("event1"),
+				LogStreamName: aws.String("stream1"),
+				Message:       aws.String("test message"),
+				Timestamp:     aws.Int64(time.Now().UnixMilli()),
+			},
+		},
+		NextToken: nil,
+	}, nil)
+
+	// Setup mock for /aws/delete-group to return ResourceNotFoundException
+	mc.On("FilterLogEvents", mock.Anything, mock.MatchedBy(func(input *cloudwatchlogs.FilterLogEventsInput) bool {
+		return input.LogGroupName != nil && *input.LogGroupName == "/aws/delete-group"
+	}), mock.Anything).Return(&cloudwatchlogs.FilterLogEventsOutput{
+		Events: []types.FilteredLogEvent{
+			{
+				EventId:       aws.String("event1"),
+				LogStreamName: aws.String("stream1"),
+				Message:       aws.String("test message"),
+				Timestamp:     aws.Int64(time.Now().UnixMilli()),
+			},
+		},
+		NextToken: aws.String("next"),
+	}, nil).Once()
+
+	mc.On("FilterLogEvents", mock.Anything, mock.MatchedBy(func(input *cloudwatchlogs.FilterLogEventsInput) bool {
+		return input.LogGroupName != nil && *input.LogGroupName == "/aws/delete-group" && input.NextToken != nil && *input.NextToken == "next"
+	}), mock.Anything).Return(&cloudwatchlogs.FilterLogEventsOutput{}, &types.ResourceNotFoundException{
+		Message: aws.String("The specified log group does not exist"),
+	}).Once()
+
+	// Setup mock for /aws/working-group or /aws/third-group to return normal logs
+	mc.On("FilterLogEvents",
+		mock.Anything,
+		mock.MatchedBy(func(input *cloudwatchlogs.FilterLogEventsInput) bool {
+			return input.LogGroupName != nil && (*input.LogGroupName == "/aws/working-group" || *input.LogGroupName == "/aws/third-group")
+		}), mock.Anything).Return(&cloudwatchlogs.FilterLogEventsOutput{
+		Events: []types.FilteredLogEvent{
+			{
+				EventId:       aws.String("event2"),
+				LogStreamName: aws.String("stream2"),
+				Message:       aws.String("test message from group"),
+				Timestamp:     aws.Int64(time.Now().UnixMilli()),
+			},
+		},
+		NextToken: nil,
+	}, nil)
+
+	logsRcvr.client = mc
+
+	err := logsRcvr.Start(t.Context(), componenttest.NewNopHost())
+	require.NoError(t, err)
+
+	// Wait for first poll to complete
+	require.Eventually(t, func() bool {
+		select {
+		case <-firstPollDone:
+			return true
+		default:
+			return false
+		}
+	}, 15*time.Second, 10*time.Millisecond)
+
+	err = logsRcvr.Shutdown(t.Context())
+	require.NoError(t, err)
+
+	groupNames := make([]string, 0, len(logsRcvr.groupRequests))
+	for _, gr := range logsRcvr.groupRequests {
+		groupNames = append(groupNames, gr.groupName())
+	}
+	require.ElementsMatch(t, []string{"/aws/working-group", "/aws/third-group"}, groupNames)
+	logs := sink.AllLogs()
+	require.GreaterOrEqual(t, len(logs), 3)
+
+	firstWorkingGroupLog := logs[0].ResourceLogs().At(0)
+	require.Equal(t, "/aws/working-group", firstWorkingGroupLog.Resource().Attributes().AsRaw()["cloudwatch.log.group.name"])
+	require.Equal(t, 1, firstWorkingGroupLog.ScopeLogs().Len())
+
+	secondWorkingGroupLog := logs[1].ResourceLogs().At(0)
+	require.Equal(t, "/aws/delete-group", secondWorkingGroupLog.Resource().Attributes().AsRaw()["cloudwatch.log.group.name"])
+	require.Equal(t, 1, secondWorkingGroupLog.ScopeLogs().Len())
+
+	thirdWorkingGroupLog := logs[2].ResourceLogs().At(0)
+	require.Equal(t, "/aws/third-group", thirdWorkingGroupLog.Resource().Attributes().AsRaw()["cloudwatch.log.group.name"])
+	require.Equal(t, 1, thirdWorkingGroupLog.ScopeLogs().Len())
+
+	mc.AssertExpectations(t)
+}
+
+func TestPollForLogsSetsCheckpointLastMessage(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Region = "us-west-1"
+	cfg.Logs.PollInterval = 1 * time.Second
+	cfg.Logs.Groups = GroupConfig{
+		NamedConfigs: map[string]StreamConfig{
+			testLogGroupName: {
+				Names: []*string{&testLogStreamName},
+			},
+		},
+	}
+
+	sink := &consumertest.LogsSink{}
+	logsRcvr := newLogsReceiver(cfg, receiver.Settings{
+		TelemetrySettings: component.TelemetrySettings{
+			Logger: zap.NewNop(),
+		},
+	}, sink)
+	mc := mockClient{}
+
+	// add 1 millisecond to the returned timestamp
+	expectedTimestamp := time.Date(2020, 1, 1, 0, 0, 0, 1000000, time.UTC)
+
+	mc.On("FilterLogEvents", mock.Anything, mock.Anything, mock.Anything).Return(&cloudwatchlogs.FilterLogEventsOutput{
+		Events: []types.FilteredLogEvent{
+			{
+				EventId:       aws.String("event1"),
+				LogStreamName: aws.String("stream1"),
+				Message:       aws.String("test message"),
+				Timestamp:     aws.Int64(time.Date(2019, 1, 1, 0, 0, 0, 0, time.UTC).UnixMilli()),
+			},
+			{
+				EventId:       aws.String("event2"),
+				LogStreamName: aws.String("stream2"),
+				Message:       aws.String("test message 2"),
+				Timestamp:     aws.Int64(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).UnixMilli()),
+			},
+		},
+		NextToken: nil,
+	}, nil)
+
+	logsRcvr.client = &mc
+	requiredTime, _ := logsRcvr.pollForLogs(
+		t.Context(),
+		&streamNames{},
+		time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+	)
+
+	require.Equal(t, expectedTimestamp.UnixMilli(), requiredTime.UnixMilli())
+}
+
+func TestPollForLogsSetsCheckpointNoData(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Region = "us-west-1"
+	cfg.Logs.PollInterval = 1 * time.Second
+	cfg.Logs.Groups = GroupConfig{
+		NamedConfigs: map[string]StreamConfig{
+			testLogGroupName: {
+				Names: []*string{&testLogStreamName},
+			},
+		},
+	}
+
+	sink := &consumertest.LogsSink{}
+	logsRcvr := newLogsReceiver(cfg, receiver.Settings{
+		TelemetrySettings: component.TelemetrySettings{
+			Logger: zap.NewNop(),
+		},
+	}, sink)
+	mc := mockClient{}
+
+	// if no logs found, should return passed endTime
+	expectedTimestamp := time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC)
+
+	mc.On("FilterLogEvents", mock.Anything, mock.Anything, mock.Anything).Return(&cloudwatchlogs.FilterLogEventsOutput{
+		Events:    []types.FilteredLogEvent{},
+		NextToken: nil,
+	}, nil)
+
+	logsRcvr.client = &mc
+	requiredTime, _ := logsRcvr.pollForLogs(
+		t.Context(),
+		&streamNames{},
+		time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC),
+	)
+
+	require.Equal(t, expectedTimestamp.UnixMilli(), requiredTime.UnixMilli())
+}
+
+func TestPollForLogsEmptyPaginatedPagePreservesCheckpoint(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Region = "us-west-1"
+	cfg.Logs.PollInterval = 1 * time.Second
+	cfg.Logs.Groups = GroupConfig{
+		NamedConfigs: map[string]StreamConfig{
+			testLogGroupName: {
+				Names: []*string{&testLogStreamName},
+			},
+		},
+	}
+
+	sink := &consumertest.LogsSink{}
+	logsRcvr := newLogsReceiver(cfg, receiver.Settings{
+		TelemetrySettings: component.TelemetrySettings{
+			Logger: zap.NewNop(),
+		},
+	}, sink)
+	mc := mockClient{}
+
+	lastEventTime := time.Date(2020, 1, 1, 0, 0, 30, 0, time.UTC)
+	startTime := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	endTime := time.Date(2020, 1, 1, 0, 1, 0, 0, time.UTC)
+	expectedNextStartTime := lastEventTime.Add(1 * time.Millisecond)
+
+	mc.On("FilterLogEvents", mock.Anything, mock.MatchedBy(
+		func(input *cloudwatchlogs.FilterLogEventsInput) bool {
+			return input.NextToken == nil
+		},
+	), mock.Anything).Return(&cloudwatchlogs.FilterLogEventsOutput{
+		Events: []types.FilteredLogEvent{
+			{
+				EventId:       aws.String("event1"),
+				LogStreamName: aws.String("stream1"),
+				Message:       aws.String("test message"),
+				Timestamp:     aws.Int64(lastEventTime.UnixMilli()),
+			},
+		},
+		NextToken: aws.String("next-page-token"),
+	}, nil).Once()
+
+	// Paginated follow-up returns empty events despite the prior NextToken.
+	mc.On("FilterLogEvents", mock.Anything, mock.MatchedBy(
+		func(input *cloudwatchlogs.FilterLogEventsInput) bool {
+			return input.NextToken != nil && *input.NextToken == "next-page-token"
+		},
+	), mock.Anything).Return(&cloudwatchlogs.FilterLogEventsOutput{
+		Events:    []types.FilteredLogEvent{},
+		NextToken: nil,
+	}, nil).Once()
+
+	logsRcvr.client = &mc
+	gotNextStartTime, err := logsRcvr.pollForLogs(
+		t.Context(),
+		&streamNames{group: testLogGroupName, names: []*string{&testLogStreamName}},
+		startTime,
+		endTime,
+	)
+	require.NoError(t, err)
+
+	require.Equal(t, expectedNextStartTime.UnixMilli(), gotNextStartTime.UnixMilli(),
+		"empty paginated page must not overwrite the last-seen event timestamp")
+	mc.AssertExpectations(t)
+}
+
+func TestPollSetsGroupNextStartTimes(t *testing.T) {
+	logGroup1 := "log-group-1"
+	logGroup2 := "log-group-2"
+
+	cfg := createDefaultConfig().(*Config)
+	cfg.Region = "us-west-1"
+	cfg.Logs.PollInterval = 1 * time.Second
+	cfg.Logs.Groups = GroupConfig{
+		NamedConfigs: map[string]StreamConfig{
+			logGroup1: {},
+			logGroup2: {},
+		},
+	}
+
+	sink := &consumertest.LogsSink{}
+	logsRcvr := newLogsReceiver(cfg, receiver.Settings{
+		TelemetrySettings: component.TelemetrySettings{
+			Logger: zap.NewNop(),
+		},
+	}, sink)
+
+	// Set up initial start times
+	initialTime1 := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	initialTime2 := time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC)
+	logsRcvr.groupNextStartTimes = map[string]time.Time{
+		logGroup1: initialTime1,
+		logGroup2: initialTime2,
+	}
+
+	mc := mockClient{}
+
+	// Set up expected return values for each log group
+	expectedTime1 := time.Date(2020, 1, 1, 12, 0, 0, 0, time.UTC)
+	expectedTime2 := time.Date(2020, 1, 2, 12, 0, 0, 0, time.UTC)
+
+	mc.On("FilterLogEvents", mock.Anything, mock.MatchedBy(func(input *cloudwatchlogs.FilterLogEventsInput) bool {
+		return *input.LogGroupName == logGroup1
+	}), mock.Anything).Return(&cloudwatchlogs.FilterLogEventsOutput{
+		Events: []types.FilteredLogEvent{
+			{
+				EventId:       aws.String("event1"),
+				LogStreamName: aws.String("stream1"),
+				Message:       aws.String("test message"),
+				Timestamp:     aws.Int64(expectedTime1.Add(-1 * time.Millisecond).UnixMilli()),
+			},
+		},
+		NextToken: nil,
+	}, nil)
+
+	mc.On("FilterLogEvents", mock.Anything, mock.MatchedBy(func(input *cloudwatchlogs.FilterLogEventsInput) bool {
+		return *input.LogGroupName == logGroup2
+	}), mock.Anything).Return(&cloudwatchlogs.FilterLogEventsOutput{
+		Events: []types.FilteredLogEvent{
+			{
+				EventId:       aws.String("event2"),
+				LogStreamName: aws.String("stream2"),
+				Message:       aws.String("test message"),
+				Timestamp:     aws.Int64(expectedTime2.Add(-1 * time.Millisecond).UnixMilli()),
+			},
+		},
+		NextToken: nil,
+	}, nil)
+
+	logsRcvr.client = &mc
+
+	err := logsRcvr.poll(t.Context())
+
+	// Verify no errors
+	require.NoError(t, err)
+
+	require.Equal(t, expectedTime1.UnixMilli(), logsRcvr.groupNextStartTimes[logGroup1].UnixMilli())
+	require.Equal(t, expectedTime2.UnixMilli(), logsRcvr.groupNextStartTimes[logGroup2].UnixMilli())
+
+	mc.AssertExpectations(t)
 }
 
 func defaultMockClient() client {
@@ -284,7 +1056,8 @@ func defaultMockClient() client {
 				},
 			},
 			NextToken: nil,
-		}, nil)
+		}, nil,
+	)
 	mc.On("FilterLogEvents", mock.Anything, mock.Anything, mock.Anything).Return(
 		&cloudwatchlogs.FilterLogEventsOutput{
 			Events: []types.FilteredLogEvent{
@@ -318,7 +1091,8 @@ func defaultMockClient() client {
 				},
 			},
 			NextToken: nil,
-		}, nil)
+		}, nil,
+	)
 	return mc
 }
 

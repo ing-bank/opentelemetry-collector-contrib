@@ -7,6 +7,7 @@ package sqlserverreceiver // import "github.com/open-telemetry/opentelemetry-col
 
 import (
 	"context"
+	"errors"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
@@ -38,18 +39,24 @@ func createMetricsReceiver(
 	}
 
 	var opts []scraperhelper.ControllerOption
-	opts, err = setupScrapers(params, cfg)
+	var provider *dbProvider
+	opts, provider, err = setupScrapers(params, cfg)
 	if err != nil {
 		return nil, err
 	}
-	opts = append(opts, scraperhelper.AddScraper(metadata.Type, scraper))
+	opts = append(opts, scraperhelper.AddMetricsScraper(metadata.Type, scraper))
 
-	return scraperhelper.NewMetricsController(
+	controller, err := scraperhelper.NewMetricsController(
 		&cfg.ControllerConfig,
 		params,
 		metricsConsumer,
 		opts...,
 	)
+	if err != nil {
+		return nil, errors.Join(err, provider.close())
+	}
+
+	return &sqlServerMetricsReceiver{Metrics: controller, provider: provider}, nil
 }
 
 // createLogsReceiver create a logs receiver based on provided config.
@@ -64,13 +71,20 @@ func createLogsReceiver(
 		return nil, errConfigNotSQLServer
 	}
 
-	// Disable logs receiver on Windows as the only supported logs query (Top Query) is not tested on Windows yet.
-	opts := []scraperhelper.ControllerOption{}
+	opts, provider, err := setupLogsScrapers(params, cfg)
+	if err != nil {
+		return nil, err
+	}
 
-	return scraperhelper.NewLogsController(
+	controller, err := scraperhelper.NewLogsController(
 		&cfg.ControllerConfig,
 		params,
 		logsConsumer,
 		opts...,
 	)
+	if err != nil {
+		return nil, errors.Join(err, provider.close())
+	}
+
+	return &sqlServerLogsReceiver{Logs: controller, provider: provider}, nil
 }

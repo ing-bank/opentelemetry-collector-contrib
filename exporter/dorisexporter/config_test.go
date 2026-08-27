@@ -8,15 +8,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cenkalti/backoff/v4"
+	"github.com/cenkalti/backoff/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/configopaque"
+	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configretry"
+	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
-	"go.opentelemetry.io/collector/confmap/xconfmap"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/dorisexporter/internal/metadata"
@@ -29,7 +30,7 @@ func TestLoadConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	defaultCfg := createDefaultConfig()
-	defaultCfg.(*Config).Endpoint = "http://localhost:8030"
+	defaultCfg.(*Config).ClientConfig.Endpoint = "http://localhost:8030"
 	defaultCfg.(*Config).MySQLEndpoint = "localhost:9030"
 	err = defaultCfg.(*Config).Validate()
 	require.NoError(t, err)
@@ -37,10 +38,10 @@ func TestLoadConfig(t *testing.T) {
 	httpClientConfig := confighttp.NewDefaultClientConfig()
 	httpClientConfig.Timeout = 5 * time.Second
 	httpClientConfig.Endpoint = "http://localhost:8030"
-	httpClientConfig.Headers = map[string]configopaque.String{
-		"max_filter_ratio": "0.1",
-		"strict_mode":      "true",
-		"group_commit":     "async_mode",
+	httpClientConfig.Headers = configopaque.MapList{
+		{Name: "group_commit", Value: "async_mode"},
+		{Name: "max_filter_ratio", Value: "0.1"},
+		{Name: "strict_mode", Value: "true"},
 	}
 
 	fullCfg := &Config{
@@ -53,12 +54,12 @@ func TestLoadConfig(t *testing.T) {
 			RandomizationFactor: backoff.DefaultRandomizationFactor,
 			Multiplier:          backoff.DefaultMultiplier,
 		},
-		QueueSettings: exporterhelper.QueueBatchConfig{
-			Enabled:      true,
-			NumConsumers: 10,
-			QueueSize:    1000,
-			Sizer:        exporterhelper.RequestSizerTypeRequests,
-		},
+		QueueSettings: configoptional.Some(func() exporterhelper.QueueBatchConfig {
+			queue := exporterhelper.NewDefaultQueueConfig()
+			queue.NumConsumers = 10
+			queue.QueueSize = 1000
+			return queue
+		}()),
 		Table: Table{
 			Logs:    "otel_logs",
 			Traces:  "otel_traces",
@@ -103,7 +104,7 @@ func TestLoadConfig(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, sub.Unmarshal(cfg))
 
-			assert.NoError(t, xconfmap.Validate(cfg))
+			assert.NoError(t, confmap.Validate(cfg))
 			assert.Equal(t, tt.expected, cfg)
 		})
 	}

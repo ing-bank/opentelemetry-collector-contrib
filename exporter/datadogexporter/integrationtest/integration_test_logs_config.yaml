@@ -9,6 +9,7 @@ exporters:
   datadog:
     api:
       key: "aaa"
+    hostname: "test-host"
     tls:
       insecure_skip_verify: true
     host_metadata:
@@ -30,6 +31,7 @@ service:
             exporter:
               otlp:
                 protocol: http/protobuf
+                insecure: true
                 endpoint: ${env:OTLP_HTTP_SERVER}
   pipelines:
     logs:

@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build !aix
+
 package datadogexporter // import "github.com/open-telemetry/opentelemetry-collector-contrib/exporter/datadogexporter"
 
 import (
@@ -13,15 +15,16 @@ import (
 	"github.com/DataDog/datadog-agent/comp/otelcol/logsagentpipeline"
 	"github.com/DataDog/datadog-agent/comp/otelcol/otlp/components/exporter/serializerexporter"
 	"github.com/DataDog/datadog-agent/comp/otelcol/otlp/components/metricsclient"
+	"github.com/DataDog/datadog-agent/pkg/opentelemetry-mapping-go/inframetadata"
+	"github.com/DataDog/datadog-agent/pkg/opentelemetry-mapping-go/otlp/attributes"
+	"github.com/DataDog/datadog-agent/pkg/opentelemetry-mapping-go/otlp/attributes/source"
 	pb "github.com/DataDog/datadog-agent/pkg/proto/pbgo/trace"
 	"github.com/DataDog/datadog-agent/pkg/trace/agent"
+	containertagsbuffer "github.com/DataDog/datadog-agent/pkg/trace/containertags"
 	"github.com/DataDog/datadog-agent/pkg/trace/telemetry"
 	"github.com/DataDog/datadog-agent/pkg/trace/timing"
 	"github.com/DataDog/datadog-agent/pkg/trace/writer"
 	"github.com/DataDog/datadog-agent/pkg/util/log"
-	"github.com/DataDog/opentelemetry-mapping-go/pkg/inframetadata"
-	"github.com/DataDog/opentelemetry-mapping-go/pkg/otlp/attributes"
-	"github.com/DataDog/opentelemetry-mapping-go/pkg/otlp/attributes/source"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/configretry"
@@ -43,73 +46,18 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/resourcetotelemetry"
 )
 
-var logsAgentExporterFeatureGate = featuregate.GlobalRegistry().MustRegister(
-	"exporter.datadogexporter.UseLogsAgentExporter",
-	featuregate.StageBeta,
-	featuregate.WithRegisterDescription("When enabled, datadogexporter uses the Datadog agent logs pipeline for exporting logs."),
-	featuregate.WithRegisterFromVersion("v0.100.0"),
-)
-
-var metricExportNativeClientFeatureGate = featuregate.GlobalRegistry().MustRegister(
-	"exporter.datadogexporter.metricexportnativeclient",
-	featuregate.StageBeta,
-	featuregate.WithRegisterDescription("When enabled, metric export in datadogexporter uses native Datadog client APIs instead of Zorkian APIs."),
-)
-
-// noAPMStatsFeatureGate causes the trace consumer to skip APM stats computation.
-var noAPMStatsFeatureGate = featuregate.GlobalRegistry().MustRegister(
-	"exporter.datadogexporter.DisableAPMStats",
-	featuregate.StageBeta,
-	featuregate.WithRegisterDescription("Datadog Exporter will not compute APM Stats"),
-)
-
-var metricExportSerializerClientFeatureGate = featuregate.GlobalRegistry().MustRegister(
-	"exporter.datadogexporter.metricexportserializerclient",
-	featuregate.StageBeta,
-	featuregate.WithRegisterDescription("When enabled, metric export in datadogexporter uses the serializer exporter from the Datadog Agent."),
-)
-
 func init() {
 	log.SetupLogger(log.Disabled(), "off")
 }
 
-// isMetricExportV2Enabled returns true if metric export in datadogexporter uses native Datadog client APIs, false if it uses Zorkian APIs
-func isMetricExportV2Enabled() bool {
-	return metricExportNativeClientFeatureGate.IsEnabled()
-}
-
-func isLogsAgentExporterEnabled() bool {
-	return logsAgentExporterFeatureGate.IsEnabled()
-}
-
 func isMetricExportSerializerEnabled() bool {
-	return metricExportSerializerClientFeatureGate.IsEnabled()
-}
-
-// enableNativeMetricExport switches metric export to call native Datadog APIs instead of Zorkian APIs.
-func enableNativeMetricExport() error {
-	if err := featuregate.GlobalRegistry().Set(metricExportSerializerClientFeatureGate.ID(), false); err != nil {
-		return err
-	}
-	return featuregate.GlobalRegistry().Set(metricExportNativeClientFeatureGate.ID(), true)
-}
-
-// enableZorkianMetricExport switches metric export to call Zorkian APIs instead of native Datadog APIs.
-func enableZorkianMetricExport() error {
-	if err := featuregate.GlobalRegistry().Set(metricExportSerializerClientFeatureGate.ID(), false); err != nil {
-		return err
-	}
-	return featuregate.GlobalRegistry().Set(metricExportNativeClientFeatureGate.ID(), false)
+	return metadata.ExporterDatadogexporterMetricexportserializerclientFeatureGate.IsEnabled()
 }
 
 func consumeResource(metadataReporter *inframetadata.Reporter, res pcommon.Resource, logger *zap.Logger) {
 	if err := metadataReporter.ConsumeResource(res); err != nil {
 		logger.Warn("failed to consume resource for host metadata", zap.Error(err), zap.Any("resource", res))
 	}
-}
-
-func enableMetricExportSerializer() error {
-	return featuregate.GlobalRegistry().Set(metricExportSerializerClientFeatureGate.ID(), true)
 }
 
 type factory struct {
@@ -175,7 +123,7 @@ func (f *factory) StopReporter() {
 	})
 }
 
-func (f *factory) TraceAgent(ctx context.Context, wg *sync.WaitGroup, params exporter.Settings, cfg *datadogconfig.Config, sourceProvider source.Provider, attrsTranslator *attributes.Translator) (*agent.Agent, error) {
+func (*factory) TraceAgent(ctx context.Context, wg *sync.WaitGroup, params exporter.Settings, cfg *datadogconfig.Config, sourceProvider source.Provider, attrsTranslator *attributes.Translator) (*agent.Agent, error) {
 	mc, err := metricsclient.InitializeMetricClient(params.MeterProvider, metricsclient.ExporterSourceTag)
 	if err != nil {
 		return nil, err
@@ -184,11 +132,9 @@ func (f *factory) TraceAgent(ctx context.Context, wg *sync.WaitGroup, params exp
 	if err != nil {
 		return nil, err
 	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		agnt.Run()
-	}()
+	})
 	return agnt, nil
 }
 
@@ -215,26 +161,13 @@ func defaultClientConfig() confighttp.ClientConfig {
 }
 
 // createDefaultConfig creates the default exporter configuration
-func (f *factory) createDefaultConfig() component.Config {
+func (*factory) createDefaultConfig() component.Config {
 	return datadogconfig.CreateDefaultConfig()
 }
 
-// checkAndCastConfig checks the configuration type and its warnings, and casts it to
-// the Datadog Config struct.
-func checkAndCastConfig(c component.Config, logger *zap.Logger) *datadogconfig.Config {
-	cfg, ok := c.(*datadogconfig.Config)
-	if !ok {
-		panic("programming error: config structure is not of type *datadogconfig.Config")
-	}
-	cfg.LogWarnings(logger)
-	return cfg
-}
-
-func (f *factory) consumeStatsPayload(ctx context.Context, wg *sync.WaitGroup, statsIn <-chan []byte, statsWriter *writer.DatadogStatsWriter, tracerVersion string, agentVersion string, logger *zap.Logger) {
+func (*factory) consumeStatsPayload(ctx context.Context, wg *sync.WaitGroup, statsIn <-chan []byte, statsWriter *writer.DatadogStatsWriter, tracerVersion, agentVersion string, logger *zap.Logger) {
 	for i := 0; i < runtime.NumCPU(); i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for {
 				select {
 				case <-ctx.Done():
@@ -257,7 +190,7 @@ func (f *factory) consumeStatsPayload(ctx context.Context, wg *sync.WaitGroup, s
 					statsWriter.Write(sp)
 				}
 			}
-		}()
+		})
 	}
 }
 
@@ -267,7 +200,11 @@ func (f *factory) createMetricsExporter(
 	set exporter.Settings,
 	c component.Config,
 ) (exporter.Metrics, error) {
-	cfg := checkAndCastConfig(c, set.Logger)
+	cfg, err := datadogconfig.CheckAndCastConfig(c)
+	if err != nil {
+		return nil, err
+	}
+	cfg.LogWarnings(set.Logger)
 	hostProvider, err := f.SourceProvider(set.TelemetrySettings, cfg.Hostname, cfg.HostnameDetectionTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build hostname provider: %w", err)
@@ -294,7 +231,8 @@ func (f *factory) createMetricsExporter(
 		return nil, err
 	}
 	timingReporter := timing.New(metricsClient)
-	statsWriter := writer.NewStatsWriter(acfg, telemetry.NewNoopCollector(), metricsClient, timingReporter)
+	containerTagsBuffer := containertagsbuffer.NewContainerTagsBuffer(acfg, metricsClient)
+	statsWriter := writer.NewStatsWriter(acfg, telemetry.NewNoopCollector(), metricsClient, timingReporter, containerTagsBuffer)
 
 	set.Logger.Debug("Starting Datadog Trace-Agent StatsWriter")
 	go statsWriter.Run()
@@ -340,7 +278,8 @@ func (f *factory) createMetricsExporter(
 		apiClient := clientutil.CreateAPIClient(
 			set.BuildInfo,
 			cfg.Metrics.Endpoint,
-			cfg.ClientConfig)
+			cfg.ClientConfig,
+		)
 		go func() { errchan <- clientutil.ValidateAPIKey(ctx, string(cfg.API.Key), set.Logger, apiClient) }()
 		if cfg.API.FailOnInvalidKey {
 			err = <-errchan
@@ -368,10 +307,11 @@ func (f *factory) createMetricsExporter(
 				Metrics: cfg.Metrics,
 			},
 			TimeoutConfig: exporterhelper.TimeoutConfig{
-				Timeout: cfg.Timeout,
+				Timeout: cfg.ClientConfig.Timeout,
 			},
-			ClientConfig:     cfg.TLS,
+			ClientConfig:     cfg.ClientConfig.TLS,
 			QueueBatchConfig: cfg.QueueSettings,
+			RetryConfig:      cfg.BackOffConfig,
 			API:              cfg.API,
 			HostProvider: func(ctx context.Context) (string, error) {
 				h, err2 := hostProvider.Source(ctx)
@@ -430,7 +370,8 @@ func (f *factory) createMetricsExporter(
 		return nil, err
 	}
 	return resourcetotelemetry.WrapMetricsExporter(
-		resourcetotelemetry.Settings{Enabled: cfg.Metrics.ExporterConfig.ResourceAttributesAsTags}, exporter), nil
+		resourcetotelemetry.Settings{Enabled: cfg.Metrics.ExporterConfig.ResourceAttributesAsTags}, exporter,
+	), nil
 }
 
 // createTracesExporter creates a trace exporter based on this config.
@@ -439,12 +380,16 @@ func (f *factory) createTracesExporter(
 	set exporter.Settings,
 	c component.Config,
 ) (exporter.Traces, error) {
-	cfg := checkAndCastConfig(c, set.Logger)
-	if noAPMStatsFeatureGate.IsEnabled() {
+	cfg, err := datadogconfig.CheckAndCastConfig(c)
+	if err != nil {
+		return nil, err
+	}
+	cfg.LogWarnings(set.Logger)
+	if metadata.ExporterDatadogexporterDisableAPMStatsFeatureGate.IsEnabled() {
 		set.Logger.Info(
 			"Trace metrics are now disabled in the Datadog Exporter by default. To continue receiving Trace Metrics, configure the Datadog Connector or disable the feature gate.",
 			zap.String("documentation", "https://docs.datadoghq.com/opentelemetry/guide/migration/"),
-			zap.String("feature gate ID", noAPMStatsFeatureGate.ID()),
+			zap.String("feature gate ID", metadata.ExporterDatadogexporterDisableAPMStatsFeatureGate.ID()),
 		)
 	}
 
@@ -541,20 +486,11 @@ func (f *factory) createLogsExporter(
 	set exporter.Settings,
 	c component.Config,
 ) (exporter.Logs, error) {
-	cfg := checkAndCastConfig(c, set.Logger)
-
-	if cfg.Logs.DumpPayloads && isLogsAgentExporterEnabled() {
-		set.Logger.Warn("logs::dump_payloads is not valid when the exporter.datadogexporter.UseLogsAgentExporter feature gate is enabled")
+	cfg, err := datadogconfig.CheckAndCastConfig(c)
+	if err != nil {
+		return nil, err
 	}
-	if cfg.Logs.UseCompression && !isLogsAgentExporterEnabled() {
-		set.Logger.Warn("logs::use_compression is not valid when the exporter.datadogexporter.UseLogsAgentExporter feature gate is disabled")
-	}
-	if cfg.Logs.CompressionLevel != 0 && !isLogsAgentExporterEnabled() {
-		set.Logger.Warn("logs::compression_level is not valid when the exporter.datadogexporter.UseLogsAgentExporter feature gate is disabled")
-	}
-	if cfg.Logs.BatchWait != 0 && !isLogsAgentExporterEnabled() {
-		set.Logger.Warn("logs::batch_wait is not valid when the exporter.datadogexporter.UseLogsAgentExporter feature gate is disabled")
-	}
+	cfg.LogWarnings(set.Logger)
 
 	var pusher consumer.ConsumeLogsFunc
 	var logsAgent logsagentpipeline.LogsAgent
@@ -574,29 +510,23 @@ func (f *factory) createLogsExporter(
 			cancel()
 			return nil, fmt.Errorf("failed to build host metadata reporter: %w", err)
 		}
-	}
-
-	attributesTranslator, err := f.AttributesTranslator(set.TelemetrySettings)
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("failed to build attributes translator: %w", err)
+		f.onceMetadata.Do(func() {
+			attrs := pcommon.NewMap()
+			go hostmetadata.RunPusher(ctx, set, pcfg, hostProvider, attrs, metadataReporter)
+		})
 	}
 
 	switch {
 	case cfg.OnlyMetadata:
 		// only host metadata needs to be sent, once.
 		pusher = func(_ context.Context, td plog.Logs) error {
-			f.onceMetadata.Do(func() {
-				attrs := pcommon.NewMap()
-				go hostmetadata.RunPusher(ctx, set, pcfg, hostProvider, attrs, metadataReporter)
-			})
 			for i := 0; i < td.ResourceLogs().Len(); i++ {
 				res := td.ResourceLogs().At(i).Resource()
 				consumeResource(metadataReporter, res, set.Logger)
 			}
 			return nil
 		}
-	case isLogsAgentExporterEnabled():
+	default:
 		la, exp, err := newLogsAgentExporter(ctx, set, cfg, hostProvider, f.gatewayUsage)
 		if err != nil {
 			cancel()
@@ -604,13 +534,6 @@ func (f *factory) createLogsExporter(
 		}
 		logsAgent = la
 		pusher = exp.ConsumeLogs
-	default:
-		exp, err := newLogsExporter(ctx, set, cfg, &f.onceMetadata, attributesTranslator, hostProvider, metadataReporter, f.gatewayUsage)
-		if err != nil {
-			cancel()
-			return nil, err
-		}
-		pusher = exp.consumeLogs
 	}
 	return exporterhelper.NewLogs(
 		ctx,
@@ -621,12 +544,20 @@ func (f *factory) createLogsExporter(
 		exporterhelper.WithTimeout(exporterhelper.TimeoutConfig{Timeout: 0 * time.Second}),
 		exporterhelper.WithRetry(cfg.BackOffConfig),
 		exporterhelper.WithQueue(cfg.QueueSettings),
-		exporterhelper.WithShutdown(func(context.Context) error {
+		exporterhelper.WithShutdown(func(shutdownCtx context.Context) error {
+			// Stop the logs agent before canceling ctx. cancel() pre-cancels
+			// the context that pipeline goroutines were started with, causing
+			// the serial stopper inside logsAgent.Stop() to find them already
+			// gone and skip the proper DestinationSender.Stop() sequence — which
+			// leaves startRetryReader goroutines alive and blocks server.Close()
+			// in tests (and keeps connections open in production).
+			if logsAgent != nil {
+				if err := logsAgent.Stop(shutdownCtx); err != nil {
+					return err
+				}
+			}
 			cancel()
 			f.StopReporter()
-			if logsAgent != nil {
-				return logsAgent.Stop(ctx)
-			}
 			return nil
 		}),
 	)

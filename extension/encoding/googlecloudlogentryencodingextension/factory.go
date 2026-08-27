@@ -8,16 +8,18 @@ import (
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/extension"
+	"go.opentelemetry.io/collector/extension/xextension"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/encoding/googlecloudlogentryencodingextension/internal/metadata"
 )
 
 func NewFactory() extension.Factory {
-	return extension.NewFactory(
+	return xextension.NewFactory(
 		metadata.Type,
 		createDefaultConfig,
 		createExtension,
 		metadata.ExtensionStability,
+		xextension.WithDeprecatedTypeAlias(metadata.DeprecatedType),
 	)
 }
 
@@ -27,7 +29,7 @@ func createExtension(_ context.Context, _ extension.Settings, config component.C
 
 func createDefaultConfig() component.Config {
 	return &Config{
-		HandleJSONPayloadAs:  "json",
-		HandleProtoPayloadAs: "json",
+		HandleJSONPayloadAs:  HandleAsJSON,
+		HandleProtoPayloadAs: HandleAsJSON,
 	}
 }

@@ -6,13 +6,15 @@ package marshaler // import "github.com/open-telemetry/opentelemetry-collector-c
 import (
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/pdata/pprofile"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
 
 var (
-	_ LogsMarshaler    = pdataLogsMarshaler{}
-	_ MetricsMarshaler = pdataMetricsMarshaler{}
-	_ TracesMarshaler  = pdataTracesMarshaler{}
+	_ LogsMarshaler     = pdataLogsMarshaler{}
+	_ MetricsMarshaler  = pdataMetricsMarshaler{}
+	_ TracesMarshaler   = pdataTracesMarshaler{}
+	_ ProfilesMarshaler = pdataProfilesMarshaler{}
 )
 
 type pdataLogsMarshaler struct {
@@ -27,12 +29,13 @@ func NewPdataLogsMarshaler(m plog.Marshaler) LogsMarshaler {
 	return pdataLogsMarshaler{marshaler: m}
 }
 
-func (p pdataLogsMarshaler) MarshalLogs(ld plog.Logs) ([]Message, error) {
+func (p pdataLogsMarshaler) MarshalLogs(ld plog.Logs, yield func(key, value []byte)) error {
 	bts, err := p.marshaler.MarshalLogs(ld)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return []Message{{Value: bts}}, nil
+	yield(nil, bts)
+	return nil
 }
 
 type pdataMetricsMarshaler struct {
@@ -47,12 +50,13 @@ func NewPdataMetricsMarshaler(m pmetric.Marshaler) MetricsMarshaler {
 	return pdataMetricsMarshaler{marshaler: m}
 }
 
-func (p pdataMetricsMarshaler) MarshalMetrics(ld pmetric.Metrics) ([]Message, error) {
+func (p pdataMetricsMarshaler) MarshalMetrics(ld pmetric.Metrics, yield func(key, value []byte)) error {
 	bts, err := p.marshaler.MarshalMetrics(ld)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return []Message{{Value: bts}}, nil
+	yield(nil, bts)
+	return nil
 }
 
 type pdataTracesMarshaler struct {
@@ -67,10 +71,32 @@ func NewPdataTracesMarshaler(m ptrace.Marshaler) TracesMarshaler {
 	return pdataTracesMarshaler{marshaler: m}
 }
 
-func (p pdataTracesMarshaler) MarshalTraces(td ptrace.Traces) ([]Message, error) {
+func (p pdataTracesMarshaler) MarshalTraces(td ptrace.Traces, yield func(key, value []byte)) error {
 	bts, err := p.marshaler.MarshalTraces(td)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return []Message{{Value: bts}}, nil
+	yield(nil, bts)
+	return nil
+}
+
+type pdataProfilesMarshaler struct {
+	marshaler pprofile.Marshaler
+}
+
+// NewPdataProfilesMarshaler returns a new ProfilesMarshaler that marshals
+// pprofile.Profiles using the given pprofile.Marshaler. This can be used with
+// the standard OTLP marshalers in the pprofile package, or with encoding
+// extensions.
+func NewPdataProfilesMarshaler(m pprofile.Marshaler) ProfilesMarshaler {
+	return pdataProfilesMarshaler{marshaler: m}
+}
+
+func (p pdataProfilesMarshaler) MarshalProfiles(ld pprofile.Profiles, yield func(key, value []byte)) error {
+	bts, err := p.marshaler.MarshalProfiles(ld)
+	if err != nil {
+		return err
+	}
+	yield(nil, bts)
+	return nil
 }

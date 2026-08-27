@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -26,6 +27,8 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
+
+	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/coralogixexporter/internal/validation"
 )
 
 func TestNewTracesExporter(t *testing.T) {
@@ -45,8 +48,10 @@ func TestNewTracesExporter(t *testing.T) {
 		{
 			name: "Valid traces endpoint config",
 			cfg: &Config{
-				Traces: configgrpc.ClientConfig{
-					Endpoint: "localhost:4317",
+				Traces: TransportConfig{
+					ClientConfig: configgrpc.ClientConfig{
+						Endpoint: "localhost:4317",
+					},
 				},
 				PrivateKey: "test-key",
 			},
@@ -79,22 +84,19 @@ func TestTracesExporter_Start(t *testing.T) {
 	cfg := &Config{
 		Domain:     "test.domain.com",
 		PrivateKey: "test-key",
-		Traces: configgrpc.ClientConfig{
-			Headers: map[string]configopaque.String{},
-		},
 	}
 
 	exp, err := newTracesExporter(cfg, exportertest.NewNopSettings(exportertest.NopType))
 	require.NoError(t, err)
 
-	err = exp.start(context.Background(), componenttest.NewNopHost())
+	err = exp.start(t.Context(), componenttest.NewNopHost())
 	require.NoError(t, err)
 	assert.NotNil(t, exp.clientConn)
-	assert.NotNil(t, exp.traceExporter)
-	assert.Contains(t, exp.config.Traces.Headers, "Authorization")
+	assert.NotNil(t, exp.grpcTracesExporter)
+	_, ok := exp.config.Traces.ClientConfig.Headers.Get("Authorization")
+	assert.True(t, ok)
 
-	// Test shutdown
-	err = exp.shutdown(context.Background())
+	err = exp.shutdown(t.Context())
 	require.NoError(t, err)
 }
 
@@ -102,9 +104,11 @@ func TestTracesExporter_EnhanceContext(t *testing.T) {
 	cfg := &Config{
 		Domain:     "test.domain.com",
 		PrivateKey: "test-key",
-		Traces: configgrpc.ClientConfig{
-			Headers: map[string]configopaque.String{
-				"test-header": "test-value",
+		Traces: TransportConfig{
+			ClientConfig: configgrpc.ClientConfig{
+				Headers: configopaque.MapList{
+					{Name: "test-header", Value: "test-value"},
+				},
 			},
 		},
 	}
@@ -112,7 +116,7 @@ func TestTracesExporter_EnhanceContext(t *testing.T) {
 	exp, err := newTracesExporter(cfg, exportertest.NewNopSettings(exportertest.NopType))
 	require.NoError(t, err)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	enhancedCtx := exp.enhanceContext(ctx)
 	assert.NotEqual(t, ctx, enhancedCtx)
 }
@@ -121,23 +125,18 @@ func TestTracesExporter_PushTraces(t *testing.T) {
 	cfg := &Config{
 		Domain:     "test.domain.com",
 		PrivateKey: "test-key",
-		Traces: configgrpc.ClientConfig{
-			Headers: map[string]configopaque.String{},
-		},
 	}
 
 	exp, err := newTracesExporter(cfg, exportertest.NewNopSettings(exportertest.NopType))
 	require.NoError(t, err)
 
-	// Initialize the exporter by calling start
-	err = exp.start(context.Background(), componenttest.NewNopHost())
+	err = exp.start(t.Context(), componenttest.NewNopHost())
 	require.NoError(t, err)
 	defer func() {
-		err = exp.shutdown(context.Background())
+		err = exp.shutdown(t.Context())
 		require.NoError(t, err)
 	}()
 
-	// Create test traces
 	traces := ptrace.NewTraces()
 	resourceSpans := traces.ResourceSpans()
 	rs := resourceSpans.AppendEmpty()
@@ -145,7 +144,7 @@ func TestTracesExporter_PushTraces(t *testing.T) {
 	resource := rs.Resource()
 	resource.Attributes().PutStr("service.name", "test-service")
 
-	err = exp.pushTraces(context.Background(), traces)
+	err = exp.pushTraces(t.Context(), traces)
 	assert.Error(t, err)
 }
 
@@ -169,8 +168,10 @@ func TestTracesExporter_PushTraces_WhenCannotSend(t *testing.T) {
 			cfg := &Config{
 				Domain:     "test.domain.com",
 				PrivateKey: "test-key",
-				Traces: configgrpc.ClientConfig{
-					Headers: map[string]configopaque.String{},
+				Traces: TransportConfig{
+					ClientConfig: configgrpc.ClientConfig{
+						Endpoint: "ingress.test.domain.com:443",
+					},
 				},
 				RateLimiter: RateLimiterConfig{
 					Enabled:   tt.configEnabled,
@@ -182,16 +183,16 @@ func TestTracesExporter_PushTraces_WhenCannotSend(t *testing.T) {
 			exp, err := newTracesExporter(cfg, exportertest.NewNopSettings(exportertest.NopType))
 			require.NoError(t, err)
 
-			err = exp.start(context.Background(), componenttest.NewNopHost())
+			err = exp.start(t.Context(), componenttest.NewNopHost())
 			require.NoError(t, err)
 			defer func() {
-				err = exp.shutdown(context.Background())
+				err = exp.shutdown(t.Context())
 				require.NoError(t, err)
 			}()
 
-			rateLimitErr := errors.New("rate limit exceeded")
-			exp.EnableRateLimit(rateLimitErr)
-			exp.EnableRateLimit(rateLimitErr)
+			// Add two rate limit errors
+			exp.EnableRateLimit()
+			exp.EnableRateLimit()
 
 			traces := ptrace.NewTraces()
 			resourceSpans := traces.ResourceSpans()
@@ -199,12 +200,12 @@ func TestTracesExporter_PushTraces_WhenCannotSend(t *testing.T) {
 			resource := rs.Resource()
 			resource.Attributes().PutStr("service.name", "test-service")
 
-			err = exp.pushTraces(context.Background(), traces)
+			err = exp.pushTraces(t.Context(), traces)
 			assert.Error(t, err)
 			if tt.configEnabled {
-				assert.Contains(t, err.Error(), rateLimitErr.Error())
+				assert.Contains(t, err.Error(), "rate limit exceeded")
 			} else {
-				assert.Contains(t, err.Error(), "no such host")
+				assert.Contains(t, err.Error(), "produced zero addresses")
 			}
 		})
 	}
@@ -235,6 +236,8 @@ func (m *mockTracesServer) Export(ctx context.Context, req ptraceotlp.ExportRequ
 		return ptraceotlp.NewExportResponse(), errors.New("invalid authorization header")
 	}
 
+	assertAcceptEncodingGzip(m.t, md)
+
 	m.recvCount += req.Traces().SpanCount()
 	resp := ptraceotlp.NewExportResponse()
 	if m.partialSuccess != nil {
@@ -261,17 +264,45 @@ func startMockOtlpTracesServer(tb testing.TB) (endpoint string, stopFn func(), s
 	}, srv
 }
 
+func getTraceID(s string) [16]byte {
+	var id [16]byte
+	copy(id[:], s)
+	return id
+}
+
+func getLoggedInvalidSpanSamples(t *testing.T, entry observer.LoggedEntry) []validation.InvalidSpanDetail {
+	t.Helper()
+	raw, ok := entry.ContextMap()["samples"]
+	require.True(t, ok, "samples field missing")
+
+	if samples, isTyped := raw.([]validation.InvalidSpanDetail); isTyped {
+		return samples
+	}
+
+	rawSlice, ok := raw.([]any)
+	require.True(t, ok, "samples field type mismatch")
+
+	result := make([]validation.InvalidSpanDetail, 0, len(rawSlice))
+	for _, item := range rawSlice {
+		detail, ok := item.(validation.InvalidSpanDetail)
+		require.True(t, ok, "invalid span detail type mismatch")
+		result = append(result, detail)
+	}
+	return result
+}
+
 func TestTracesExporter_PushTraces_PartialSuccess(t *testing.T) {
 	endpoint, stopFn, mockSrv := startMockOtlpTracesServer(t)
 	defer stopFn()
 
 	cfg := &Config{
-		Traces: configgrpc.ClientConfig{
-			Endpoint: endpoint,
-			TLS: configtls.ClientConfig{
-				Insecure: true,
+		Traces: TransportConfig{
+			ClientConfig: configgrpc.ClientConfig{
+				Endpoint: endpoint,
+				TLS: configtls.ClientConfig{
+					Insecure: true,
+				},
 			},
-			Headers: map[string]configopaque.String{},
 		},
 		PrivateKey: "test-key",
 	}
@@ -279,10 +310,10 @@ func TestTracesExporter_PushTraces_PartialSuccess(t *testing.T) {
 	exp, err := newTracesExporter(cfg, exportertest.NewNopSettings(exportertest.NopType))
 	require.NoError(t, err)
 
-	err = exp.start(context.Background(), componenttest.NewNopHost())
+	err = exp.start(t.Context(), componenttest.NewNopHost())
 	require.NoError(t, err)
 	defer func() {
-		err = exp.shutdown(context.Background())
+		err = exp.shutdown(t.Context())
 		require.NoError(t, err)
 	}()
 
@@ -297,45 +328,140 @@ func TestTracesExporter_PushTraces_PartialSuccess(t *testing.T) {
 
 	span1 := scopeSpans.Spans().AppendEmpty()
 	span1.SetName("span1")
+	traceID1 := getTraceID("traceid1")
+	span1.SetTraceID(traceID1)
 	span2 := scopeSpans.Spans().AppendEmpty()
 	span2.SetName("span2")
+	traceID2 := getTraceID("traceid2")
+	span2.SetTraceID(traceID2)
+	// Add another span with duplicate trace ID
+	span3 := scopeSpans.Spans().AppendEmpty()
+	span3.SetName("span3")
+	span3.SetTraceID(traceID1) // Duplicate trace ID
 
 	partialSuccess := ptraceotlp.NewExportPartialSuccess()
 	partialSuccess.SetErrorMessage("some spans were rejected")
 	partialSuccess.SetRejectedSpans(1)
 	mockSrv.partialSuccess = &partialSuccess
 
-	core, observed := observer.New(zapcore.ErrorLevel)
+	core, observed := observer.New(zapcore.DebugLevel)
 	logger := zap.New(core)
 	exp.settings.Logger = logger
 
-	err = exp.pushTraces(context.Background(), traces)
+	err = exp.pushTraces(t.Context(), traces)
 	require.NoError(t, err)
 
 	entries := observed.All()
 	found := false
 	for _, entry := range entries {
-		if entry.Message == "Partial success response from Coralogix" &&
-			entry.Level == zapcore.ErrorLevel &&
-			entry.ContextMap()["message"] == "some spans were rejected" &&
-			entry.ContextMap()["rejected_spans"] == int64(1) {
-			found = true
+		if entry.Message != "Partial success response from Coralogix" ||
+			entry.Level != zapcore.ErrorLevel ||
+			entry.ContextMap()["message"] != "some spans were rejected" ||
+			entry.ContextMap()["rejected_spans"] != int64(1) {
+			continue
 		}
+
+		// For unknown errors, we just log basic fields without validation details
+		// Trace IDs are now only in the samples, not as a separate field
+		found = true
 	}
 	assert.True(t, found, "Expected partial success log with correct fields")
 }
 
+// Removed TestTracesExporter_PushTraces_LogsInvalidSpanDetails test
+// We no longer do proactive validation scanning for performance reasons.
+// Validation details are only collected when partial success errors occur.
+
+func TestTracesExporter_PushTraces_PartialSuccess_InvalidDurationDetails(t *testing.T) {
+	endpoint, stopFn, mockSrv := startMockOtlpTracesServer(t)
+	defer stopFn()
+
+	cfg := &Config{
+		Traces: TransportConfig{
+			ClientConfig: configgrpc.ClientConfig{
+				Endpoint: endpoint,
+				TLS: configtls.ClientConfig{
+					Insecure: true,
+				},
+			},
+		},
+		PrivateKey: "test-key",
+	}
+
+	exp, err := newTracesExporter(cfg, exportertest.NewNopSettings(exportertest.NopType))
+	require.NoError(t, err)
+
+	err = exp.start(t.Context(), componenttest.NewNopHost())
+	require.NoError(t, err)
+	defer func() {
+		err = exp.shutdown(t.Context())
+		require.NoError(t, err)
+	}()
+
+	core, observed := observer.New(zapcore.DebugLevel)
+	exp.settings.Logger = zap.New(core)
+
+	traces := ptrace.NewTraces()
+	rs := traces.ResourceSpans().AppendEmpty()
+	rs.Resource().Attributes().PutStr("service.name", "broken-service")
+	rs.Resource().Attributes().PutStr("k8s.pod.name", "pod-1")
+
+	ss := rs.ScopeSpans().AppendEmpty()
+	ss.Scope().SetName("test-scope")
+
+	// Add one invalid span
+	invalidSpan := ss.Spans().AppendEmpty()
+	invalidSpan.SetName("invalid-span")
+	invalidSpan.SetTraceID(getTraceID("trace-invalid"))
+	invalidSpan.SetSpanID([8]byte{8, 7, 6, 5, 4, 3, 2, 1})
+	invalidSpan.SetStartTimestamp(200)
+	invalidSpan.SetEndTimestamp(100)
+
+	partialSuccess := ptraceotlp.NewExportPartialSuccess()
+	partialSuccess.SetErrorMessage("Invalid span duration detected")
+	partialSuccess.SetRejectedSpans(1)
+	mockSrv.partialSuccess = &partialSuccess
+
+	err = exp.pushTraces(t.Context(), traces)
+	require.NoError(t, err)
+
+	entries := observed.All()
+	foundError := false
+	for _, entry := range entries {
+		if entry.Message != "Partial success response from Coralogix" || entry.Level != zapcore.ErrorLevel {
+			continue
+		}
+		foundError = true
+		assert.Equal(t, int64(1), entry.ContextMap()["rejected_spans"])
+		assert.Equal(t, "Invalid span duration detected", entry.ContextMap()["message"])
+		assert.Equal(t, string(validation.ErrorTypeInvalidDuration), entry.ContextMap()["partial_success_type"])
+		samples := getLoggedInvalidSpanSamples(t, entry)
+		require.Len(t, samples, 1)
+		sample := samples[0]
+		assert.Equal(t, "invalid-span", sample.SpanDetails.SpanName)
+		assert.Equal(t, "test-scope", sample.SpanDetails.InstrumentationScopeName)
+		assert.Equal(t, int64(-100), sample.DurationNano) // Duration is negative
+		assert.Equal(t, "broken-service", sample.SpanDetails.ResourceAttributes["service.name"])
+		assert.Equal(t, "pod-1", sample.SpanDetails.ResourceAttributes["k8s.pod.name"])
+	}
+	assert.True(t, foundError, "Expected partial success log containing invalid span details")
+}
+
+// Removed TestCollectInvalidDurationSpans test
+// This function has been moved to the validation package
+// See validation/traces_test.go for tests
 func BenchmarkTracesExporter_PushTraces(b *testing.B) {
 	endpoint, stopFn, mockSrv := startMockOtlpTracesServer(b)
 	defer stopFn()
 
 	cfg := &Config{
-		Traces: configgrpc.ClientConfig{
-			Endpoint: endpoint,
-			TLS: configtls.ClientConfig{
-				Insecure: true,
+		Traces: TransportConfig{
+			ClientConfig: configgrpc.ClientConfig{
+				Endpoint: endpoint,
+				TLS: configtls.ClientConfig{
+					Insecure: true,
+				},
 			},
-			Headers: map[string]configopaque.String{},
 		},
 		PrivateKey: "test-key",
 	}
@@ -344,11 +470,12 @@ func BenchmarkTracesExporter_PushTraces(b *testing.B) {
 	if err != nil {
 		b.Fatalf("failed to create traces exporter: %v", err)
 	}
-	if err := exp.start(context.Background(), componenttest.NewNopHost()); err != nil {
+	err = exp.start(b.Context(), componenttest.NewNopHost())
+	if err != nil {
 		b.Fatalf("failed to start traces exporter: %v", err)
 	}
 	defer func() {
-		_ = exp.shutdown(context.Background())
+		_ = exp.shutdown(b.Context())
 	}()
 
 	testCases := []int{
@@ -361,19 +488,19 @@ func BenchmarkTracesExporter_PushTraces(b *testing.B) {
 	}
 	for _, numTraces := range testCases {
 		b.Run("numTraces="+fmt.Sprint(numTraces), func(b *testing.B) {
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				traces := ptrace.NewTraces()
 				rs := traces.ResourceSpans().AppendEmpty()
 				rs.Resource().Attributes().PutStr("service.name", "benchmark-service")
 				ss := rs.ScopeSpans().AppendEmpty()
-				for j := 0; j < numTraces; j++ {
+				for j := range numTraces {
 					span := ss.Spans().AppendEmpty()
-					span.SetTraceID([16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
+					span.SetTraceID(getTraceID(fmt.Sprintf("trace%d", j)))
 					span.SetSpanID([8]byte{1, 2, 3, 4, 5, 6, 7, 8})
 					span.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Now()))
 					span.SetEndTimestamp(pcommon.NewTimestampFromTime(time.Now().Add(time.Second)))
 				}
-				_ = exp.pushTraces(context.Background(), traces)
+				_ = exp.pushTraces(b.Context(), traces)
 			}
 		})
 	}
@@ -381,16 +508,22 @@ func BenchmarkTracesExporter_PushTraces(b *testing.B) {
 }
 
 func TestTracesExporter_PushTraces_Performance(t *testing.T) {
+	isIntegrationTest := os.Getenv("INTEGRATION_TEST")
+	if isIntegrationTest != "true" {
+		t.Skip("Skipping E2E test: INTEGRATION_TEST not set")
+	}
+
 	endpoint, stopFn, mockSrv := startMockOtlpTracesServer(t)
 	defer stopFn()
 
 	cfg := &Config{
-		Traces: configgrpc.ClientConfig{
-			Endpoint: endpoint,
-			TLS: configtls.ClientConfig{
-				Insecure: true,
+		Traces: TransportConfig{
+			ClientConfig: configgrpc.ClientConfig{
+				Endpoint: endpoint,
+				TLS: configtls.ClientConfig{
+					Insecure: true,
+				},
 			},
-			Headers: map[string]configopaque.String{},
 		},
 		PrivateKey: "test-key",
 		RateLimiter: RateLimiterConfig{
@@ -403,10 +536,10 @@ func TestTracesExporter_PushTraces_Performance(t *testing.T) {
 	exp, err := newTracesExporter(cfg, exportertest.NewNopSettings(exportertest.NopType))
 	require.NoError(t, err)
 
-	err = exp.start(context.Background(), componenttest.NewNopHost())
+	err = exp.start(t.Context(), componenttest.NewNopHost())
 	require.NoError(t, err)
 	defer func() {
-		err = exp.shutdown(context.Background())
+		err = exp.shutdown(t.Context())
 		require.NoError(t, err)
 	}()
 
@@ -418,17 +551,17 @@ func TestTracesExporter_PushTraces_Performance(t *testing.T) {
 		ss := rs.ScopeSpans().AppendEmpty()
 
 		spanCount := 3000
-		for i := 0; i < spanCount; i++ {
+		for i := range spanCount {
 			span := ss.Spans().AppendEmpty()
 			span.SetName(fmt.Sprintf("test_span_%d", i))
-			span.SetTraceID([16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, byte(i % 256)})
+			span.SetTraceID(getTraceID(fmt.Sprintf("trace%d", i)))
 			span.SetSpanID([8]byte{1, 2, 3, 4, 5, 6, 7, byte(i % 256)})
 			span.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Now()))
 			span.SetEndTimestamp(pcommon.NewTimestampFromTime(time.Now().Add(time.Second)))
 		}
 
 		start := time.Now()
-		err = exp.pushTraces(context.Background(), traces)
+		err = exp.pushTraces(t.Context(), traces)
 		duration := time.Since(start)
 
 		require.NoError(t, err)
@@ -439,9 +572,8 @@ func TestTracesExporter_PushTraces_Performance(t *testing.T) {
 	t.Run("Over rate limit", func(t *testing.T) {
 		mockSrv.recvCount = 0
 
-		rateLimitErr := errors.New("rate limit exceeded")
-		for i := 0; i < 5; i++ {
-			exp.EnableRateLimit(rateLimitErr)
+		for range 5 {
+			exp.EnableRateLimit()
 		}
 
 		traces := ptrace.NewTraces()
@@ -450,17 +582,17 @@ func TestTracesExporter_PushTraces_Performance(t *testing.T) {
 		ss := rs.ScopeSpans().AppendEmpty()
 
 		spanCount := 7000
-		for i := 0; i < spanCount; i++ {
+		for i := range spanCount {
 			span := ss.Spans().AppendEmpty()
 			span.SetName(fmt.Sprintf("test_span_%d", i))
-			span.SetTraceID([16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, byte(i % 256)})
+			span.SetTraceID(getTraceID(fmt.Sprintf("trace%d", i)))
 			span.SetSpanID([8]byte{1, 2, 3, 4, 5, 6, 7, byte(i % 256)})
 			span.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Now()))
 			span.SetEndTimestamp(pcommon.NewTimestampFromTime(time.Now().Add(time.Second)))
 		}
 
 		start := time.Now()
-		err = exp.pushTraces(context.Background(), traces)
+		err = exp.pushTraces(t.Context(), traces)
 		duration := time.Since(start)
 
 		assert.Error(t, err)
@@ -471,29 +603,180 @@ func TestTracesExporter_PushTraces_Performance(t *testing.T) {
 
 	t.Run("Rate limit reset", func(t *testing.T) {
 		mockSrv.recvCount = 0
-		time.Sleep(2 * time.Second)
+
+		require.Eventually(t, func() bool {
+			testTraces := ptrace.NewTraces()
+			testRs := testTraces.ResourceSpans().AppendEmpty()
+			testRs.Resource().Attributes().PutStr("service.name", "test-service")
+			testSs := testRs.ScopeSpans().AppendEmpty()
+			testSpan := testSs.Spans().AppendEmpty()
+			testSpan.SetName("test-span")
+			testSpan.SetTraceID(getTraceID("test-trace"))
+
+			errPush := exp.pushTraces(t.Context(), testTraces)
+			return errPush == nil
+		}, 3*time.Second, 100*time.Millisecond, "Rate limit should reset within 3 seconds")
+
+		require.Equal(t, 1, mockSrv.recvCount)
+		mockSrv.recvCount = 0
 
 		traces := ptrace.NewTraces()
 		rs := traces.ResourceSpans().AppendEmpty()
 		rs.Resource().Attributes().PutStr("service.name", "test-service")
 		ss := rs.ScopeSpans().AppendEmpty()
 
-		spanCount := 3000 // Under the threshold again
-		for i := 0; i < spanCount; i++ {
+		spanCount := 3000
+		for i := range spanCount {
 			span := ss.Spans().AppendEmpty()
 			span.SetName(fmt.Sprintf("test_span_%d", i))
-			span.SetTraceID([16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, byte(i % 256)})
+			span.SetTraceID(getTraceID(fmt.Sprintf("trace%d", i)))
 			span.SetSpanID([8]byte{1, 2, 3, 4, 5, 6, 7, byte(i % 256)})
 			span.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Now()))
 			span.SetEndTimestamp(pcommon.NewTimestampFromTime(time.Now().Add(time.Second)))
 		}
 
 		start := time.Now()
-		err = exp.pushTraces(context.Background(), traces)
+		err = exp.pushTraces(t.Context(), traces)
 		duration := time.Since(start)
 
 		require.NoError(t, err)
 		assert.Equal(t, spanCount, mockSrv.recvCount, "Expected to receive exactly %d spans after rate limit reset", spanCount)
 		assert.Less(t, duration, time.Millisecond*100, "Operation took longer than 100 milliseconds")
+	})
+}
+
+func TestTracesExporter_RateLimitErrorCountReset(t *testing.T) {
+	endpoint, stopFn, srv := startMockOtlpTracesServer(t)
+	defer stopFn()
+
+	cfg := &Config{
+		Traces: TransportConfig{
+			ClientConfig: configgrpc.ClientConfig{
+				Endpoint: endpoint,
+				TLS: configtls.ClientConfig{
+					Insecure: true,
+				},
+			},
+		},
+		PrivateKey: "test-key",
+		RateLimiter: RateLimiterConfig{
+			Enabled:   true,
+			Threshold: 5,
+			Duration:  time.Second,
+		},
+	}
+
+	exp, err := newTracesExporter(cfg, exportertest.NewNopSettings(exportertest.NopType))
+	require.NoError(t, err)
+
+	err = exp.start(t.Context(), componenttest.NewNopHost())
+	require.NoError(t, err)
+	defer func() {
+		err = exp.shutdown(t.Context())
+		require.NoError(t, err)
+	}()
+
+	for range 5 {
+		exp.EnableRateLimit()
+	}
+	assert.Equal(t, int32(5), exp.rateError.errorCount.Load())
+
+	traces := ptrace.NewTraces()
+	resourceSpans := traces.ResourceSpans()
+	rs := resourceSpans.AppendEmpty()
+	resource := rs.Resource()
+	resource.Attributes().PutStr("service.name", "test-service")
+
+	scopeSpans := rs.ScopeSpans().AppendEmpty()
+	span := scopeSpans.Spans().AppendEmpty()
+	span.SetName("test-span")
+
+	err = exp.pushTraces(t.Context(), traces)
+	assert.Error(t, err)
+	assert.Equal(t, int32(5), exp.rateError.errorCount.Load())
+	assert.Equal(t, 0, srv.recvCount)
+
+	require.Eventually(t, func() bool {
+		err = exp.pushTraces(t.Context(), traces)
+		return err == nil &&
+			exp.rateError.errorCount.Load() == 0 &&
+			srv.recvCount == 1
+	}, 3*time.Second, 100*time.Millisecond)
+}
+
+func TestTracesExporter_RateLimitCounterResetOnSuccess(t *testing.T) {
+	endpoint, stopFn, srv := startMockOtlpTracesServer(t)
+	defer stopFn()
+
+	cfg := &Config{
+		Traces: TransportConfig{
+			ClientConfig: configgrpc.ClientConfig{
+				Endpoint: endpoint,
+				TLS: configtls.ClientConfig{
+					Insecure: true,
+				},
+			},
+		},
+		PrivateKey: "test-key",
+		RateLimiter: RateLimiterConfig{
+			Enabled:   true,
+			Threshold: 5,
+			Duration:  time.Second,
+		},
+	}
+
+	exp, err := newTracesExporter(cfg, exportertest.NewNopSettings(exportertest.NopType))
+	require.NoError(t, err)
+
+	err = exp.start(t.Context(), componenttest.NewNopHost())
+	require.NoError(t, err)
+	defer func() {
+		err = exp.shutdown(t.Context())
+		require.NoError(t, err)
+	}()
+
+	createTestTraces := func() ptrace.Traces {
+		traces := ptrace.NewTraces()
+		resourceSpans := traces.ResourceSpans().AppendEmpty()
+		resource := resourceSpans.Resource()
+		resource.Attributes().PutStr("service.name", "test-service")
+		scopeSpans := resourceSpans.ScopeSpans().AppendEmpty()
+		span := scopeSpans.Spans().AppendEmpty()
+		span.SetName("test-span")
+		span.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Now()))
+		span.SetEndTimestamp(pcommon.NewTimestampFromTime(time.Now().Add(time.Second)))
+		return traces
+	}
+
+	t.Run("Initial successful push", func(t *testing.T) {
+		traces := createTestTraces()
+		err = exp.pushTraces(t.Context(), traces)
+		require.NoError(t, err)
+		assert.Equal(t, int32(0), exp.rateError.errorCount.Load())
+		assert.Equal(t, 1, srv.recvCount)
+	})
+
+	t.Run("Trigger errors below threshold", func(t *testing.T) {
+		for range 4 {
+			exp.EnableRateLimit()
+		}
+		assert.Equal(t, int32(4), exp.rateError.errorCount.Load())
+		assert.False(t, exp.rateError.isRateLimited(), "Should not be rate limited yet")
+	})
+
+	t.Run("Successful push after errors", func(t *testing.T) {
+		traces := createTestTraces()
+		err = exp.pushTraces(t.Context(), traces)
+		require.NoError(t, err)
+		assert.Equal(t, int32(0), exp.rateError.errorCount.Load())
+		assert.Equal(t, 2, srv.recvCount)
+	})
+
+	t.Run("Verify error count stays at 0", func(t *testing.T) {
+		traces := createTestTraces()
+		err = exp.pushTraces(t.Context(), traces)
+		require.NoError(t, err)
+		assert.Equal(t, int32(0), exp.rateError.errorCount.Load())
+		assert.Equal(t, 3, srv.recvCount)
 	})
 }

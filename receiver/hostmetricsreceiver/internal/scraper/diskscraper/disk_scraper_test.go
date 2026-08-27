@@ -35,19 +35,19 @@ func TestScrape(t *testing.T) {
 	testCases := []testCase{
 		{
 			name:          "Standard",
-			config:        &Config{MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig()},
+			config:        &Config{MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig()},
 			expectMetrics: metricsLen,
 		},
 		{
 			name:              "Validate Start Time",
-			config:            &Config{MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig()},
+			config:            &Config{MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig()},
 			bootTimeFunc:      func(context.Context) (uint64, error) { return 100, nil },
 			expectMetrics:     metricsLen,
 			expectedStartTime: 100 * 1e9,
 		},
 		{
 			name:              "Boot Time Error",
-			config:            &Config{MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig()},
+			config:            &Config{MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig()},
 			bootTimeFunc:      func(context.Context) (uint64, error) { return 0, errors.New("err1") },
 			initializationErr: "err1",
 			expectMetrics:     metricsLen,
@@ -55,7 +55,7 @@ func TestScrape(t *testing.T) {
 		{
 			name: "Include Filter that matches nothing",
 			config: &Config{
-				MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig(),
+				MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig(),
 				Include:              MatchConfig{filterset.Config{MatchType: "strict"}, []string{"@*^#&*$^#)"}},
 			},
 			expectMetrics: 0,
@@ -63,7 +63,7 @@ func TestScrape(t *testing.T) {
 		{
 			name: "Invalid Include Filter",
 			config: &Config{
-				MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig(),
+				MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig(),
 				Include:              MatchConfig{Devices: []string{"test"}},
 			},
 			newErrRegex: "^error creating device include filters:",
@@ -71,25 +71,25 @@ func TestScrape(t *testing.T) {
 		{
 			name: "Invalid Exclude Filter",
 			config: &Config{
-				MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig(),
+				MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig(),
 				Exclude:              MatchConfig{Devices: []string{"test"}},
 			},
 			newErrRegex: "^error creating device exclude filters:",
 		},
 		{
 			name: "Disable one metric",
-			config: (func() *Config {
-				config := Config{MetricsBuilderConfig: metadata.DefaultMetricsBuilderConfig()}
-				config.Metrics.SystemDiskIo.Enabled = false
+			config: func() *Config {
+				config := Config{MetricsBuilderConfig: metadata.NewDefaultMetricsBuilderConfig()}
+				config.MetricsBuilderConfig.Metrics.SystemDiskIo.Enabled = false
 				return &config
-			})(),
+			}(),
 			expectMetrics: metricsLen - 1,
 		},
 	}
 
 	for _, test := range testCases {
 		t.Run(test.name, func(t *testing.T) {
-			scraper, err := newDiskScraper(context.Background(), scrapertest.NewNopSettings(metadata.Type), test.config)
+			scraper, err := newDiskScraper(t.Context(), scrapertest.NewNopSettings(metadata.Type), test.config)
 			if test.mutateScraper != nil {
 				test.mutateScraper(scraper)
 			}
@@ -104,14 +104,14 @@ func TestScrape(t *testing.T) {
 				scraper.bootTime = test.bootTimeFunc
 			}
 
-			err = scraper.start(context.Background(), componenttest.NewNopHost())
+			err = scraper.start(t.Context(), componenttest.NewNopHost())
 			if test.initializationErr != "" {
 				assert.EqualError(t, err, test.initializationErr)
 				return
 			}
 			require.NoError(t, err, "Failed to initialize disk scraper: %v", err)
 
-			md, err := scraper.scrape(context.Background())
+			md, err := scraper.scrape(t.Context())
 			require.NoError(t, err, "Failed to scrape metrics: %v", err)
 
 			assert.Equal(t, test.expectMetrics, md.MetricCount())

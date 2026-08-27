@@ -40,7 +40,8 @@ func NewFactory() processor.Factory {
 	return processor.NewFactory(
 		metadata.Type,
 		createDefaultConfig,
-		processor.WithTraces(createTracesProcessor, metadata.TracesStability))
+		processor.WithTraces(createTracesProcessor, metadata.TracesStability),
+	)
 }
 
 func createDefaultConfig() component.Config {
@@ -66,7 +67,7 @@ func createTracesProcessor(
 		if oCfg.SetStatus.Code != statusCodeUnset && oCfg.SetStatus.Code != statusCodeError && oCfg.SetStatus.Code != statusCodeOk {
 			return nil, errIncorrectStatusCode
 		}
-		if len(oCfg.SetStatus.Description) > 0 && oCfg.SetStatus.Code != statusCodeError {
+		if oCfg.SetStatus.Description != "" && oCfg.SetStatus.Code != statusCodeError {
 			return nil, errIncorrectStatusDescription
 		}
 	}
@@ -81,5 +82,6 @@ func createTracesProcessor(
 		cfg,
 		nextConsumer,
 		sp.processTraces,
-		processorhelper.WithCapabilities(processorCapabilities))
+		processorhelper.WithCapabilities(processorCapabilities),
+	)
 }

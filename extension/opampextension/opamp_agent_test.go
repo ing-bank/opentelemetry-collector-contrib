@@ -7,9 +7,11 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -24,10 +26,11 @@ import (
 	"go.opentelemetry.io/collector/confmap/confmaptest"
 	"go.opentelemetry.io/collector/extension"
 	"go.opentelemetry.io/collector/extension/extensiontest"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pipeline"
 	"go.opentelemetry.io/collector/service"
-	semconv "go.opentelemetry.io/otel/semconv/v1.27.0"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/status"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/status/testhelpers"
@@ -39,29 +42,29 @@ func TestNewOpampAgent(t *testing.T) {
 	set.BuildInfo = component.BuildInfo{Version: "test version", Command: "otelcoltest"}
 	o, err := newOpampAgent(cfg.(*Config), set)
 	assert.NoError(t, err)
-	assert.Equal(t, "otelcoltest", o.agentType)
-	assert.Equal(t, "test version", o.agentVersion)
-	assert.NotEmpty(t, o.instanceID.String())
+	assert.Equal(t, "otelcoltest", o.serviceName)
+	assert.Equal(t, "test version", o.serviceVersion)
+	assert.NotEmpty(t, o.instanceUID.String())
 	assert.True(t, o.capabilities.ReportsEffectiveConfig)
 	assert.True(t, o.capabilities.ReportsHealth)
 	assert.Empty(t, o.effectiveConfig)
 	assert.Nil(t, o.agentDescription)
-	assert.NoError(t, o.Shutdown(context.Background()))
+	assert.NoError(t, o.Shutdown(t.Context()))
 }
 
 func TestNewOpampAgentAttributes(t *testing.T) {
 	cfg := createDefaultConfig()
 	set := extensiontest.NewNopSettings(extensiontest.NopType)
 	set.BuildInfo = component.BuildInfo{Version: "test version", Command: "otelcoltest"}
-	set.Resource.Attributes().PutStr(string(semconv.ServiceNameKey), "otelcol-distro")
-	set.Resource.Attributes().PutStr(string(semconv.ServiceVersionKey), "distro.0")
-	set.Resource.Attributes().PutStr(string(semconv.ServiceInstanceIDKey), "f8999bc1-4c9b-4619-9bae-7f009d2411ec")
+	set.Resource.Attributes().PutStr("service.name", "otelcol-distro")
+	set.Resource.Attributes().PutStr("service.version", "distro.0")
+	set.Resource.Attributes().PutStr("service.instance.id", "f8999bc1-4c9b-4619-9bae-7f009d2411ec")
 	o, err := newOpampAgent(cfg.(*Config), set)
 	assert.NoError(t, err)
-	assert.Equal(t, "otelcol-distro", o.agentType)
-	assert.Equal(t, "distro.0", o.agentVersion)
-	assert.Equal(t, "f8999bc1-4c9b-4619-9bae-7f009d2411ec", o.instanceID.String())
-	assert.NoError(t, o.Shutdown(context.Background()))
+	assert.Equal(t, "otelcol-distro", o.serviceName)
+	assert.Equal(t, "distro.0", o.serviceVersion)
+	assert.Equal(t, "f8999bc1-4c9b-4619-9bae-7f009d2411ec", o.serviceInstanceID)
+	assert.NoError(t, o.Shutdown(t.Context()))
 }
 
 func TestCreateAgentDescription(t *testing.T) {
@@ -86,15 +89,15 @@ func TestCreateAgentDescription(t *testing.T) {
 			cfg:  func(_ *Config) {},
 			expected: &protobufs.AgentDescription{
 				IdentifyingAttributes: []*protobufs.KeyValue{
-					stringKeyValue(string(semconv.ServiceInstanceIDKey), serviceInstanceUUID),
-					stringKeyValue(string(semconv.ServiceNameKey), serviceName),
-					stringKeyValue(string(semconv.ServiceVersionKey), serviceVersion),
+					stringKeyValue("service.instance.id", serviceInstanceUUID),
+					stringKeyValue("service.name", serviceName),
+					stringKeyValue("service.version", serviceVersion),
 				},
 				NonIdentifyingAttributes: []*protobufs.KeyValue{
-					stringKeyValue(string(semconv.HostArchKey), runtime.GOARCH),
-					stringKeyValue(string(semconv.HostNameKey), hostname),
-					stringKeyValue(string(semconv.OSDescriptionKey), description),
-					stringKeyValue(string(semconv.OSTypeKey), runtime.GOOS),
+					stringKeyValue("host.arch", runtime.GOARCH),
+					stringKeyValue("host.name", hostname),
+					stringKeyValue("os.description", description),
+					stringKeyValue("os.type", runtime.GOOS),
 				},
 			},
 		},
@@ -102,23 +105,23 @@ func TestCreateAgentDescription(t *testing.T) {
 			name: "Extra attributes specified",
 			cfg: func(c *Config) {
 				c.AgentDescription.NonIdentifyingAttributes = map[string]string{
-					"env":                         "prod",
-					string(semconv.K8SPodNameKey): "my-very-cool-pod",
+					"env":          "prod",
+					"k8s.pod.name": "my-very-cool-pod",
 				}
 			},
 			expected: &protobufs.AgentDescription{
 				IdentifyingAttributes: []*protobufs.KeyValue{
-					stringKeyValue(string(semconv.ServiceInstanceIDKey), serviceInstanceUUID),
-					stringKeyValue(string(semconv.ServiceNameKey), serviceName),
-					stringKeyValue(string(semconv.ServiceVersionKey), serviceVersion),
+					stringKeyValue("service.instance.id", serviceInstanceUUID),
+					stringKeyValue("service.name", serviceName),
+					stringKeyValue("service.version", serviceVersion),
 				},
 				NonIdentifyingAttributes: []*protobufs.KeyValue{
 					stringKeyValue("env", "prod"),
-					stringKeyValue(string(semconv.HostArchKey), runtime.GOARCH),
-					stringKeyValue(string(semconv.HostNameKey), hostname),
-					stringKeyValue(string(semconv.K8SPodNameKey), "my-very-cool-pod"),
-					stringKeyValue(string(semconv.OSDescriptionKey), description),
-					stringKeyValue(string(semconv.OSTypeKey), runtime.GOOS),
+					stringKeyValue("host.arch", runtime.GOARCH),
+					stringKeyValue("host.name", hostname),
+					stringKeyValue("k8s.pod.name", "my-very-cool-pod"),
+					stringKeyValue("os.description", description),
+					stringKeyValue("os.type", runtime.GOOS),
 				},
 			},
 		},
@@ -126,20 +129,20 @@ func TestCreateAgentDescription(t *testing.T) {
 			name: "Extra attributes override",
 			cfg: func(c *Config) {
 				c.AgentDescription.NonIdentifyingAttributes = map[string]string{
-					string(semconv.HostNameKey): "override-host",
+					"host.name": "override-host",
 				}
 			},
 			expected: &protobufs.AgentDescription{
 				IdentifyingAttributes: []*protobufs.KeyValue{
-					stringKeyValue(string(semconv.ServiceInstanceIDKey), serviceInstanceUUID),
-					stringKeyValue(string(semconv.ServiceNameKey), serviceName),
-					stringKeyValue(string(semconv.ServiceVersionKey), serviceVersion),
+					stringKeyValue("service.instance.id", serviceInstanceUUID),
+					stringKeyValue("service.name", serviceName),
+					stringKeyValue("service.version", serviceVersion),
 				},
 				NonIdentifyingAttributes: []*protobufs.KeyValue{
-					stringKeyValue(string(semconv.HostArchKey), runtime.GOARCH),
-					stringKeyValue(string(semconv.HostNameKey), "override-host"),
-					stringKeyValue(string(semconv.OSDescriptionKey), description),
-					stringKeyValue(string(semconv.OSTypeKey), runtime.GOOS),
+					stringKeyValue("host.arch", runtime.GOARCH),
+					stringKeyValue("host.name", "override-host"),
+					stringKeyValue("os.description", description),
+					stringKeyValue("os.type", runtime.GOOS),
 				},
 			},
 		},
@@ -150,16 +153,16 @@ func TestCreateAgentDescription(t *testing.T) {
 			},
 			expected: &protobufs.AgentDescription{
 				IdentifyingAttributes: []*protobufs.KeyValue{
-					stringKeyValue(string(semconv.ServiceInstanceIDKey), serviceInstanceUUID),
-					stringKeyValue(string(semconv.ServiceNameKey), serviceName),
-					stringKeyValue(string(semconv.ServiceVersionKey), serviceVersion),
+					stringKeyValue("service.instance.id", serviceInstanceUUID),
+					stringKeyValue("service.name", serviceName),
+					stringKeyValue("service.version", serviceVersion),
 				},
 				NonIdentifyingAttributes: []*protobufs.KeyValue{
 					stringKeyValue(extraResourceAttrKey, extraResourceAttrValue),
-					stringKeyValue(string(semconv.HostArchKey), runtime.GOARCH),
-					stringKeyValue(string(semconv.HostNameKey), hostname),
-					stringKeyValue(string(semconv.OSDescriptionKey), description),
-					stringKeyValue(string(semconv.OSTypeKey), runtime.GOOS),
+					stringKeyValue("host.arch", runtime.GOARCH),
+					stringKeyValue("host.name", hostname),
+					stringKeyValue("os.description", description),
+					stringKeyValue("os.type", runtime.GOOS),
 				},
 			},
 		},
@@ -171,9 +174,9 @@ func TestCreateAgentDescription(t *testing.T) {
 			tc.cfg(cfg)
 
 			set := extensiontest.NewNopSettings(extensiontest.NopType)
-			set.Resource.Attributes().PutStr(string(semconv.ServiceNameKey), serviceName)
-			set.Resource.Attributes().PutStr(string(semconv.ServiceVersionKey), serviceVersion)
-			set.Resource.Attributes().PutStr(string(semconv.ServiceInstanceIDKey), serviceInstanceUUID)
+			set.Resource.Attributes().PutStr("service.name", serviceName)
+			set.Resource.Attributes().PutStr("service.version", serviceVersion)
+			set.Resource.Attributes().PutStr("service.instance.id", serviceInstanceUUID)
 			set.Resource.Attributes().PutStr(extraResourceAttrKey, extraResourceAttrValue)
 
 			o, err := newOpampAgent(cfg, set)
@@ -183,7 +186,7 @@ func TestCreateAgentDescription(t *testing.T) {
 			err = o.createAgentDescription()
 			assert.NoError(t, err)
 			require.Equal(t, tc.expected, o.agentDescription)
-			assert.NoError(t, o.Shutdown(context.Background()))
+			assert.NoError(t, o.Shutdown(t.Context()))
 		})
 	}
 }
@@ -194,15 +197,15 @@ func TestUpdateAgentIdentity(t *testing.T) {
 	o, err := newOpampAgent(cfg.(*Config), set)
 	assert.NoError(t, err)
 
-	olduid := o.instanceID
+	olduid := o.instanceUID
 	assert.NotEmpty(t, olduid.String())
 
 	uid := uuid.Must(uuid.NewV7())
 	assert.NotEqual(t, uid, olduid)
 
 	o.updateAgentIdentity(uid)
-	assert.Equal(t, o.instanceID, uid)
-	assert.NoError(t, o.Shutdown(context.Background()))
+	assert.Equal(t, o.instanceUID, uid)
+	assert.NoError(t, o.Shutdown(t.Context()))
 }
 
 func TestComposeEffectiveConfig(t *testing.T) {
@@ -227,7 +230,7 @@ func TestComposeEffectiveConfig(t *testing.T) {
 	assert.YAMLEq(t, string(expected), string(ec.ConfigMap.ConfigMap[""].Body))
 	assert.Equal(t, "text/yaml", ec.ConfigMap.ConfigMap[""].ContentType)
 
-	assert.NoError(t, o.Shutdown(context.Background()))
+	assert.NoError(t, o.Shutdown(t.Context()))
 }
 
 func TestShutdown(t *testing.T) {
@@ -237,7 +240,7 @@ func TestShutdown(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Shutdown with no OpAMP client
-	assert.NoError(t, o.Shutdown(context.Background()))
+	assert.NoError(t, o.Shutdown(t.Context()))
 }
 
 func TestStart(t *testing.T) {
@@ -246,8 +249,8 @@ func TestStart(t *testing.T) {
 	o, err := newOpampAgent(cfg.(*Config), set)
 	assert.NoError(t, err)
 
-	assert.NoError(t, o.Start(context.Background(), componenttest.NewNopHost()))
-	assert.NoError(t, o.Shutdown(context.Background()))
+	assert.NoError(t, o.Start(t.Context(), componenttest.NewNopHost()))
+	assert.NoError(t, o.Shutdown(t.Context()))
 }
 
 func TestStartAvailableComponents(t *testing.T) {
@@ -259,9 +262,9 @@ func TestStartAvailableComponents(t *testing.T) {
 	o.opampClient = mockOpAMPClient{}
 	assert.NoError(t, err)
 
-	assert.NoError(t, o.Start(context.Background(), newAvailableComponentsHost(t)))
+	assert.NoError(t, o.Start(t.Context(), newAvailableComponentsHost(t)))
 	assert.Equal(t, generateTestAvailableComponents(), o.availableComponents)
-	assert.NoError(t, o.Shutdown(context.Background()))
+	assert.NoError(t, o.Shutdown(t.Context()))
 }
 
 // availableComponentsHost mocks a receiver.ReceiverHost for test purposes.
@@ -276,11 +279,11 @@ func newAvailableComponentsHost(t *testing.T) component.Host {
 	}
 }
 
-func (ach *availableComponentsHost) GetFactory(component.Kind, component.Type) component.Factory {
+func (*availableComponentsHost) GetFactory(component.Kind, component.Type) component.Factory {
 	return nil
 }
 
-func (ach *availableComponentsHost) GetExtensions() map[component.ID]component.Component {
+func (*availableComponentsHost) GetExtensions() map[component.ID]component.Component {
 	return nil
 }
 
@@ -443,14 +446,47 @@ func TestHealthReportingReceiveUpdateFromAggregator(t *testing.T) {
 		{
 			Healthy:            false,
 			Status:             "StatusPermanentError",
-			StatusTimeUnixNano: uint64(now.UnixNano()),
-			LastError:          "unexpected error",
+			StatusTimeUnixNano: uint64(now.Add(1 * time.Second).UnixNano()),
+			LastError:          "error A",
 			ComponentHealthMap: map[string]*protobufs.ComponentHealth{
 				"test-receiver": {
 					Healthy:            false,
 					Status:             "StatusPermanentError",
-					StatusTimeUnixNano: uint64(now.UnixNano()),
-					LastError:          "unexpected error",
+					StatusTimeUnixNano: uint64(now.Add(1 * time.Second).UnixNano()),
+					LastError:          "error A",
+				},
+			},
+		},
+		{
+			Healthy:            false,
+			Status:             "StatusPermanentError",
+			StatusTimeUnixNano: uint64(now.Add(2 * time.Second).UnixNano()),
+			LastError:          "error B",
+			ComponentHealthMap: map[string]*protobufs.ComponentHealth{
+				"test-receiver": {
+					Healthy:            false,
+					Status:             "StatusPermanentError",
+					StatusTimeUnixNano: uint64(now.Add(2 * time.Second).UnixNano()),
+					LastError:          "error B",
+				},
+			},
+		},
+		{
+			Healthy:            false,
+			Status:             "StatusPermanentError",
+			StatusTimeUnixNano: uint64(now.Add(4 * time.Second).UnixNano()),
+			LastError:          "exporter error",
+			ComponentHealthMap: map[string]*protobufs.ComponentHealth{
+				"test-receiver": {
+					Healthy:            true,
+					Status:             "StatusOK",
+					StatusTimeUnixNano: uint64(now.Add(4 * time.Second).UnixNano()),
+				},
+				"test-exporter": {
+					Healthy:            false,
+					Status:             "StatusPermanentError",
+					StatusTimeUnixNano: uint64(now.Add(4 * time.Second).UnixNano()),
+					LastError:          "exporter error",
 				},
 			},
 		},
@@ -475,7 +511,7 @@ func TestHealthReportingReceiveUpdateFromAggregator(t *testing.T) {
 
 	o.initHealthReporting()
 
-	assert.NoError(t, o.Start(context.Background(), componenttest.NewNopHost()))
+	assert.NoError(t, o.Start(t.Context(), componenttest.NewNopHost()))
 
 	statusUpdateChannel <- nil
 	statusUpdateChannel <- &status.AggregateStatus{
@@ -497,15 +533,77 @@ func TestHealthReportingReceiveUpdateFromAggregator(t *testing.T) {
 	statusUpdateChannel <- &status.AggregateStatus{
 		Event: &mockStatusEvent{
 			status:    componentstatus.StatusPermanentError,
-			err:       errors.New("unexpected error"),
-			timestamp: now,
+			err:       errors.New("error A"),
+			timestamp: now.Add(1 * time.Second),
 		},
 		ComponentStatusMap: map[string]*status.AggregateStatus{
 			"test-receiver": {
 				Event: &mockStatusEvent{
 					status:    componentstatus.StatusPermanentError,
-					err:       errors.New("unexpected error"),
-					timestamp: now,
+					err:       errors.New("error A"),
+					timestamp: now.Add(1 * time.Second),
+				},
+			},
+		},
+	}
+	statusUpdateChannel <- &status.AggregateStatus{
+		Event: &mockStatusEvent{
+			status:    componentstatus.StatusPermanentError,
+			err:       errors.New("error B"),
+			timestamp: now.Add(2 * time.Second),
+		},
+		ComponentStatusMap: map[string]*status.AggregateStatus{
+			"test-receiver": {
+				Event: &mockStatusEvent{
+					status:    componentstatus.StatusPermanentError,
+					err:       errors.New("error B"),
+					timestamp: now.Add(2 * time.Second),
+				},
+			},
+		},
+	}
+	statusUpdateChannel <- &status.AggregateStatus{
+		Event: &mockStatusEvent{
+			status:    componentstatus.StatusPermanentError,
+			err:       errors.New("error B"),
+			timestamp: now.Add(3 * time.Second),
+		},
+		ComponentStatusMap: map[string]*status.AggregateStatus{
+			"test-receiver": {
+				Event: &mockStatusEvent{
+					status:    componentstatus.StatusPermanentError,
+					err:       errors.New("error B"),
+					timestamp: now.Add(3 * time.Second),
+				},
+			},
+			"test-exporter": {
+				Event: &mockStatusEvent{
+					status:    componentstatus.StatusPermanentError,
+					err:       errors.New("exporter error"),
+					timestamp: now.Add(3 * time.Second),
+				},
+			},
+		},
+	}
+	statusUpdateChannel <- &status.AggregateStatus{
+		Event: &mockStatusEvent{
+			status:    componentstatus.StatusPermanentError,
+			err:       errors.New("exporter error"),
+			timestamp: now.Add(4 * time.Second),
+		},
+		ComponentStatusMap: map[string]*status.AggregateStatus{
+			"test-receiver": {
+				Event: &mockStatusEvent{
+					status:    componentstatus.StatusOK,
+					err:       nil,
+					timestamp: now.Add(4 * time.Second),
+				},
+			},
+			"test-exporter": {
+				Event: &mockStatusEvent{
+					status:    componentstatus.StatusPermanentError,
+					err:       errors.New("exporter error"),
+					timestamp: now.Add(4 * time.Second),
 				},
 			},
 		},
@@ -519,7 +617,7 @@ func TestHealthReportingReceiveUpdateFromAggregator(t *testing.T) {
 		return receivedHealthUpdates == len(expectedHealthUpdates)
 	}, 1*time.Second, 100*time.Millisecond)
 
-	assert.NoError(t, o.Shutdown(context.Background()))
+	assert.NoError(t, o.Shutdown(t.Context()))
 	require.True(t, sa.unsubscribed)
 }
 
@@ -540,11 +638,12 @@ func TestHealthReportingForwardComponentHealthToAggregator(t *testing.T) {
 			setHealthFunc: func(_ *protobufs.ComponentHealth) error {
 				return nil
 			},
-		}, sa)
+		}, sa,
+	)
 
 	o.initHealthReporting()
 
-	assert.NoError(t, o.Start(context.Background(), componenttest.NewNopHost()))
+	assert.NoError(t, o.Start(t.Context(), componenttest.NewNopHost()))
 
 	traces := testhelpers.NewPipelineMetadata(pipeline.SignalTraces)
 
@@ -604,7 +703,7 @@ func TestHealthReportingForwardComponentHealthToAggregator(t *testing.T) {
 		require.Equal(t, componentstatus.NewEvent(componentstatus.StatusStopping).Status(), event.event.Status())
 	}
 
-	assert.NoError(t, o.Shutdown(context.Background()))
+	assert.NoError(t, o.Shutdown(t.Context()))
 	require.True(t, sa.unsubscribed)
 }
 
@@ -653,7 +752,7 @@ func TestHealthReportingExitsOnClosedContext(t *testing.T) {
 
 	o.initHealthReporting()
 
-	assert.NoError(t, o.Start(context.Background(), componenttest.NewNopHost()))
+	assert.NoError(t, o.Start(t.Context(), componenttest.NewNopHost()))
 
 	statusUpdateChannel <- nil
 	statusUpdateChannel <- &status.AggregateStatus{
@@ -680,7 +779,7 @@ func TestHealthReportingExitsOnClosedContext(t *testing.T) {
 	}, 1*time.Second, 100*time.Millisecond)
 
 	// invoke Shutdown before health update channel has been closed
-	assert.NoError(t, o.Shutdown(context.Background()))
+	assert.NoError(t, o.Shutdown(t.Context()))
 	require.True(t, sa.unsubscribed)
 }
 
@@ -698,8 +797,8 @@ func TestHealthReportingDisabled(t *testing.T) {
 		},
 	}
 
-	assert.NoError(t, o.Start(context.Background(), componenttest.NewNopHost()))
-	assert.NoError(t, o.Shutdown(context.Background()))
+	assert.NoError(t, o.Start(t.Context(), componenttest.NewNopHost()))
+	assert.NoError(t, o.Shutdown(t.Context()))
 }
 
 func TestParseInstanceIDString(t *testing.T) {
@@ -776,6 +875,115 @@ func TestOpAMPAgent_Dependencies(t *testing.T) {
 	})
 }
 
+func TestOpAMPAgent_onCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping test on windows since SIGHUP isn't a recognized signal")
+	}
+
+	t.Run("restart capability not enabled", func(t *testing.T) {
+		agent := opampAgent{
+			logger: zaptest.NewLogger(t),
+			capabilities: Capabilities{
+				AcceptsRestartCommand: false,
+			},
+		}
+
+		ctx, cancel := context.WithCancel(t.Context())
+		t.Cleanup(cancel)
+
+		sighupReceived := make(chan bool, 1)
+		setupSignalHandler(ctx, t, func() {
+			sighupReceived <- true
+		})
+
+		require.NoError(t, agent.onCommand(ctx, &protobufs.ServerToAgentCommand{
+			Type: protobufs.CommandType_CommandType_Restart,
+		}))
+
+		select {
+		case <-sighupReceived:
+			t.Error("shouldn't have received SIGHUP")
+		case <-time.After(250 * time.Millisecond):
+			// success
+		}
+	})
+	t.Run("happy path - not restart command", func(t *testing.T) {
+		agent := opampAgent{
+			logger: zaptest.NewLogger(t),
+		}
+
+		ctx, cancel := context.WithCancel(t.Context())
+		t.Cleanup(cancel)
+
+		sighupReceived := make(chan bool, 1)
+		setupSignalHandler(ctx, t, func() {
+			sighupReceived <- true
+		})
+
+		require.NoError(t, agent.onCommand(ctx, &protobufs.ServerToAgentCommand{
+			Type: 13,
+		}))
+
+		select {
+		case <-sighupReceived:
+			t.Error("shouldn't have received SIGHUP")
+		case <-time.After(250 * time.Millisecond):
+			// success
+		}
+	})
+	t.Run("happy path", func(t *testing.T) {
+		agent := opampAgent{
+			logger: zaptest.NewLogger(t),
+			capabilities: Capabilities{
+				AcceptsRestartCommand: true,
+			},
+		}
+
+		ctx, cancel := context.WithCancel(t.Context())
+		t.Cleanup(cancel)
+
+		sighupReceived := make(chan bool, 1)
+		setupSignalHandler(ctx, t, func() {
+			sighupReceived <- true
+		})
+
+		require.NoError(t, agent.onCommand(ctx, &protobufs.ServerToAgentCommand{
+			Type: protobufs.CommandType_CommandType_Restart,
+		}))
+
+		select {
+		case <-sighupReceived:
+			// Success
+		case <-time.After(250 * time.Millisecond):
+			t.Error("should have received SIGHUP")
+		}
+	})
+}
+
+func setupSignalHandler(ctx context.Context, tb testing.TB, signalCallback func()) {
+	tb.Helper()
+
+	sigChan := make(chan os.Signal, 1)
+	// Notify sigChan when SIGHUP is received
+	signal.Notify(sigChan, syscall.SIGHUP)
+	tb.Cleanup(func() {
+		signal.Stop(sigChan)
+	})
+
+	go func() {
+		for {
+			select {
+			case sig := <-sigChan:
+				if sig == syscall.SIGHUP {
+					signalCallback()
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
 type mockStatusAggregator struct {
 	statusChan     chan *status.AggregateStatus
 	receivedEvents []eventSourcePair
@@ -802,19 +1010,23 @@ type mockOpAMPClient struct {
 	setHealthFunc func(health *protobufs.ComponentHealth) error
 }
 
-func (m mockOpAMPClient) Start(_ context.Context, _ types.StartSettings) error {
+func (mockOpAMPClient) SetCapabilities(*protobufs.AgentCapabilities) error {
 	return nil
 }
 
-func (m mockOpAMPClient) Stop(_ context.Context) error {
+func (mockOpAMPClient) Start(_ context.Context, _ types.StartSettings) error {
 	return nil
 }
 
-func (m mockOpAMPClient) SetAgentDescription(_ *protobufs.AgentDescription) error {
+func (mockOpAMPClient) Stop(_ context.Context) error {
 	return nil
 }
 
-func (m mockOpAMPClient) AgentDescription() *protobufs.AgentDescription {
+func (mockOpAMPClient) SetAgentDescription(_ *protobufs.AgentDescription) error {
+	return nil
+}
+
+func (mockOpAMPClient) AgentDescription() *protobufs.AgentDescription {
 	return nil
 }
 
@@ -822,33 +1034,33 @@ func (m mockOpAMPClient) SetHealth(health *protobufs.ComponentHealth) error {
 	return m.setHealthFunc(health)
 }
 
-func (m mockOpAMPClient) UpdateEffectiveConfig(_ context.Context) error {
+func (mockOpAMPClient) UpdateEffectiveConfig(context.Context) error {
 	return nil
 }
 
-func (m mockOpAMPClient) SetRemoteConfigStatus(_ *protobufs.RemoteConfigStatus) error {
+func (mockOpAMPClient) SetRemoteConfigStatus(*protobufs.RemoteConfigStatus) error {
 	return nil
 }
 
-func (m mockOpAMPClient) SetPackageStatuses(_ *protobufs.PackageStatuses) error {
+func (mockOpAMPClient) SetPackageStatuses(*protobufs.PackageStatuses) error {
 	return nil
 }
 
-func (m mockOpAMPClient) RequestConnectionSettings(_ *protobufs.ConnectionSettingsRequest) error {
+func (mockOpAMPClient) RequestConnectionSettings(*protobufs.ConnectionSettingsRequest) error {
 	return nil
 }
 
-func (m mockOpAMPClient) SetCustomCapabilities(_ *protobufs.CustomCapabilities) error {
+func (mockOpAMPClient) SetCustomCapabilities(*protobufs.CustomCapabilities) error {
 	return nil
 }
 
-func (m mockOpAMPClient) SendCustomMessage(_ *protobufs.CustomMessage) (messageSendingChannel chan struct{}, err error) {
+func (mockOpAMPClient) SendCustomMessage(*protobufs.CustomMessage) (messageSendingChannel chan struct{}, err error) {
 	return nil, nil
 }
 
-func (m mockOpAMPClient) SetFlags(_ protobufs.AgentToServerFlags) {}
+func (mockOpAMPClient) SetFlags(protobufs.AgentToServerFlags) {}
 
-func (m mockOpAMPClient) SetAvailableComponents(_ *protobufs.AvailableComponents) error {
+func (mockOpAMPClient) SetAvailableComponents(*protobufs.AvailableComponents) error {
 	return nil
 }
 
@@ -870,14 +1082,18 @@ func (m mockStatusEvent) Timestamp() time.Time {
 	return m.timestamp
 }
 
+func (mockStatusEvent) Attributes() pcommon.Map {
+	return pcommon.NewMap()
+}
+
 func newTestOpampAgent(cfg *Config, set extension.Settings, mockOpampClient *mockOpAMPClient, sa *mockStatusAggregator) *opampAgent {
 	uid := uuid.New()
 	o := &opampAgent{
 		cfg:                      cfg,
 		logger:                   set.Logger,
-		agentType:                set.BuildInfo.Command,
-		agentVersion:             set.BuildInfo.Version,
-		instanceID:               uid,
+		serviceName:              set.BuildInfo.Command,
+		serviceVersion:           set.BuildInfo.Version,
+		instanceUID:              uid,
 		capabilities:             cfg.Capabilities,
 		opampClient:              mockOpampClient,
 		statusSubscriptionWg:     &sync.WaitGroup{},

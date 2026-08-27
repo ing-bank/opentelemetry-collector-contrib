@@ -4,9 +4,9 @@
 package snowflakereceiver
 
 import (
-	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"reflect"
 	"regexp"
 	"testing"
@@ -50,7 +50,7 @@ func TestClientReadDB(t *testing.T) {
 		logger: receivertest.NewNopSettings(metadata.Type).Logger,
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	_, err = client.readDB(ctx, q)
 	if err != nil {
@@ -249,11 +249,11 @@ func TestMetricQueries(t *testing.T) {
 			desc:    "FetchStorageMetrics",
 			query:   storageMetricsQuery,
 			columns: []string{"storage_bytes", "stage_bytes", "failsafe_bytes"},
-			params:  []driver.Value{1.4, 2.4, 3.67},
+			params:  []driver.Value{1.4, 2.0, 3.67},
 			expect: storageMetric{
-				storageBytes:  1,
-				stageBytes:    2,
-				failsafeBytes: 3,
+				storageBytes:  1.4,
+				stageBytes:    2.0,
+				failsafeBytes: 3.67,
 			},
 		},
 	}
@@ -273,7 +273,7 @@ func TestMetricQueries(t *testing.T) {
 				client: db,
 				logger: receivertest.NewNopSettings(metadata.Type).Logger,
 			}
-			ctx := context.Background()
+			ctx := t.Context()
 
 			// iteratively call each client method with the correct db mock
 			clientVal := reflect.ValueOf(&client)
@@ -281,13 +281,13 @@ func TestMetricQueries(t *testing.T) {
 			returnVal := clientObj.MethodByName(test.desc).Call([]reflect.Value{reflect.ValueOf(ctx)})
 
 			// Check for errors first
-			if err, ok := returnVal[1].Interface().(error); ok && err != nil {
+			if err, ok := reflect.TypeAssert[error](returnVal[1]); ok && err != nil {
 				t.Errorf("DB error %v", err)
 				return
 			}
 
 			actualSliceVal := returnVal[0]
-			if actualSliceVal.Kind() == reflect.Ptr {
+			if actualSliceVal.Kind() == reflect.Pointer {
 				actualSliceVal = actualSliceVal.Elem()
 			}
 
@@ -311,6 +311,38 @@ func TestMetricQueries(t *testing.T) {
 
 			// Value Check
 			assert.Equal(t, test.expect, actualMetric, "Metric values should match expected values")
+
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("Unfulfilled mock expectations: %s", err)
+			}
+		})
+
+		t.Run(test.desc+"_RowErr", func(t *testing.T) {
+			db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+			if err != nil {
+				t.Fatal("an error was not expected when opening mock db", err)
+			}
+
+			expectedErr := errors.New("mock row error")
+			rows := mock.NewRows(test.columns).AddRow(test.params...).AddRow(test.params...).RowError(1, expectedErr)
+			mock.ExpectQuery(test.query).WillReturnRows(rows)
+			defer db.Close()
+
+			client := snowflakeClient{
+				client: db,
+				logger: receivertest.NewNopSettings(metadata.Type).Logger,
+			}
+			ctx := t.Context()
+
+			clientVal := reflect.ValueOf(&client)
+			clientObj := reflect.Indirect(clientVal)
+			returnVal := clientObj.MethodByName(test.desc).Call([]reflect.Value{reflect.ValueOf(ctx)})
+
+			errInterface := returnVal[1].Interface()
+			assert.NotNil(t, errInterface)
+			err, ok := errInterface.(error)
+			assert.True(t, ok)
+			assert.Equal(t, expectedErr, err)
 
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Errorf("Unfulfilled mock expectations: %s", err)
