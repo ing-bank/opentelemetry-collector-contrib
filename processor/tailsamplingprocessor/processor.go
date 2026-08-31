@@ -693,7 +693,7 @@ func (tsp *tailSamplingSpanProcessor) samplingPolicyOnTick() bool {
 			trace.FinalDecision = samplingpolicy.NotSampled
 			globalTracesSampledByDecision[samplingpolicy.NotSampled]++
 			metrics.decisionNotSampled++
-			tsp.releaseNotSampledTrace(id, trace)
+			tsp.releaseNotSampledTrace(tsp.ctx, id, trace)
 			// releaseNotSampledTrace only evicts the trace from memory and
 			// storage (via dropTrace) on a decision cache hit; with NopCache
 			// that never happens, leaking idToTrace, deleteTraceQueue and the
@@ -994,7 +994,7 @@ func (tsp *tailSamplingSpanProcessor) processTrace(id pcommon.TraceID, rss ptrac
 		actualData.FinalDecision = samplingpolicy.NotSampled
 		// Since we are not in a normal decision flow when dropping large traces, also be sure to remove it from the batcher.
 		tsp.decisionBatcher.RemoveFromBatch(id, actualData.batchID)
-		tsp.releaseNotSampledTrace(id, actualData)
+		tsp.releaseNotSampledTrace(tsp.ctx, id, actualData)
 		return
 	}
 
@@ -1033,7 +1033,7 @@ func (tsp *tailSamplingSpanProcessor) processTrace(id pcommon.TraceID, rss ptrac
 				if decision == samplingpolicy.Sampled {
 					tsp.releaseSampledTrace(tsp.ctx, id, actualData)
 				} else {
-					tsp.releaseNotSampledTrace(id, actualData)
+					tsp.releaseNotSampledTrace(tsp.ctx, id, actualData)
 				}
 			} else {
 				// Persist current batch for pending traces.
@@ -1060,10 +1060,14 @@ func (tsp *tailSamplingSpanProcessor) processTrace(id pcommon.TraceID, rss ptrac
 		appendToTraces(traceTd, rss)
 		tsp.forwardSpans(tsp.ctx, traceTd)
 	case samplingpolicy.NotSampled:
-		traceTd := ptrace.NewTraces()
-		appendToTraces(traceTd, rss)
+		if tsp.nok.Enabled {
+			traceTd := ptrace.NewTraces()
+			appendToTraces(traceTd, rss)
+			nCtx := tsp.setContextValue(tsp.ctx)
+			tsp.forwardSpans(nCtx, traceTd)
+		}
 		// TODO: I don't think this is correct? If it isn't sampled shouldn't we just do nothing?
-		tsp.releaseNotSampledTrace(tsp.ctx, id, traceTd)
+		tsp.releaseNotSampledTrace(tsp.ctx, id, actualData)
 	default:
 		tsp.logger.Warn("Unexpected sampling decision", zap.Int("decision", int(finalDecision)))
 	}
@@ -1167,19 +1171,10 @@ func (tsp *tailSamplingSpanProcessor) releaseSampledTrace(ctx context.Context, i
 // IDs. If the trace ID is cached, it deletes the spans from the internal map.
 func (tsp *tailSamplingSpanProcessor) releaseNotSampledTrace(ctx context.Context, id pcommon.TraceID, td *TraceData) {
 	for _, hook := range tsp.nonSampledHooks {
-		hook(context.Background(), id, td)
+		hook(ctx, id, td)
 	}
 	tsp.nonSampledIDCache.Put(id, cache.DecisionMetadata{PolicyName: td.PolicyName})
 
-	// not sampled results get forwarded to a separate consumer if tsp.forwardNok is set to true
-	if tsp.nok.Enabled {
-		nCtx := tsp.setContextValue(ctx)
-		if err := tsp.nextConsumer.ConsumeTraces(nCtx, td.ReceivedBatches); err != nil {
-			tsp.logger.Warn(
-				"Error sending spans to destination",
-				zap.Error(err))
-		}
-	}
 	_, ok := tsp.nonSampledIDCache.Get(id)
 	if ok {
 		tsp.dropTrace(id, time.Now())
