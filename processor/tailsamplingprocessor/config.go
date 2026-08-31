@@ -349,33 +349,6 @@ type NokConfig struct {
 	Action ActionValue `mapstructure:"action"`
 }
 
-type ActionValue string
-
-const (
-	PREFIX  ActionValue = "prefix"
-	POSTFIX ActionValue = "postfix"
-	REPLACE ActionValue = "replace"
-)
-
-type NokConfig struct {
-	// Enabled sends the not sampled spans to the exporter as well;
-	// nok events are marked,
-	// which can be picked up downstream(middleware extension) to alter the flow for these events.
-	Enabled bool `mapstructure:"enabled"`
-	// ContextKey lets the user define the key used in the context object.
-	ContextKey string `mapstructure:"context_key"`
-	// ContextValue lets the user define a value used in the context object.
-	// This value acts as the base value which can be updated with an Action.
-	ContextValue string `mapstructure:"context_value"`
-	// DefaultValue is a backup value when no value can be found using the pre and postfix action types.
-	DefaultValue string `mapstructure:"default_value"`
-	// Action describes how the context value will be updated.
-	// When this action is defined,
-	// it is expected that a value is already passed through the context.
-	// This value will be updated based on the selected action.
-	Action ActionValue `mapstructure:"action"`
-}
-
 // Config holds the configuration for tail-based sampling.
 type Config struct {
 	// DecisionWait is the time before timer handling for a trace.
