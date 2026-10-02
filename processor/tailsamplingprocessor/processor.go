@@ -813,7 +813,7 @@ func (tsp *tailSamplingSpanProcessor) samplingPolicyOnTick() bool {
 		c.trace.ReceivedBatches = c.data.ReceivedBatches
 		c.trace.FinalDecision = samplingpolicy.Dropped
 		c.trace.PolicyName = p.name
-		tsp.releaseNotSampledTrace(c.id, c.trace)
+		tsp.releaseNotSampledTrace(ctx, c.id, c.trace)
 		c.trace.ReceivedBatches = ptrace.NewTraces()
 	}
 
@@ -1209,6 +1209,8 @@ func (tsp *tailSamplingSpanProcessor) processTrace(id pcommon.TraceID, rss ptrac
 			appendToTraces(traceTd, rss)
 			nCtx := tsp.setContextValue(tsp.ctx)
 			tsp.forwardSpans(nCtx, traceTd)
+			tsp.releaseNotSampledTrace(nCtx, id, actualData)
+			break
 		}
 		// TODO: I don't think this is correct? If it isn't sampled shouldn't we just do nothing?
 		tsp.releaseNotSampledTrace(tsp.ctx, id, actualData)
@@ -1321,7 +1323,9 @@ func (tsp *tailSamplingSpanProcessor) releaseNotSampledTrace(ctx context.Context
 		hook(ctx, id, td)
 	}
 	tsp.nonSampledIDCache.Put(id, cache.DecisionMetadata{PolicyName: td.PolicyName})
-
+	if tsp.nok.Enabled {
+		tsp.forwardSpans(ctx, td.ReceivedBatches)
+	}
 	_, ok := tsp.nonSampledIDCache.Get(id)
 	if ok {
 		tsp.dropTrace(id, time.Now())
