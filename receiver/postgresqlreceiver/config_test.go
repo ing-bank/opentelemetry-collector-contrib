@@ -90,12 +90,33 @@ func TestValidate(t *testing.T) {
 			},
 		},
 		{
+			desc: "exclude_databases covering every listed database is not a config error",
+			defaultConfigModifier: func(cfg *Config) {
+				cfg.Username = "otel"
+				cfg.Password = "otel"
+				cfg.Databases = []string{"otel", "rdsadmin"}
+				cfg.ExcludeDatabases = []string{"rdsadmin", "otel", "template0"}
+			},
+			expected: nil,
+		},
+		{
 			desc: "no error",
 			defaultConfigModifier: func(cfg *Config) {
 				cfg.Username = "otel"
 				cfg.Password = "otel"
 			},
 			expected: nil,
+		},
+		{
+			desc: "query plan event without top query event",
+			defaultConfigModifier: func(cfg *Config) {
+				cfg.Username = "otel"
+				cfg.Password = "otel"
+				cfg.LogsBuilderConfig.Events.DbServerQueryPlan.Enabled = true
+			},
+			expected: []error{
+				errQueryPlanWithoutTopQuery,
+			},
 		},
 	}
 	for _, tC := range testCases {
@@ -108,6 +129,8 @@ func TestValidate(t *testing.T) {
 				for _, err := range tC.expected {
 					require.ErrorContains(t, actual, err.Error())
 				}
+			} else {
+				require.NoError(t, actual)
 			}
 		})
 	}

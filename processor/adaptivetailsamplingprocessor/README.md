@@ -271,6 +271,36 @@ default) smooths traffic with an exponential moving average, tuned with
 faster to traffic shifts at the cost of more spike sensitivity, tuned with
 `update_frequency` and `lookback_frequency`.
 
+#### Cold start and unseen fingerprints
+
+The adaptive samplers need one adjustment cycle before they have per-fingerprint
+rates. Until then, `adaptive_percentage` samples every trace at the goal rate,
+and `adaptive_throughput` (either algorithm) samples every trace at
+`initial_sampling_percentage` (default 10%), an explicit bootstrap because a
+throughput goal cannot be converted to a sample rate before any volume has been
+observed. After warmup, a fingerprint the sampler has not yet learned is kept
+(`ema` algorithms) or sampled at the bootstrap (`windowed`) until the next
+adjustment learns it.
+
+In practice this means a short smoke test right after startup keeps roughly the
+goal percentage (`adaptive_percentage`) or the bootstrap percentage
+(`adaptive_throughput`), not everything. Give the sampler at least one
+`adjustment_interval` (or one `lookback_frequency` window) of traffic before
+judging its rates.
+
+#### `max_keys` overflow
+
+When an `ema` sampler's key map is full, traffic for fingerprints beyond
+`max_keys` is kept at 100% rather than sampled toward the goal. The `windowed`
+algorithm samples overflow traffic at `initial_sampling_percentage` instead. A
+fingerprint-cardinality explosion under the `ema` algorithms therefore
+increases output volume instead of degrading it, so size `max_keys` above your
+expected fingerprint cardinality and alert on the `trace_span_count` and
+`decision_sample_rate` metrics if output volume grows unexpectedly. Falling
+back to the goal rate on `ema` overflow needs upstream library support and is
+tracked in
+[#50538](https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/50538).
+
 Migrating from Refinery: `DeterministicSampler` -> `probabilistic` (the same
 hash-consistent fixed fraction), `EMADynamicSampler` -> `adaptive_percentage`
 (note Refinery's `GoalSampleRate: N` means keep 1-in-N, so `GoalSampleRate: 5`
@@ -302,7 +332,7 @@ sampler:
     - span.attributes["http.status_code"]
   adjustment_interval: 15s                # how often the ema recalculates
   weight: 0.5                             # ema weighting factor in [0, 1); 0 or omitted = 0.5
-  max_keys: 500                           # 0 = unlimited
+  max_keys: 500                           # omit for the default of 500; 0 = unlimited
 ```
 
 #### `adaptive_throughput`
@@ -313,6 +343,7 @@ Adjusts rates per key to hit a sustained volume budget in spans per second.
 sampler:
   type: adaptive_throughput
   goal_throughput: 100                    # target spans/sec per instance, across all keys
+  initial_sampling_percentage: 10         # % kept before rates are learned (default 10)
   fingerprint_attributes:
     - resource.attributes["service.name"]
     - span.attributes["http.status_code"]
@@ -345,28 +376,37 @@ sampler:
 
 The `fingerprint_attributes` field names the attributes that identify what kind of trace this is for sampling purposes. Each distinct fingerprint value gets its own adaptive sample rate, so choose attributes that classify traffic (route, status code, method, service) rather than identify individual requests (user IDs, request IDs, raw URLs), which would give every trace its own key and defeat the adaptation.
 
-Each entry is a scoped attribute selector of the form `<scope>.attributes["<name>"]`:
+> [!WARNING]
+> High-cardinality fingerprint attributes degrade sampling accuracy by construction, not just by adding noise:
+>
+> - **`ema` algorithm** (the default): the sampler splits its overall budget across keys using a logarithmic weighting, so a rare key is never pushed down to a zero share — it always keeps a floor of "sample everything" for that key. As distinct keys multiply, more of them land on that floor, each still spending part of the shared budget. Once the number of active keys grows large enough, there's no longer enough budget to go around, and the sampler is structurally unable to hit the configured `goal_percentage` / `goal_throughput`.
+> - **`windowed` algorithm** (`adaptive_throughput` only): there's no logarithmic smoothing — each key's share of the budget is a straight, linear split across however many keys are currently active. Doubling the number of distinct keys immediately halves every key's share, so cardinality growth translates directly into more keys landing on the "keep everything" floor. This makes `windowed` more sensitive to cardinality spikes than `ema`.
+> - **`max_keys`** (default 500) only limits the damage: once the cap is reached, brand-new keys aren't tracked at all and default to keeping everything, rather than competing for the remaining budget.
+>
+> To get the sampling result you actually want, choose classifying attributes (route, status code, method, service) over identifying ones (user ID, request ID, session ID, raw URL), as described above.
 
-| Scope | Reads from |
-|-------|------------|
+Each entry is a scoped attribute selector of the form `<origin>.attributes["<name>"]`, where origin is one of `resource`, `scope`, `span` or `any`. Prefixing with `root.` restricts the read to the trace's root span:
+
+| Selector | Reads from |
+|----------|------------|
 | `resource.` | each resource's attributes |
 | `scope.`    | each instrumentation scope's attributes |
 | `span.`     | every span's attributes |
-| `root.`     | the spans matching the configured `root_span_condition` |
-| `any.`      | the union of resource, instrumentation scope, and span attributes |
+| `any.`      | the union of resource, instrumentation scope and span attributes across the trace |
+| `root.<origin>.` | the same origin, but only for the span(s) matching the configured `root_span_condition`, eg `root.resource.` for the entry-point service or `root.any.` for the root span's union |
 
-The `resource.`, `scope.`, and `span.` prefixes match OTTL's span-context path names, so conditions and fingerprint entries share one spelling; `root.` and `any.` are trace-level scopes OTTL cannot express (fingerprints are built from the whole trace, while OTTL evaluates one span at a time). Note that fingerprint entries are selectors, not OTTL expressions. The two concepts have distinct jobs throughout the config: OTTL conditions appear wherever a single span is evaluated (`conditions`, `root_span_condition`), and selectors appear wherever a trace-level value is collected. Qualifying every path in conditions keeps the two styles identical in practice.
+The `resource.`, `scope.` and `span.` origins match OTTL's span-context path names, so conditions and fingerprint entries share one spelling. `any.` and the `root.` prefix are trace-level, which OTTL cannot express (fingerprints are built from the whole trace, while OTTL evaluates one span at a time). `root.` must always name an origin, so `root.resource.attributes["service.name"]` reads the entry-point service specifically rather than the trace-wide union `resource.` gives. Note that fingerprint entries are selectors, not OTTL expressions. The two concepts have distinct jobs throughout the config: OTTL conditions appear wherever a single span is evaluated (`conditions`, `root_span_condition`), and selectors appear wherever a trace-level value is collected. Qualifying every path in conditions keeps the two styles identical in practice.
 
 ```yaml
 fingerprint_attributes:
   - resource.attributes["service.name"]
   - span.attributes["http.route"]
-  - root.attributes["http.status_code"]
+  - root.span.attributes["http.status_code"]
 ```
 
 Every scope collects **all** distinct matching values, there is no first-match or precedence: `any.` is simply the widest search, and a value present at several origins appears once. The fingerprint for a trace is built by sorting the distinct values each selector matched and joining them with `,` within each entry, then joining the entries with the `•` separator. A trace whose spans carry several values for one selector keys as the combination (e.g. `checkout,billing•/api`), which is worth knowing when debugging unexpectedly high key cardinality. Selectors that match nothing are replaced with `<missing>`.
 
-Extraction cost scales with the scope: `resource.` and `scope.` are independent of trace size, while `span.`, `any.`, and `root.` walk every span of the trace at decision time. `root.` additionally evaluates the root-span condition per span, which is cheap for the default condition but costs an OTTL evaluation per span for custom ones.
+Extraction cost scales with the origin: `resource.` and `scope.` are independent of trace size, while `span.`, `any.` and every `root.` selector walk every span of the trace at decision time. `root.` selectors additionally evaluate the root-span condition per span, which is cheap for the default condition but costs an OTTL evaluation per span for custom ones.
 
 ## Worked examples
 
