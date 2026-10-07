@@ -1205,11 +1205,13 @@ func (tsp *tailSamplingSpanProcessor) processTrace(id pcommon.TraceID, rss ptrac
 		tsp.forwardSpans(tsp.ctx, traceTd)
 	case samplingpolicy.NotSampled:
 		if tsp.nok.Enabled {
+			// Hand the late spans to releaseNotSampledTrace so they are
+			// forwarded exactly once, with the nok context value injected.
 			traceTd := ptrace.NewTraces()
 			appendToTraces(traceTd, rss)
-			nCtx := tsp.setContextValue(tsp.ctx)
-			tsp.forwardSpans(nCtx, traceTd)
-			tsp.releaseNotSampledTrace(nCtx, id, actualData)
+			actualData.ReceivedBatches = traceTd
+			tsp.releaseNotSampledTrace(tsp.ctx, id, actualData)
+			//actualData.ReceivedBatches = ptrace.NewTraces()
 			break
 		}
 		// TODO: I don't think this is correct? If it isn't sampled shouldn't we just do nothing?
@@ -1323,8 +1325,10 @@ func (tsp *tailSamplingSpanProcessor) releaseNotSampledTrace(ctx context.Context
 		hook(ctx, id, td)
 	}
 	tsp.nonSampledIDCache.Put(id, cache.DecisionMetadata{PolicyName: td.PolicyName})
+	// Not sampled traces are forwarded with the nok value injected in the
+	// context, so downstream components can tell them apart from sampled ones.
 	if tsp.nok.Enabled {
-		tsp.forwardSpans(ctx, td.ReceivedBatches)
+		tsp.forwardSpans(tsp.setContextValue(ctx), td.ReceivedBatches)
 	}
 	_, ok := tsp.nonSampledIDCache.Get(id)
 	if ok {
@@ -1339,19 +1343,11 @@ func (tsp *tailSamplingSpanProcessor) setContextValue(ctx context.Context) conte
 	case PREFIX:
 		val := client.FromContext(ctx).Metadata.Get(nc.ContextKey)
 		value := tsp.getMetadata(val)
-		if _, exists := m[nc.ContextKey]; !exists || value == "" {
-			m[nc.ContextKey] = []string{nc.ContextValue}
-			break
-		}
-		m[nc.ContextKey] = append(m[nc.ContextKey], nc.ContextValue+value)
+		m[nc.ContextKey] = []string{nc.ContextValue + value}
 	case POSTFIX:
 		val := client.FromContext(ctx).Metadata.Get(nc.ContextKey)
 		value := tsp.getMetadata(val)
-		if _, exists := m[nc.ContextKey]; !exists || value == "" {
-			m[nc.ContextKey] = []string{nc.ContextValue}
-			break
-		}
-		m[nc.ContextKey] = append(m[nc.ContextKey], value+nc.ContextValue)
+		m[nc.ContextKey] = []string{value + nc.ContextValue}
 	case REPLACE:
 		fallthrough
 	default:
