@@ -1357,6 +1357,7 @@ func (tsp *tailSamplingSpanProcessor) setContextValue(ctx context.Context) conte
 	default:
 		m[nc.ContextKey] = []string{nc.ContextValue}
 	}
+	tsp.logger.Debug("nok: setting context value", zap.String("context_key", nc.ContextKey), zap.String("context_value", m[nc.ContextKey][0]))
 	return client.NewContext(ctx, client.Info{Metadata: client.NewMetadata(m)})
 }
 
