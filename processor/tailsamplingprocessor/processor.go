@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"go.opentelemetry.io/collector/client"
-
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -178,6 +177,10 @@ func newShardProcessor(ctx context.Context, set processor.Settings, nextConsumer
 
 	if tsp.tickerFrequency == 0 {
 		tsp.tickerFrequency = time.Second
+	}
+
+	if cfg.Nok.Enabled {
+		tsp.logger.Log(zap.InfoLevel, "Nok feature is enabled", zap.String("context_key", cfg.Nok.ContextKey))
 	}
 
 	return tsp, nil
@@ -1209,8 +1212,9 @@ func (tsp *tailSamplingSpanProcessor) processTrace(id pcommon.TraceID, rss ptrac
 			// forwarded exactly once, with the nok context value injected.
 			traceTd := ptrace.NewTraces()
 			appendToTraces(traceTd, rss)
-			actualData.ReceivedBatches = traceTd
-			tsp.releaseNotSampledTrace(tsp.ctx, id, actualData)
+			//actualData.ReceivedBatches = traceTd
+			tsp.forwardSpans(tsp.setContextValue(tsp.ctx), traceTd)
+			//tsp.releaseNotSampledTrace(tsp.ctx, id, actualData)
 			//actualData.ReceivedBatches = ptrace.NewTraces()
 			break
 		}
@@ -1364,7 +1368,8 @@ func (tsp *tailSamplingSpanProcessor) getMetadata(val []string) string {
 	case len(val) > 1:
 		tsp.logger.Warn(
 			"nok: can not extract value based on nok.context_key from the context. metadata has more than one value",
-			zap.Strings("metadata", val))
+			zap.Strings("metadata", val),
+		)
 		return tsp.nok.DefaultValue
 	default:
 		return val[0]
